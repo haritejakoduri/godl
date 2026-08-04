@@ -1,0 +1,32 @@
+#!/bin/sh
+set -e
+
+# Job history and cached yt-dlp/ffmpeg live per-user under
+# ~/.local/share/godl. On a plain remove they're left alone (same
+# "keep data by default" policy as scripts/uninstall.sh). On purge,
+# clean up for the user who ran it (via sudo) — never touch other
+# users' data automatically.
+if [ "$1" = "purge" ] && [ -n "${SUDO_USER:-}" ]; then
+	home="$(getent passwd "$SUDO_USER" | cut -d: -f6)"
+	# This runs as root, and SUDO_USER is only as trustworthy as
+	# whatever set it — sanity-check the resolved path before an rm -rf
+	# built from it: must be a real, non-root, absolute path, and the
+	# target must literally end in the expected suffix (guards against
+	# a $home value like "/" turning this into "rm -rf /.local/share/godl"
+	# resolving somewhere unintended, or similar).
+	case "$home" in
+	/ | /root | "") home="" ;;
+	esac
+	target="$home/.local/share/godl"
+	case "$home" in
+	/*)
+		if [ -n "$home" ] && [ -d "$target" ]; then
+			case "$target" in
+			*/.local/share/godl) rm -rf "$target" ;;
+			esac
+		fi
+		;;
+	esac
+fi
+
+exit 0

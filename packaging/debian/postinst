@@ -1,0 +1,5 @@
+#!/bin/sh
+set -e
+echo ""
+echo "godl installed. Try: godl status"
+exit 0

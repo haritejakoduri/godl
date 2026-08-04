@@ -1,0 +1,5 @@
+/godl
+/dist/
+/installer/payload/*.exe
+*.godl-progress.json
+.claude/settings.local.json

@@ -1,0 +1,6 @@
+#!/bin/sh
+set -e
+# Best-effort: stop any running godl daemon (any user) before the
+# binary it's running out of gets removed.
+pkill -f 'godl __daemon' 2>/dev/null || true
+exit 0

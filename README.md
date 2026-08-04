@@ -1,8 +1,8 @@
 # godl
 
 [![CI](https://github.com/haritejakoduri/godl/actions/workflows/ci.yml/badge.svg)](https://github.com/haritejakoduri/godl/actions/workflows/ci.yml)
-[![Go Report Card](https://goreportcard.com/badge/github.com/haritejakoduri/godl)](https://goreportcard.com/report/github.com/haritejakoduri/godl)
 [![Latest release](https://img.shields.io/github/v/release/haritejakoduri/godl)](https://github.com/haritejakoduri/godl/releases/latest)
+[![Go version](https://img.shields.io/github/go-mod/go-version/haritejakoduri/godl)](go.mod)
 [![License: MIT](https://img.shields.io/github/license/haritejakoduri/godl)](LICENSE)
 
 A terminal download manager for direct HTTP(S) links, BitTorrent, and

@@ -33,21 +33,16 @@ jobs:
           fi
 
       - name: build
+        if: matrix.goos != 'windows'
         env:
           CGO_ENABLED: 0
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
         run: go build -o /dev/null .
 
-      - name: build installer (windows only)
+      - name: build windows installer (exercises the release script)
         if: matrix.goos == 'windows'
-        env:
-          CGO_ENABLED: 0
-          GOOS: windows
-          GOARCH: amd64
-        run: |
-          go build -o installer/payload/godl.exe .
-          go build -o /dev/null ./installer
+        run: ./scripts/build-windows-installer.sh
 
       - name: test
         if: matrix.goos == 'linux'

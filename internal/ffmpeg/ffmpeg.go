@@ -21,10 +21,12 @@ import (
 
 	"github.com/ulikunitz/xz"
 
+	"godl/internal/ghrelease"
 	"godl/internal/paths"
 )
 
 const releaseBase = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/"
+const releaseAPI = "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/latest"
 
 type archiveKind int
 
@@ -88,6 +90,12 @@ func Ensure(ctx context.Context, progress func(string)) (dir string, err error) 
 		return "", err
 	}
 
+	report(progress, "fetching ffmpeg release checksum...")
+	wantHex, err := ghrelease.AssetDigest(ctx, releaseAPI, a.file)
+	if err != nil {
+		return "", fmt.Errorf("looking up ffmpeg's published checksum (refusing to download unverified): %w", err)
+	}
+
 	url := releaseBase + a.file
 	report(progress, "ffmpeg not found; downloading a static build from "+url+" (one-time download, a couple hundred MB)")
 
@@ -104,27 +112,47 @@ func Ensure(ctx context.Context, progress func(string)) (dir string, err error) 
 		return "", fmt.Errorf("downloading ffmpeg: unexpected status: %s", resp.Status)
 	}
 
+	// Always stage the full archive to disk before extracting anything
+	// from it: zip needs random access to its central directory anyway,
+	// and staging tar.xz too means the checksum is verified against the
+	// complete archive *before* any of its contents are written out as
+	// executables, rather than trusting a stream we're extracting live.
+	ext := ".tar.xz"
+	if a.kind == kindZip {
+		ext = ".zip"
+	}
+	tmpArchive, err := os.CreateTemp(binDir, "ffmpeg-download-*"+ext)
+	if err != nil {
+		return "", err
+	}
+	tmpArchivePath := tmpArchive.Name()
+	defer os.Remove(tmpArchivePath)
+	gotHex, _, err := ghrelease.HashingCopy(tmpArchive, resp.Body)
+	if err != nil {
+		tmpArchive.Close()
+		return "", fmt.Errorf("downloading ffmpeg: %w", err)
+	}
+	if err := tmpArchive.Close(); err != nil {
+		return "", err
+	}
+	if err := ghrelease.Verify(gotHex, wantHex); err != nil {
+		return "", err
+	}
+	report(progress, "ffmpeg checksum verified")
+
 	want := map[string]string{ffmpegName: ffmpegName, ffprobeName: ffprobeName}
 
 	switch a.kind {
 	case kindTarXz:
-		if err := extractTarXz(resp.Body, binDir, want); err != nil {
-			return "", fmt.Errorf("extracting ffmpeg: %w", err)
-		}
-	case kindZip:
-		// zip needs random access to read the central directory, which
-		// an HTTP response body can't do, so stage it to disk first.
-		tmpArchive, err := os.CreateTemp(binDir, "ffmpeg-download-*.zip")
+		f, err := os.Open(tmpArchivePath)
 		if err != nil {
 			return "", err
 		}
-		tmpArchivePath := tmpArchive.Name()
-		defer os.Remove(tmpArchivePath)
-		if _, err := io.Copy(tmpArchive, resp.Body); err != nil {
-			tmpArchive.Close()
-			return "", fmt.Errorf("downloading ffmpeg: %w", err)
+		defer f.Close()
+		if err := extractTarXz(f, binDir, want); err != nil {
+			return "", fmt.Errorf("extracting ffmpeg: %w", err)
 		}
-		tmpArchive.Close()
+	case kindZip:
 		if err := extractZip(tmpArchivePath, binDir, want); err != nil {
 			return "", fmt.Errorf("extracting ffmpeg: %w", err)
 		}

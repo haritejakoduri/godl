@@ -7,17 +7,18 @@ package ytdlp
 import (
 	"context"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 
+	"godl/internal/ghrelease"
 	"godl/internal/paths"
 )
 
 const releaseBase = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/"
+const releaseAPI = "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest"
 
 // assetName picks the standalone, no-Python-required yt-dlp build for
 // the current platform. See https://github.com/yt-dlp/yt-dlp/releases.
@@ -73,12 +74,18 @@ func Ensure(ctx context.Context, progress func(string)) (string, error) {
 		return "", err
 	}
 
+	report(progress, "fetching yt-dlp release checksum...")
+	wantHex, err := ghrelease.AssetDigest(ctx, releaseAPI, asset)
+	if err != nil {
+		return "", fmt.Errorf("looking up yt-dlp's published checksum (refusing to download unverified): %w", err)
+	}
+
 	url := releaseBase + asset
 	report(progress, "yt-dlp not found; downloading a standalone copy from "+url)
-	if err := download(ctx, url, localPath); err != nil {
+	if err := download(ctx, url, localPath, wantHex); err != nil {
 		return "", fmt.Errorf("downloading yt-dlp: %w", err)
 	}
-	report(progress, "yt-dlp installed to "+localPath)
+	report(progress, "yt-dlp installed to "+localPath+" (checksum verified)")
 	return localPath, nil
 }
 
@@ -88,7 +95,10 @@ func report(progress func(string), msg string) {
 	}
 }
 
-func download(ctx context.Context, url, dest string) error {
+// download fetches url to dest, verifying the downloaded bytes' sha256
+// against wantHex before the file is renamed into place — a checksum
+// mismatch (or any error) leaves no file at dest.
+func download(ctx context.Context, url, dest, wantHex string) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return err
@@ -107,12 +117,17 @@ func download(ctx context.Context, url, dest string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := io.Copy(f, resp.Body); err != nil {
+	gotHex, _, err := ghrelease.HashingCopy(f, resp.Body)
+	if err != nil {
 		f.Close()
 		os.Remove(tmp)
 		return err
 	}
 	if err := f.Close(); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	if err := ghrelease.Verify(gotHex, wantHex); err != nil {
 		os.Remove(tmp)
 		return err
 	}

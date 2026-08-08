@@ -1,9 +1,14 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
+	"mime"
+	"net/http"
 	"net/url"
 	"path/filepath"
+	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -50,16 +55,172 @@ var urlCmd = &cobra.Command{
 	},
 }
 
+// filenameFromURL picks a destination filename when the user didn't pass
+// -o. The URL path is tried first; if that doesn't yield anything with a
+// usable extension (many links are just an opaque ID or token, e.g. a CDN
+// serving /dld/<uuid>?token=...), it asks the server via a HEAD request
+// and reads Content-Disposition / Content-Type instead of silently saving
+// as a bare, extension-less UUID.
 func filenameFromURL(link string) string {
+	base := "download"
 	if u, err := url.Parse(link); err == nil {
-		if base := filepath.Base(u.Path); base != "" && base != "." && base != "/" {
-			return base
+		if b := filepath.Base(u.Path); b != "" && b != "." && b != "/" {
+			base = b
 		}
 	}
-	return "download"
+	if filepath.Ext(base) != "" {
+		return base
+	}
+
+	name, ext, ok := probeFilename(link)
+	if !ok {
+		return base
+	}
+	if name != "" {
+		base = name
+	}
+	if ext != "" && filepath.Ext(base) == "" {
+		base += ext
+	}
+	return base
+}
+
+// probeFilename asks the server for a filename hint via HEAD (falling back
+// to a ranged GET for servers that reject HEAD). ok reports whether the
+// request succeeded at all, so callers can fall back to the URL-derived
+// name on network errors instead of failing the whole command.
+func probeFilename(link string) (name, ext string, ok bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	client := &http.Client{}
+	resp, err := doProbeRequest(ctx, client, http.MethodHead, link)
+	if err != nil || resp.StatusCode >= 400 {
+		if resp != nil {
+			resp.Body.Close()
+		}
+		resp, err = doProbeRequest(ctx, client, http.MethodGet, link)
+	}
+	if err != nil {
+		return "", "", false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return "", "", false
+	}
+
+	if cd := resp.Header.Get("Content-Disposition"); cd != "" {
+		name = filenameFromContentDisposition(cd)
+	}
+	if name == "" && resp.Request != nil && resp.Request.URL != nil {
+		if b := filepath.Base(resp.Request.URL.Path); b != "" && b != "." && b != "/" {
+			name = b
+		}
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "" {
+		ext = extByContentType(ct)
+	}
+	return name, ext, true
+}
+
+func doProbeRequest(ctx context.Context, client *http.Client, method, link string) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, method, link, nil)
+	if err != nil {
+		return nil, err
+	}
+	if method == http.MethodGet {
+		// Ask for the smallest possible slice; a server that honors this
+		// avoids sending the whole file just so we can read its headers.
+		req.Header.Set("Range", "bytes=0-0")
+	}
+	return client.Do(req)
+}
+
+func filenameFromContentDisposition(cd string) string {
+	_, params, err := mime.ParseMediaType(cd)
+	if err != nil {
+		return ""
+	}
+	if v, ok := params["filename*"]; ok {
+		if n := sanitizeFilename(decodeRFC5987(v)); n != "" {
+			return n
+		}
+	}
+	if v, ok := params["filename"]; ok {
+		return sanitizeFilename(v)
+	}
+	return ""
+}
+
+// decodeRFC5987 decodes the extended-notation form of filename*, e.g.
+// "UTF-8”some%20file.mp4" -> "some file.mp4".
+func decodeRFC5987(v string) string {
+	raw := v
+	if _, rest, found := strings.Cut(v, "''"); found {
+		raw = rest
+	}
+	if decoded, err := url.QueryUnescape(raw); err == nil {
+		return decoded
+	}
+	return raw
+}
+
+// sanitizeFilename strips any directory components a (potentially
+// malicious) server-supplied name might carry, keeping just the base name.
+func sanitizeFilename(name string) string {
+	name = filepath.Base(strings.TrimSpace(name))
+	if name == "" || name == "." || name == string(filepath.Separator) {
+		return ""
+	}
+	return name
+}
+
+// commonExtByType covers the content types actually likely to show up on
+// links people paste into godl. mime.ExtensionsByType is the fallback for
+// anything else, but its answers for a type like image/jpeg aren't always
+// the conventional extension (e.g. ".jpe" before ".jpg").
+var commonExtByType = map[string]string{
+	"video/mp4":                    ".mp4",
+	"video/webm":                   ".webm",
+	"video/x-matroska":             ".mkv",
+	"video/quicktime":              ".mov",
+	"video/x-msvideo":              ".avi",
+	"audio/mpeg":                   ".mp3",
+	"audio/mp4":                    ".m4a",
+	"audio/ogg":                    ".ogg",
+	"audio/wav":                    ".wav",
+	"audio/x-wav":                  ".wav",
+	"audio/flac":                   ".flac",
+	"image/jpeg":                   ".jpg",
+	"image/png":                    ".png",
+	"image/gif":                    ".gif",
+	"image/webp":                   ".webp",
+	"application/zip":              ".zip",
+	"application/x-7z-compressed":  ".7z",
+	"application/x-rar-compressed": ".rar",
+	"application/x-tar":            ".tar",
+	"application/gzip":             ".gz",
+	"application/x-gzip":           ".gz",
+	"application/pdf":              ".pdf",
+	"application/json":             ".json",
+	"text/plain":                   ".txt",
+	"text/html":                    ".html",
+	"application/octet-stream":     "",
+}
+
+func extByContentType(contentType string) string {
+	ct, _, _ := strings.Cut(contentType, ";")
+	ct = strings.ToLower(strings.TrimSpace(ct))
+	if ext, ok := commonExtByType[ct]; ok {
+		return ext
+	}
+	if exts, _ := mime.ExtensionsByType(ct); len(exts) > 0 {
+		return exts[0]
+	}
+	return ""
 }
 
 func init() {
-	urlCmd.Flags().StringP("output", "o", "", "output file path (default: derived from the URL)")
+	urlCmd.Flags().StringP("output", "o", "", "output file path (default: derived from the URL, or from the server's Content-Disposition/Content-Type if the URL alone doesn't give us a usable name)")
 	urlCmd.Flags().IntP("concurrency", "c", 4, "number of concurrent chunks (ignored if the server can't do ranges)")
 }

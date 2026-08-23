@@ -1,0 +1,76 @@
+name: Release
+
+# Runs only after CI has finished on master (never publishes a build
+# that failed go vet/gofmt/test) — see ci.yml, which triggers on both
+# push and pull_request to master; workflow_run's branch filter below
+# only matches the push-to-master case (a merged PR), not the
+# pre-merge PR check itself, since a release only makes sense once
+# code actually lands on master.
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [master]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+
+      # internal/version/version.go is bumped by hand per release (see
+      # its own doc comment) rather than auto-derived — this workflow
+      # respects that instead of minting a version on every push, so a
+      # release is created exactly when there's a new version to ship,
+      # not on every unrelated commit that lands on master.
+      - name: Read version
+        id: version
+        run: |
+          VERSION="$(grep -oP '(?<=Version = ")[^"]+' internal/version/version.go)"
+          if [ -z "$VERSION" ]; then
+            echo "::error::couldn't read version from internal/version/version.go"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Check whether this version was already released
+        id: check
+        run: |
+          if git ls-remote --exit-code --tags origin "refs/tags/${{ steps.version.outputs.tag }}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "${{ steps.version.outputs.tag }} already has a release; nothing to do."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-go@v5
+        if: steps.check.outputs.exists == 'false'
+        with:
+          go-version: "1.25"
+
+      - name: Install packaging tools
+        if: steps.check.outputs.exists == 'false'
+        run: sudo apt-get update && sudo apt-get install -y fakeroot dpkg-dev
+
+      - name: Build all release artifacts
+        if: steps.check.outputs.exists == 'false'
+        run: ./scripts/build-all.sh
+
+      - name: Create GitHub Release
+        if: steps.check.outputs.exists == 'false'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ steps.version.outputs.tag }}" \
+            --title "godl ${{ steps.version.outputs.version }}" \
+            --generate-notes \
+            --target "${{ github.event.workflow_run.head_sha }}" \
+            dist/*

@@ -2,6 +2,9 @@ package cmd
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
+	"text/tabwriter"
 	"time"
 
 	"godl/internal/store"
@@ -74,4 +77,41 @@ func truncate(s string, n int) string {
 		return string(r[:n])
 	}
 	return string(r[:n-1]) + "…"
+}
+
+// resolveOutputPath resolves output to an absolute path. An empty
+// output is passed through unchanged so callers can distinguish "user
+// didn't set -o" from "user set -o to something" after the call.
+func resolveOutputPath(output string) (string, error) {
+	if output == "" {
+		return "", nil
+	}
+	abs, err := filepath.Abs(output)
+	if err != nil {
+		return "", err
+	}
+	return abs, nil
+}
+
+// statusCell renders a job's status for a plain-text table cell,
+// appending the failure reason when there is one — a bare "failed"
+// with no explanation is what made LocalSend (and any other job type)
+// failures look like silent, unexplained nothing.
+func statusCell(status store.JobStatus, errMsg string) string {
+	if status == store.StatusFailed && errMsg != "" {
+		return fmt.Sprintf("failed: %s", errMsg)
+	}
+	return string(status)
+}
+
+// printTable writes a tab-separated table to stdout: header is the
+// column header line (tab-separated, no trailing newline), rows are
+// each row's already tab-separated body line (no trailing newline).
+func printTable(header string, rows []string) error {
+	w := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
+	fmt.Fprintln(w, header)
+	for _, r := range rows {
+		fmt.Fprintln(w, r)
+	}
+	return w.Flush()
 }

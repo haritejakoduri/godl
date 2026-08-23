@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -166,5 +168,52 @@ func TestWebDAVBrowseBackspaceAtRootIsNoop(t *testing.T) {
 	m = mm.(statusModel)
 	if cmd != nil || m.webdavBrowse.loading {
 		t.Fatal("backspace at the root should be a no-op, not attempt to list a parent")
+	}
+}
+
+// TestWebDAVBrowseBackspaceGoesToParentNotSameDir is a regression test:
+// path.Dir on a trailing-slash directory path (the form WebDAV hrefs
+// always use for collections, e.g. "/sub/") used to return "/sub"
+// unchanged instead of "/", so "go up a directory" silently re-listed
+// the current directory instead of ascending.
+func TestWebDAVBrowseBackspaceGoesToParentNotSameDir(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/dav/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "PROPFIND" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/xml")
+		w.WriteHeader(http.StatusMultiStatus)
+		w.Write([]byte(`<?xml version="1.0"?><D:multistatus xmlns:D="DAV:">
+  <D:response><D:href>/dav/</D:href><D:propstat><D:prop><D:resourcetype><D:collection/></D:resourcetype></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response>
+</D:multistatus>`))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	client, err := webdav.New(srv.URL+"/dav/", "", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	m := statusModel{webdavBrowse: &webdavBrowseState{
+		step:     webdavBrowsing,
+		connName: "mynas",
+		client:   client,
+		path:     "/sub/",
+		selected: map[string]bool{},
+	}}
+	_, cmd := m.updateWebDAVBrowse(key("backspace"))
+	if cmd == nil {
+		t.Fatal("backspace from /sub/ should return a listing command")
+	}
+	msg := cmd()
+	listed, ok := msg.(webdavListedMsg)
+	if !ok {
+		t.Fatalf("expected webdavListedMsg, got %#v", msg)
+	}
+	if listed.path != "/" {
+		t.Errorf("backspace from /sub/ listed %q, want parent \"/\"", listed.path)
 	}
 }

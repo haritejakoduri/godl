@@ -810,16 +810,12 @@ func removeDownloadedFiles(job *store.Job) {
 		if len(job.ResolvedPaths) > 0 {
 			os.RemoveAll(filepath.Join(job.Output, job.ResolvedPaths[0]))
 		}
-	case store.JobSocial:
-		// Each entry is a full, exact path yt-dlp reported via its
-		// after_move hook (the true final file, post-merge/
-		// post-processing) — see startSocial.
-		for _, p := range job.ResolvedPaths {
-			os.Remove(p)
-		}
-	case store.JobWebDAV:
-		// Each entry is one downloaded file's exact local path — see
-		// startWebDAV. Covers both the single-file and whole-folder case.
+	case store.JobSocial, store.JobWebDAV:
+		// Each entry is a full, exact local path: for JobSocial, what
+		// yt-dlp reported via its after_move hook (the true final file,
+		// post-merge/post-processing) — see startSocial; for JobWebDAV,
+		// one downloaded file's exact local path, covering both the
+		// single-file and whole-folder case — see startWebDAV.
 		for _, p := range job.ResolvedPaths {
 			os.Remove(p)
 		}

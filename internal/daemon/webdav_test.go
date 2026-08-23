@@ -188,6 +188,57 @@ func TestStartWebDAVDownloadsSingleFile(t *testing.T) {
 	}
 }
 
+// TestStartWebDAVResumeRedownloadsMissingResolvedFile is a regression
+// test for a bug where a file already recorded in job.ResolvedPaths
+// was permanently skipped on resume even if it no longer existed on
+// disk — the "already downloaded" check short-circuited before ever
+// looking at whether os.Stat succeeded, so a job could complete
+// "successfully" with data silently missing.
+func TestStartWebDAVResumeRedownloadsMissingResolvedFile(t *testing.T) {
+	t.Setenv("GODL_DATA_DIR", t.TempDir())
+	srv := newTestWebDAVServer(t)
+	defer srv.Close()
+
+	if err := connections.Add(connections.Connection{
+		Name: "myconn", Type: connections.TypeWebDAV, URL: srv.URL + "/dav/",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	d := newTestDaemon(t)
+	output := t.TempDir()
+
+	j, err := d.createJob(context.Background(), store.JobWebDAV, "myconn:/", output, "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.startWebDAV(j)
+	first := waitForTerminal(t, d, j.ID)
+	if first.Status != store.StatusCompleted {
+		t.Fatalf("initial download failed: %s", first.ErrorMsg)
+	}
+
+	// Simulate the user (or anything else) deleting an already-
+	// downloaded file between runs, then re-running the same job
+	// (what "godl resume" does under the hood) without clearing
+	// ResolvedPaths.
+	if err := os.Remove(filepath.Join(output, "a.txt")); err != nil {
+		t.Fatal(err)
+	}
+	j2, err := d.st.GetJob(context.Background(), j.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.startWebDAV(j2)
+	second := waitForTerminal(t, d, j2.ID)
+	if second.Status != store.StatusCompleted {
+		t.Fatalf("resumed job failed: %s", second.ErrorMsg)
+	}
+	if data, err := os.ReadFile(filepath.Join(output, "a.txt")); err != nil || string(data) != "hello root\n" {
+		t.Errorf("a.txt was not re-downloaded after being deleted: content=%q err=%v", data, err)
+	}
+}
+
 func TestStartWebDAVUnknownConnectionFails(t *testing.T) {
 	t.Setenv("GODL_DATA_DIR", t.TempDir())
 	d := newTestDaemon(t)

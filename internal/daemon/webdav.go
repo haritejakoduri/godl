@@ -109,8 +109,13 @@ func (d *Daemon) startWebDAV(j *store.Job) {
 				if fi, serr := os.Stat(localPath); serr == nil {
 					cumulative += fi.Size()
 					d.reportProgress(j.ID, cumulative, total)
+					continue
 				}
-				continue
+				// Recorded as already downloaded, but the local file is
+				// gone (deleted by the user, or by something else,
+				// between pause and resume) — fall through and download
+				// it again rather than silently treating a missing file
+				// as done.
 			}
 
 			base := cumulative
@@ -144,5 +149,20 @@ func webdavLocalPath(output, root, filePath string, rootIsDir bool) string {
 	}
 	rel := strings.TrimPrefix(filePath, strings.TrimSuffix(root, "/"))
 	rel = strings.TrimPrefix(rel, "/")
-	return filepath.Join(output, filepath.FromSlash(rel))
+	joined := filepath.Join(output, filepath.FromSlash(rel))
+
+	// Defense in depth: filePath comes straight from the WebDAV
+	// server's PROPFIND response. A malicious or compromised server
+	// (or a MITM'd connection using --insecure) could report an entry
+	// path containing ".." segments, which filepath.Join above would
+	// otherwise happily resolve to somewhere outside output. Refuse to
+	// write outside the destination directory the user chose; fall
+	// back to the file's own basename directly under output instead.
+	outAbs, errOut := filepath.Abs(output)
+	joinedAbs, errJoined := filepath.Abs(joined)
+	if errOut != nil || errJoined != nil ||
+		(joinedAbs != outAbs && !strings.HasPrefix(joinedAbs, outAbs+string(filepath.Separator))) {
+		return filepath.Join(output, path.Base(filePath))
+	}
+	return joined
 }

@@ -165,7 +165,7 @@ func (m statusModel) updateWebDAVBrowse(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "left", "h", "backspace":
 		if !wb.loading && wb.path != "/" {
 			wb.loading = true
-			return m, listWebDAVDir(wb.client, path.Dir(wb.path))
+			return m, listWebDAVDir(wb.client, path.Dir(strings.TrimSuffix(wb.path, "/")))
 		}
 	case "enter":
 		if !wb.loading && wb.cursor < len(wb.entries) {
@@ -188,7 +188,7 @@ func (m statusModel) updateWebDAVBrowse(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		for p := range wb.selected {
 			targets = append(targets, p)
 		}
-		if len(targets) == 0 && wb.cursor < len(wb.entries) {
+		if len(targets) == 0 && !wb.loading && wb.cursor < len(wb.entries) {
 			targets = []string{wb.entries[wb.cursor].Path}
 		}
 		if len(targets) == 0 {

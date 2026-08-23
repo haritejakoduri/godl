@@ -2,8 +2,6 @@ package cmd
 
 import (
 	"fmt"
-	"os"
-	"text/tabwriter"
 
 	"github.com/spf13/cobra"
 
@@ -27,8 +25,7 @@ var listCmd = &cobra.Command{
 			return nil
 		}
 
-		w := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
-		fmt.Fprintln(w, "ID\tTYPE\tSTATUS\tPROGRESS\tSPEED\tSOURCE")
+		rows := make([]string, 0, len(resp.Jobs))
 		for _, j := range resp.Jobs {
 			progress := "-"
 			if j.BytesTotal > 0 {
@@ -36,9 +33,9 @@ var listCmd = &cobra.Command{
 			} else if j.BytesDone > 0 {
 				progress = humanBytes(j.BytesDone)
 			}
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
-				j.ID, j.Type, j.Status, progress, humanSpeed(j.SpeedBps), truncate(j.Source, 50))
+			rows = append(rows, fmt.Sprintf("%s\t%s\t%s\t%s\t%s\t%s",
+				j.ID, j.Type, statusCell(j.Status, j.ErrorMsg), progress, humanSpeed(j.SpeedBps), truncate(j.Source, 50)))
 		}
-		return w.Flush()
+		return printTable("ID\tTYPE\tSTATUS\tPROGRESS\tSPEED\tSOURCE", rows)
 	},
 }

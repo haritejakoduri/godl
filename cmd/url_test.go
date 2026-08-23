@@ -1,6 +1,11 @@
 package cmd
 
-import "testing"
+import (
+	"bytes"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+)
 
 func TestFilenameFromContentDisposition(t *testing.T) {
 	cases := []struct {
@@ -60,6 +65,44 @@ func TestSanitizeFilename(t *testing.T) {
 		if got != c.want {
 			t.Errorf("sanitizeFilename(%q) = %q, want %q", c.in, got, c.want)
 		}
+	}
+}
+
+func TestSniffExt(t *testing.T) {
+	// A server that responds with a generic/missing Content-Type (e.g.
+	// application/octet-stream) still lets us recover a real extension
+	// via magic-byte sniffing of the body — the fix for links that used
+	// to end up with no file extension at all.
+	png := []byte("\x89PNG\r\n\x1a\n" + "rest of a fake png file's bytes")
+	if got := sniffExt(bytes.NewReader(png)); got != ".png" {
+		t.Errorf("sniffExt(png bytes) = %q, want %q", got, ".png")
+	}
+
+	if got := sniffExt(bytes.NewReader(nil)); got != "" {
+		t.Errorf("sniffExt(empty) = %q, want empty", got)
+	}
+}
+
+func TestFilenameFromURLSniffsExtensionWhenContentTypeIsGeneric(t *testing.T) {
+	// Regression test for links whose server gives no usable extension
+	// hint at all (opaque path, generic/octet-stream Content-Type, no
+	// Content-Disposition) — filenameFromURL should still recover a
+	// real extension by sniffing the body's magic bytes rather than
+	// saving the file with none.
+	png := append([]byte("\x89PNG\r\n\x1a\n"), []byte("...fake png payload...")...)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		if r.Method == http.MethodHead {
+			return
+		}
+		w.WriteHeader(http.StatusPartialContent)
+		w.Write(png)
+	}))
+	defer srv.Close()
+
+	got := filenameFromURL(srv.URL + "/dld/opaque-id-with-no-extension")
+	if got != "opaque-id-with-no-extension.png" {
+		t.Errorf("filenameFromURL = %q, want %q", got, "opaque-id-with-no-extension.png")
 	}
 }
 

@@ -7,12 +7,15 @@ import (
 
 	"github.com/charmbracelet/bubbles/progress"
 	"github.com/charmbracelet/bubbles/table"
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
 	"github.com/spf13/cobra"
 
 	"godl/internal/daemon"
+	"godl/internal/paths"
+	"godl/internal/store"
 )
 
 var statusCmd = &cobra.Command{
@@ -20,13 +23,20 @@ var statusCmd = &cobra.Command{
 	Short: "Full-screen dashboard of all jobs, with live progress, speed, and ETA",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if err := daemon.EnsureRunning(); err != nil {
-			return err
-		}
-		p := tea.NewProgram(newStatusModel(), tea.WithAltScreen())
-		_, err := p.Run()
-		return err
+		return runStatusTUI()
 	},
+}
+
+// runStatusTUI launches the full-screen dashboard — shared by "godl
+// status" and bare "godl" (see root.go's rootCmd.RunE), so the TUI
+// stays a single code path regardless of how it's invoked.
+func runStatusTUI() error {
+	if err := daemon.EnsureRunning(); err != nil {
+		return err
+	}
+	p := tea.NewProgram(newStatusModel(), tea.WithAltScreen())
+	_, err := p.Run()
+	return err
 }
 
 var (
@@ -58,11 +68,42 @@ type statusModel struct {
 	// consequential than pause/cancel/retry, so unlike those it isn't
 	// a single keypress.
 	confirmRemove *pendingRemove
+
+	// newJob holds in-progress "start a new download" wizard state, or
+	// is nil when the overlay isn't showing — another modal interaction
+	// alongside confirmRemove, following the same overlay-over-the-
+	// existing-table convention rather than a separate full-screen mode.
+	newJob *newJobState
 }
 
 type pendingRemove struct {
 	jobID string
 	purge bool
+}
+
+type newJobStep int
+
+const (
+	newJobPickType newJobStep = iota
+	newJobEnterLink
+)
+
+type newJobState struct {
+	step      newJobStep
+	typeIndex int
+	input     textinput.Model
+}
+
+// newJobTypes are the job types the TUI can start directly, in the
+// order they're offered — mirroring the CLI's url/social/torrent
+// subcommands.
+var newJobTypes = []struct {
+	label string
+	cmd   string
+}{
+	{"URL — direct HTTP(S) link", daemon.CmdAddURL},
+	{"Social/media — yt-dlp link", daemon.CmdAddSocial},
+	{"Torrent — magnet link or .torrent file", daemon.CmdAddTorrent},
 }
 
 func newStatusModel() statusModel {
@@ -124,6 +165,64 @@ func doRemove(jobID string, purge bool) tea.Cmd {
 	}
 }
 
+// buildAddRequest fills in a daemon.Request for apiCmd (CmdAddURL/
+// CmdAddSocial/CmdAddTorrent) from source, applying the same output
+// defaults as the corresponding CLI command (see url.go/social.go/
+// torrent.go's RunE) — so a download started from the TUI behaves
+// exactly like "godl url"/"godl social"/"godl torrent".
+func buildAddRequest(apiCmd, source string) (daemon.Request, error) {
+	switch apiCmd {
+	case daemon.CmdAddURL:
+		output, err := resolveOutputPath(filenameFromURL(source))
+		if err != nil {
+			return daemon.Request{}, err
+		}
+		return daemon.Request{Cmd: apiCmd, Source: source, Output: output, Concurrency: 4}, nil
+
+	case daemon.CmdAddSocial:
+		output, err := resolveOutputPath(".")
+		if err != nil {
+			return daemon.Request{}, err
+		}
+		return daemon.Request{Cmd: apiCmd, Source: source, Output: output}, nil
+
+	case daemon.CmdAddTorrent:
+		def, err := paths.TorrentDataDir()
+		if err != nil {
+			return daemon.Request{}, err
+		}
+		output, err := resolveOutputPath(def)
+		if err != nil {
+			return daemon.Request{}, err
+		}
+		if !strings.HasPrefix(source, "magnet:") {
+			abs, err := resolveOutputPath(source)
+			if err != nil {
+				return daemon.Request{}, err
+			}
+			source = abs
+		}
+		return daemon.Request{Cmd: apiCmd, Source: source, Output: output}, nil
+
+	default:
+		return daemon.Request{}, fmt.Errorf("unknown job type %q", apiCmd)
+	}
+}
+
+func startNewJob(apiCmd, source string) tea.Cmd {
+	return func() tea.Msg {
+		if err := daemon.EnsureRunning(); err != nil {
+			return actionDoneMsg{err}
+		}
+		req, err := buildAddRequest(apiCmd, source)
+		if err != nil {
+			return actionDoneMsg{err}
+		}
+		_, err = daemon.Call(req)
+		return actionDoneMsg{err}
+	}
+}
+
 func (m statusModel) Init() tea.Cmd {
 	return waitForSnapshot(m.snapCh, m.errCh)
 }
@@ -159,6 +258,9 @@ func (m statusModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
+		if m.newJob != nil {
+			return m.updateNewJob(msg)
+		}
 		if m.confirmRemove != nil {
 			pending := *m.confirmRemove
 			m.confirmRemove = nil
@@ -175,6 +277,14 @@ func (m statusModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "q", "ctrl+c":
 			m.cancel()
 			return m, tea.Quit
+		case "n":
+			ti := textinput.New()
+			ti.Placeholder = "paste a link..."
+			ti.Focus()
+			ti.CharLimit = 2048
+			ti.Width = 60
+			m.newJob = &newJobState{step: newJobPickType, input: ti}
+			return m, nil
 		case "p", "r", "x", "R":
 			row := m.table.SelectedRow()
 			if len(row) == 0 {
@@ -210,6 +320,62 @@ func (m statusModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+func (m statusModel) updateNewJob(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch m.newJob.step {
+	case newJobPickType:
+		switch msg.String() {
+		case "up", "k":
+			if m.newJob.typeIndex > 0 {
+				m.newJob.typeIndex--
+			}
+		case "down", "j":
+			if m.newJob.typeIndex < len(newJobTypes)-1 {
+				m.newJob.typeIndex++
+			}
+		case "enter":
+			m.newJob.step = newJobEnterLink
+		case "esc":
+			m.newJob = nil
+		}
+		return m, nil
+
+	default: // newJobEnterLink
+		switch msg.String() {
+		case "esc":
+			m.newJob.step = newJobPickType
+			return m, nil
+		case "enter":
+			link := strings.TrimSpace(m.newJob.input.Value())
+			if link == "" {
+				return m, nil
+			}
+			apiCmd := newJobTypes[m.newJob.typeIndex].cmd
+			m.newJob = nil
+			m.statusMsg = "starting..."
+			return m, startNewJob(apiCmd, link)
+		default:
+			var cmd tea.Cmd
+			m.newJob.input, cmd = m.newJob.input.Update(msg)
+			return m, cmd
+		}
+	}
+}
+
+// selectedJobError returns the currently-selected job's failure reason,
+// or "" if it's not failed (or has none recorded) — see View()'s use
+// of this for surfacing ErrorMsg without a fixed-width table column.
+func (m statusModel) selectedJobError() string {
+	idx := m.table.Cursor()
+	if idx < 0 || idx >= len(m.jobs) {
+		return ""
+	}
+	j := m.jobs[idx]
+	if j.Status != store.StatusFailed || j.ErrorMsg == "" {
+		return ""
+	}
+	return fmt.Sprintf("%s failed: %s", j.ID, j.ErrorMsg)
+}
+
 func (m *statusModel) rebuildRows() {
 	rows := make([]table.Row, 0, len(m.jobs))
 	for _, j := range m.jobs {
@@ -237,10 +403,44 @@ func (m statusModel) View() string {
 		b.WriteString(errStyle.Render("daemon connection error: " + m.err.Error()))
 		b.WriteString("\n")
 	}
-	if m.statusMsg != "" {
+	switch {
+	case m.newJob != nil:
+		b.WriteString(m.viewNewJob())
+	case m.statusMsg != "":
 		b.WriteString(statStyle.Render(m.statusMsg))
 		b.WriteString("\n")
+	case m.selectedJobError() != "":
+		// The jobs table's Status column is too narrow to show a failure
+		// reason, so a failed row's ErrorMsg shows here instead, just by
+		// scrolling to it — no extra keybinding needed.
+		b.WriteString(errStyle.Render(m.selectedJobError()))
+		b.WriteString("\n")
 	}
-	b.WriteString(helpStyle.Render("p pause  r resume  x cancel  R retry  d remove  D remove+delete file  ↑/↓ navigate  q quit"))
+	b.WriteString(helpStyle.Render("p pause  r resume  x cancel  R retry  d remove  D remove+delete file  n new download  ↑/↓ navigate  q quit"))
+	return b.String()
+}
+
+func (m statusModel) viewNewJob() string {
+	if m.newJob.step == newJobPickType {
+		var b strings.Builder
+		b.WriteString(statStyle.Render("Start a new download — pick a type:"))
+		b.WriteString("\n")
+		for i, t := range newJobTypes {
+			cursor := "  "
+			if i == m.newJob.typeIndex {
+				cursor = "> "
+			}
+			b.WriteString(cursor + t.label + "\n")
+		}
+		b.WriteString(helpStyle.Render("↑/↓ select  enter next  esc cancel"))
+		return b.String()
+	}
+	label := newJobTypes[m.newJob.typeIndex].label
+	var b strings.Builder
+	b.WriteString(statStyle.Render(fmt.Sprintf("%s — paste the link:", label)))
+	b.WriteString("\n")
+	b.WriteString(m.newJob.input.View())
+	b.WriteString("\n")
+	b.WriteString(helpStyle.Render("enter start  esc back"))
 	return b.String()
 }

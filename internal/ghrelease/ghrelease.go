@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 )
 
@@ -79,4 +80,20 @@ func Verify(gotHex, wantHex string) error {
 		return fmt.Errorf("sha256 mismatch: downloaded file doesn't match GitHub's published digest (got %s, want %s) — refusing to use it", gotHex, wantHex)
 	}
 	return nil
+}
+
+// HashFile computes the sha256 of a local file — used to compare an
+// already-installed binary against a release's published digest
+// without needing to separately persist what was installed.
+func HashFile(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }

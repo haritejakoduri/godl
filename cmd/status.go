@@ -13,6 +13,7 @@ import (
 	"github.com/muesli/termenv"
 	"github.com/spf13/cobra"
 
+	"godl/internal/connections"
 	"godl/internal/daemon"
 	"godl/internal/paths"
 	"godl/internal/store"
@@ -74,6 +75,11 @@ type statusModel struct {
 	// alongside confirmRemove, following the same overlay-over-the-
 	// existing-table convention rather than a separate full-screen mode.
 	newJob *newJobState
+
+	// webdavBrowse holds in-progress "browse a saved WebDAV connection"
+	// state, or is nil when the overlay isn't showing — same
+	// overlay-over-the-table convention as newJob/confirmRemove.
+	webdavBrowse *webdavBrowseState
 }
 
 type pendingRemove struct {
@@ -257,9 +263,40 @@ func (m statusModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case webdavListedMsg:
+		if m.webdavBrowse != nil {
+			m.webdavBrowse.loading = false
+			m.webdavBrowse.err = ""
+			m.webdavBrowse.path = msg.path
+			m.webdavBrowse.entries = msg.entries
+			m.webdavBrowse.cursor = 0
+		}
+		return m, nil
+
+	case webdavListErrMsg:
+		if m.webdavBrowse != nil {
+			m.webdavBrowse.loading = false
+			m.webdavBrowse.err = msg.err.Error()
+		}
+		return m, nil
+
+	case webdavStartedMsg:
+		switch {
+		case msg.err != nil && msg.n > 0:
+			m.statusMsg = fmt.Sprintf("started %d download(s), then: %s", msg.n, msg.err.Error())
+		case msg.err != nil:
+			m.statusMsg = "error: " + msg.err.Error()
+		default:
+			m.statusMsg = fmt.Sprintf("Started %d download(s). Track them with \"godl status\"/\"godl list\".", msg.n)
+		}
+		return m, nil
+
 	case tea.KeyMsg:
 		if m.newJob != nil {
 			return m.updateNewJob(msg)
+		}
+		if m.webdavBrowse != nil {
+			return m.updateWebDAVBrowse(msg)
 		}
 		if m.confirmRemove != nil {
 			pending := *m.confirmRemove
@@ -284,6 +321,18 @@ func (m statusModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			ti.CharLimit = 2048
 			ti.Width = 60
 			m.newJob = &newJobState{step: newJobPickType, input: ti}
+			return m, nil
+		case "w":
+			conns, err := connections.List()
+			if err != nil {
+				m.statusMsg = "error: " + err.Error()
+				return m, nil
+			}
+			if len(conns) == 0 {
+				m.statusMsg = `No saved connections. Run "godl connection add <name> --url ..." first.`
+				return m, nil
+			}
+			m.webdavBrowse = &webdavBrowseState{step: webdavPickConn, conns: conns}
 			return m, nil
 		case "p", "r", "x", "R":
 			row := m.table.SelectedRow()
@@ -406,6 +455,8 @@ func (m statusModel) View() string {
 	switch {
 	case m.newJob != nil:
 		b.WriteString(m.viewNewJob())
+	case m.webdavBrowse != nil:
+		b.WriteString(m.viewWebDAVBrowse())
 	case m.statusMsg != "":
 		b.WriteString(statStyle.Render(m.statusMsg))
 		b.WriteString("\n")
@@ -416,7 +467,7 @@ func (m statusModel) View() string {
 		b.WriteString(errStyle.Render(m.selectedJobError()))
 		b.WriteString("\n")
 	}
-	b.WriteString(helpStyle.Render("p pause  r resume  x cancel  R retry  d remove  D remove+delete file  n new download  ↑/↓ navigate  q quit"))
+	b.WriteString(helpStyle.Render("p pause  r resume  x cancel  R retry  d remove  D remove+delete file  n new download  w browse webdav  ↑/↓ navigate  q quit"))
 	return b.String()
 }
 

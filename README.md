@@ -154,8 +154,18 @@ providers are expected to become additional connection types the same
 Lists every job with progress bars, speed, and ETA.
 
 Keybinds: `p` pause, `r` resume, `x` cancel, `R` retry, `d` remove, `D`
-remove + delete downloaded file (both ask for confirmation), `↑`/`↓`
-navigate, `q` quit (jobs keep running in the background).
+remove + delete downloaded file (both ask for confirmation), `n` start
+a new url/social/torrent download, `w` browse a saved WebDAV
+connection, `↑`/`↓` navigate, `q` quit (jobs keep running in the
+background).
+
+`w` opens a file browser for one of your saved `godl connection`s:
+`↑`/`↓` moves, `enter` opens a folder, `space` toggles a file or folder
+for bulk selection, `←`/backspace goes up a level, and `d` starts
+downloading — whatever's selected, or just the entry under the cursor
+if nothing is. Each selected file or folder becomes its own background
+job (a folder job pulls it down recursively), so a single `d` press can
+kick off any mix of individual files and whole folders at once.
 
 ## Building from source
 

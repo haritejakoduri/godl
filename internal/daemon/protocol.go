@@ -7,8 +7,11 @@ import "godl/internal/store"
 type Request struct {
 	Cmd string `json:"cmd"`
 
-	// add_url / add_social / add_torrent
-	Source      string `json:"source,omitempty"` // URL, magnet link, or .torrent path
+	// add_url / add_social / add_torrent / add_webdav
+	// add_webdav encodes Source as "<connection-name>:<remote-path>",
+	// looked up against internal/connections at start time rather than
+	// carrying credentials over this protocol.
+	Source      string `json:"source,omitempty"` // URL, magnet link, .torrent path, or webdav "conn:/path"
 	Output      string `json:"output,omitempty"`
 	Concurrency int    `json:"concurrency,omitempty"`
 	Format      string `json:"format,omitempty"`
@@ -23,6 +26,7 @@ const (
 	CmdAddURL     = "add_url"
 	CmdAddSocial  = "add_social"
 	CmdAddTorrent = "add_torrent"
+	CmdAddWebDAV  = "add_webdav"
 	CmdPause      = "pause"
 	CmdResume     = "resume"
 	CmdRetry      = "retry"

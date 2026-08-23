@@ -88,3 +88,30 @@ func PIDPath() (string, error) {
 	}
 	return filepath.Join(dir, "daemon.pid"), nil
 }
+
+// ConnectionsPath returns the path to the saved remote-storage
+// connections file (WebDAV today; other providers can join it later —
+// see internal/connections). It lives under DataDir, kept owner-only
+// (0700), for the same reason as the job database: this file holds
+// plaintext credentials.
+func ConnectionsPath() (string, error) {
+	dir, err := DataDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "connections.json"), nil
+}
+
+// WebDAVDataDir returns the default base directory for WebDAV downloads
+// when the user doesn't pass -o.
+func WebDAVDataDir() (string, error) {
+	dir, err := DataDir()
+	if err != nil {
+		return "", err
+	}
+	d := filepath.Join(dir, "webdav")
+	if err := os.MkdirAll(d, 0o700); err != nil {
+		return "", err
+	}
+	return d, nil
+}

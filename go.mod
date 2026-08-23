@@ -11,6 +11,7 @@ require (
 	github.com/spf13/cobra v1.10.2
 	github.com/ulikunitz/xz v0.5.16
 	golang.org/x/sys v0.47.0
+	golang.org/x/term v0.45.0
 	modernc.org/sqlite v1.55.0
 )
 

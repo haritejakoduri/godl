@@ -206,6 +206,15 @@ func (d *Daemon) dispatch(conn net.Conn, req Request) {
 		d.start(j)
 		writeResp(conn, Response{Type: "result", OK: true, Job: d.view(j.ID)})
 
+	case CmdAddWebDAV:
+		j, err := d.createJob(ctx, store.JobWebDAV, req.Source, req.Output, "", 0)
+		if err != nil {
+			writeResp(conn, errResp(err))
+			return
+		}
+		d.start(j)
+		writeResp(conn, Response{Type: "result", OK: true, Job: d.view(j.ID)})
+
 	case CmdAddSocial:
 		j, err := d.createJob(ctx, store.JobSocial, req.Source, req.Output, req.Format, 0)
 		if err != nil {
@@ -298,6 +307,8 @@ func (d *Daemon) start(j *store.Job) {
 		d.startTorrent(j)
 	case store.JobSocial:
 		d.startSocial(j)
+	case store.JobWebDAV:
+		d.startWebDAV(j)
 	}
 }
 
@@ -701,6 +712,12 @@ func (d *Daemon) retry(ctx context.Context, id string) (*store.Job, error) {
 		os.Remove(job.Output + ".godl-progress.json")
 		os.Remove(job.Output)
 	}
+	if job.Type == store.JobWebDAV {
+		for _, p := range job.ResolvedPaths {
+			os.Remove(p)
+		}
+		job.ResolvedPaths = nil
+	}
 	job.Status = store.StatusQueued
 	if err := d.st.UpdateJob(ctx, job); err != nil {
 		return nil, err
@@ -797,6 +814,12 @@ func removeDownloadedFiles(job *store.Job) {
 		// Each entry is a full, exact path yt-dlp reported via its
 		// after_move hook (the true final file, post-merge/
 		// post-processing) — see startSocial.
+		for _, p := range job.ResolvedPaths {
+			os.Remove(p)
+		}
+	case store.JobWebDAV:
+		// Each entry is one downloaded file's exact local path — see
+		// startWebDAV. Covers both the single-file and whole-folder case.
 		for _, p := range job.ResolvedPaths {
 			os.Remove(p)
 		}

@@ -22,6 +22,7 @@ const (
 	JobURL     JobType = "url"
 	JobSocial  JobType = "social"
 	JobTorrent JobType = "torrent"
+	JobWebDAV  JobType = "webdav"
 )
 
 type JobStatus string

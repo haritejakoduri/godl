@@ -5,10 +5,11 @@
 [![Go version](https://img.shields.io/github/go-mod/go-version/haritejakoduri/godl)](go.mod)
 [![License: MIT](https://img.shields.io/github/license/haritejakoduri/godl)](LICENSE)
 
-A terminal download manager for direct HTTP(S) links, BitTorrent, and
-yt-dlp-supported social/media sites. Downloads run in a background daemon,
-so they keep going after you close the terminal, and a full-screen TUI
-dashboard shows live progress across all of them.
+A terminal download manager for direct HTTP(S) links, BitTorrent,
+yt-dlp-supported social/media sites, and WebDAV servers. Downloads run
+in a background daemon, so they keep going after you close the
+terminal, and a full-screen TUI dashboard shows live progress across
+all of them.
 
 ## Install
 
@@ -70,6 +71,8 @@ resume automatically on your next install.
 godl url https://example.com/big-file.iso -o out.iso -c 8
 godl social https://example.com/watch?v=xyz -o ~/Videos -f "bv*+ba/b"
 godl torrent "magnet:?xt=urn:btih:..." -o ~/Downloads
+godl connection add mynas --url https://dav.example.com/remote.php/dav/files/alice/ --username alice
+godl webdav mynas /Photos -o ~/Photos     # a file or a whole folder, recursively
 
 godl status                 # live TUI dashboard
 godl list                   # one-shot table, for scripts
@@ -122,6 +125,29 @@ without either.
 ### `godl torrent` — BitTorrent downloads
 
 Takes a magnet link or `.torrent` file.
+
+### `godl connection` / `godl webdav` — WebDAV
+
+`godl connection add <name> --url <http(s)://...> [--username ...] [--password ... | prompted]`
+saves a named WebDAV connection (credentials live under godl's data
+directory, readable only by your user account). `--insecure` skips TLS
+certificate verification, for self-signed https servers.
+
+```sh
+godl connection add mynas --url https://dav.example.com/remote.php/dav/files/alice/ --username alice
+godl connection list
+godl connection remove mynas
+```
+
+`godl webdav <connection> <remote-path> [-o output-dir]` then downloads
+from it: if `<remote-path>` is a file, just that file is fetched; if
+it's a folder, the whole folder is downloaded recursively, preserving
+its directory structure under `-o`.
+
+Connections are the first of what's meant to be a general "remote
+storage" mechanism — Google Drive, OneDrive, and other cloud storage
+providers are expected to become additional connection types the same
+`godl connection` commands manage, alongside WebDAV.
 
 ### `godl status` — live TUI dashboard
 

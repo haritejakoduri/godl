@@ -69,7 +69,7 @@ resume automatically on your next install.
 
 ```sh
 godl url https://example.com/big-file.iso -o out.iso -c 8
-godl social https://example.com/watch?v=xyz -o ~/Videos -f "bv*+ba/b"
+godl social https://example.com/watch?v=xyz -o ~/Videos -p 1080p
 godl torrent "magnet:?xt=urn:btih:..." -o ~/Downloads
 godl connection add mynas --url https://dav.example.com/remote.php/dav/files/alice/ --username alice
 godl webdav mynas /Photos -o ~/Photos     # a file or a whole folder, recursively
@@ -98,12 +98,23 @@ Runs in the background like `url`/`torrent` and returns immediately, with
 live progress/speed/ETA in `status`/`list`. Pass `--wait`/`-w` to instead
 stay attached and stream yt-dlp's own output.
 
-`-f`/`--format` picks a specific video/audio quality, passed straight
-through to yt-dlp's format selector:
+`-p`/`--preset` picks a video/audio quality by name — the easiest way
+to pick a resolution without knowing yt-dlp's format-selector syntax:
 
 ```sh
-godl social <link>                                            # best combined quality (default)
-godl social <link> -f worst                                   # lowest quality (quick preview/test)
+godl social <link>                 # best combined quality (default)
+godl social <link> -p 1080p        # cap at 1080p, best audio
+godl social <link> -p 720p         # cap at 720p, best audio
+godl social <link> -p 480p         # cap at 480p, best audio
+godl social <link> -p worst        # lowest quality (quick preview/test)
+godl social <link> -p audio        # audio only, best available quality
+```
+
+`godl social --list-presets` prints the full list. For full control,
+`-f`/`--format` instead passes a selector straight through to yt-dlp
+(not together with `-p`):
+
+```sh
 godl social <link> -f "bv*+ba"                                 # best video + best audio, merged
 godl social <link> -f "bv*[height<=1080]+ba"                   # cap at 1080p, best audio
 godl social <link> -f "bv*[height<=720]+ba/b[height<=720]"     # 720p, falling back to combined
@@ -115,6 +126,9 @@ downloading anything:
 ```sh
 godl social <link> --list-formats
 ```
+
+The TUI's `n` "new download" wizard offers the same presets when you
+pick the Social/media type.
 
 [yt-dlp](https://github.com/yt-dlp/yt-dlp) and, if a format needs muxing
 separate video/audio streams, [ffmpeg](https://ffmpeg.org) are both

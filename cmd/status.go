@@ -90,14 +90,16 @@ type pendingRemove struct {
 type newJobStep int
 
 const (
-	newJobPickType newJobStep = iota
+	newJobPickType   newJobStep = iota
+	newJobPickPreset            // social only — skipped for url/torrent
 	newJobEnterLink
 )
 
 type newJobState struct {
-	step      newJobStep
-	typeIndex int
-	input     textinput.Model
+	step        newJobStep
+	typeIndex   int
+	presetIndex int // into socialPresets, social jobs only
+	input       textinput.Model
 }
 
 // newJobTypes are the job types the TUI can start directly, in the
@@ -215,7 +217,12 @@ func buildAddRequest(apiCmd, source string) (daemon.Request, error) {
 	}
 }
 
-func startNewJob(apiCmd, source string) tea.Cmd {
+// startNewJob starts apiCmd's job for source. format is only meaningful
+// for CmdAddSocial (the chosen preset's yt-dlp format selector, or ""
+// for the default); buildAddRequest never sets Format for url/torrent,
+// and the daemon ignores Format for those job types, so passing it
+// through unconditionally is harmless for them.
+func startNewJob(apiCmd, source, format string) tea.Cmd {
 	return func() tea.Msg {
 		if err := daemon.EnsureRunning(); err != nil {
 			return actionDoneMsg{err}
@@ -224,6 +231,7 @@ func startNewJob(apiCmd, source string) tea.Cmd {
 		if err != nil {
 			return actionDoneMsg{err}
 		}
+		req.Format = format
 		_, err = daemon.Call(req)
 		return actionDoneMsg{err}
 	}
@@ -382,16 +390,41 @@ func (m statusModel) updateNewJob(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.newJob.typeIndex++
 			}
 		case "enter":
-			m.newJob.step = newJobEnterLink
+			if newJobTypes[m.newJob.typeIndex].cmd == daemon.CmdAddSocial {
+				m.newJob.step = newJobPickPreset
+			} else {
+				m.newJob.step = newJobEnterLink
+			}
 		case "esc":
 			m.newJob = nil
+		}
+		return m, nil
+
+	case newJobPickPreset:
+		switch msg.String() {
+		case "up", "k":
+			if m.newJob.presetIndex > 0 {
+				m.newJob.presetIndex--
+			}
+		case "down", "j":
+			if m.newJob.presetIndex < len(socialPresets)-1 {
+				m.newJob.presetIndex++
+			}
+		case "enter":
+			m.newJob.step = newJobEnterLink
+		case "esc":
+			m.newJob.step = newJobPickType
 		}
 		return m, nil
 
 	default: // newJobEnterLink
 		switch msg.String() {
 		case "esc":
-			m.newJob.step = newJobPickType
+			if newJobTypes[m.newJob.typeIndex].cmd == daemon.CmdAddSocial {
+				m.newJob.step = newJobPickPreset
+			} else {
+				m.newJob.step = newJobPickType
+			}
 			return m, nil
 		case "enter":
 			link := strings.TrimSpace(m.newJob.input.Value())
@@ -399,9 +432,13 @@ func (m statusModel) updateNewJob(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			apiCmd := newJobTypes[m.newJob.typeIndex].cmd
+			format := ""
+			if apiCmd == daemon.CmdAddSocial {
+				format = socialPresets[m.newJob.presetIndex].Format
+			}
 			m.newJob = nil
 			m.statusMsg = "starting..."
-			return m, startNewJob(apiCmd, link)
+			return m, startNewJob(apiCmd, link, format)
 		default:
 			var cmd tea.Cmd
 			m.newJob.input, cmd = m.newJob.input.Update(msg)
@@ -472,7 +509,8 @@ func (m statusModel) View() string {
 }
 
 func (m statusModel) viewNewJob() string {
-	if m.newJob.step == newJobPickType {
+	switch m.newJob.step {
+	case newJobPickType:
 		var b strings.Builder
 		b.WriteString(statStyle.Render("Start a new download — pick a type:"))
 		b.WriteString("\n")
@@ -485,13 +523,32 @@ func (m statusModel) viewNewJob() string {
 		}
 		b.WriteString(helpStyle.Render("↑/↓ select  enter next  esc cancel"))
 		return b.String()
+
+	case newJobPickPreset:
+		var b strings.Builder
+		b.WriteString(statStyle.Render("Social/media — pick a quality preset:"))
+		b.WriteString("\n")
+		for i, p := range socialPresets {
+			cursor := "  "
+			if i == m.newJob.presetIndex {
+				cursor = "> "
+			}
+			b.WriteString(fmt.Sprintf("%s%-8s %s\n", cursor, p.Name, p.Description))
+		}
+		b.WriteString(helpStyle.Render("↑/↓ select  enter next  esc back"))
+		return b.String()
+
+	default: // newJobEnterLink
+		label := newJobTypes[m.newJob.typeIndex].label
+		if newJobTypes[m.newJob.typeIndex].cmd == daemon.CmdAddSocial {
+			label += " [" + socialPresets[m.newJob.presetIndex].Name + "]"
+		}
+		var b strings.Builder
+		b.WriteString(statStyle.Render(fmt.Sprintf("%s — paste the link:", label)))
+		b.WriteString("\n")
+		b.WriteString(m.newJob.input.View())
+		b.WriteString("\n")
+		b.WriteString(helpStyle.Render("enter start  esc back"))
+		return b.String()
 	}
-	label := newJobTypes[m.newJob.typeIndex].label
-	var b strings.Builder
-	b.WriteString(statStyle.Render(fmt.Sprintf("%s — paste the link:", label)))
-	b.WriteString("\n")
-	b.WriteString(m.newJob.input.View())
-	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("enter start  esc back"))
-	return b.String()
 }

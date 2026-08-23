@@ -50,7 +50,11 @@ again with an existing name overwrites that connection's settings.`,
 		if password == "" {
 			password = os.Getenv("GODL_WEBDAV_PASSWORD")
 		}
-		if password == "" {
+		// Only prompt when there's a username to go with it — a
+		// password on its own isn't meaningful for Basic auth, and a
+		// server that needs no credentials at all (open/anonymous
+		// WebDAV) shouldn't force one out of the user.
+		if password == "" && username != "" {
 			p, err := promptPassword("WebDAV password: ")
 			if err != nil {
 				return fmt.Errorf("reading password: %w (pass --password or set GODL_WEBDAV_PASSWORD for non-interactive use)", err)

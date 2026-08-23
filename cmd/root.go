@@ -17,11 +17,16 @@ var rootCmd = &cobra.Command{
 social/media links through a background daemon, so jobs keep running
 after you close the terminal.
 
-Use "godl status" for a live TUI dashboard, or the pause/resume/retry/
-cancel/remove/list subcommands to script it.`,
+Run "godl" with no arguments for a live TUI dashboard (start new
+downloads, track progress), or use the pause/resume/retry/cancel/
+remove/list subcommands to script it.`,
 	Version:       version.Version,
 	SilenceUsage:  true,
 	SilenceErrors: true,
+	Args:          cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runStatusTUI()
+	},
 }
 
 func Execute() {
@@ -43,6 +48,7 @@ func init() {
 		cancelCmd,
 		removeCmd,
 		listCmd,
+		updateCmd,
 		internalDaemonCmd,
 	)
 }

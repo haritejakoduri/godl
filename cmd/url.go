@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"io"
 	"mime"
 	"net/http"
 	"net/url"
@@ -28,7 +29,7 @@ var urlCmd = &cobra.Command{
 		if output == "" {
 			output = filenameFromURL(link)
 		}
-		abs, err := filepath.Abs(output)
+		abs, err := resolveOutputPath(output)
 		if err != nil {
 			return err
 		}
@@ -89,17 +90,25 @@ func filenameFromURL(link string) string {
 // to a ranged GET for servers that reject HEAD). ok reports whether the
 // request succeeded at all, so callers can fall back to the URL-derived
 // name on network errors instead of failing the whole command.
+//
+// If neither Content-Disposition nor Content-Type yields a usable
+// extension — common with CDNs that respond with a generic or missing
+// Content-Type — a last-resort magic-byte sniff of the first bytes of
+// the body is tried before giving up, rather than saving the file with
+// no extension at all.
 func probeFilename(link string) (name, ext string, ok bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	client := &http.Client{}
 	resp, err := doProbeRequest(ctx, client, http.MethodHead, link)
+	usedGet := false
 	if err != nil || resp.StatusCode >= 400 {
 		if resp != nil {
 			resp.Body.Close()
 		}
 		resp, err = doProbeRequest(ctx, client, http.MethodGet, link)
+		usedGet = true
 	}
 	if err != nil {
 		return "", "", false
@@ -120,6 +129,17 @@ func probeFilename(link string) (name, ext string, ok bool) {
 	if ct := resp.Header.Get("Content-Type"); ct != "" {
 		ext = extByContentType(ct)
 	}
+
+	if ext == "" {
+		if usedGet {
+			ext = sniffExt(resp.Body)
+		} else if sniffResp, serr := doProbeRequest(ctx, client, http.MethodGet, link); serr == nil {
+			defer sniffResp.Body.Close()
+			if sniffResp.StatusCode < 400 {
+				ext = sniffExt(sniffResp.Body)
+			}
+		}
+	}
 	return name, ext, true
 }
 
@@ -129,11 +149,25 @@ func doProbeRequest(ctx context.Context, client *http.Client, method, link strin
 		return nil, err
 	}
 	if method == http.MethodGet {
-		// Ask for the smallest possible slice; a server that honors this
-		// avoids sending the whole file just so we can read its headers.
-		req.Header.Set("Range", "bytes=0-0")
+		// 512 bytes is enough for http.DetectContentType's magic-byte
+		// sniffing (see sniffExt) while still asking for far less than
+		// the whole file just to read headers/a content sample.
+		req.Header.Set("Range", "bytes=0-511")
 	}
 	return client.Do(req)
+}
+
+// sniffExt reads a small prefix of body and magic-byte-sniffs its
+// actual type, for servers whose Content-Type is missing or generic
+// (e.g. application/octet-stream) — the last resort before a download
+// ends up with no file extension at all.
+func sniffExt(body io.Reader) string {
+	buf := make([]byte, 512)
+	n, _ := io.ReadFull(body, buf)
+	if n == 0 {
+		return ""
+	}
+	return extByContentType(http.DetectContentType(buf[:n]))
 }
 
 func filenameFromContentDisposition(cd string) string {
@@ -206,6 +240,23 @@ var commonExtByType = map[string]string{
 	"text/plain":                   ".txt",
 	"text/html":                    ".html",
 	"application/octet-stream":     "",
+	// The rest are net/http's http.DetectContentType sniff outputs (used
+	// by sniffExt) rather than real Content-Type header values, plus a
+	// couple of real-world header values seen from CDNs/streaming
+	// endpoints that aren't in Go's builtin mime table.
+	"audio/wave":                    ".wav",
+	"audio/aiff":                    ".aiff",
+	"audio/midi":                    ".mid",
+	"application/ogg":               ".ogg",
+	"video/avi":                     ".avi",
+	"image/bmp":                     ".bmp",
+	"font/woff":                     ".woff",
+	"font/woff2":                    ".woff2",
+	"application/wasm":              ".wasm",
+	"video/mp2t":                    ".ts",
+	"audio/x-m4a":                   ".m4a",
+	"application/x-mpegurl":         ".m3u8",
+	"application/vnd.apple.mpegurl": ".m3u8",
 }
 
 func extByContentType(contentType string) string {

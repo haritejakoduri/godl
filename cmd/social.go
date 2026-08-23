@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"path/filepath"
 	"syscall"
 
 	"github.com/spf13/cobra"
@@ -61,7 +60,7 @@ ffmpeg, needed to merge separately-downloaded video+audio streams.`,
 		if output == "" {
 			output = "."
 		}
-		abs, err := filepath.Abs(output)
+		abs, err := resolveOutputPath(output)
 		if err != nil {
 			return err
 		}

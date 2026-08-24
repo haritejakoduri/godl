@@ -11,8 +11,48 @@ import (
 	"github.com/spf13/cobra"
 
 	"godl/internal/daemon"
+	"godl/internal/paths"
 	"godl/internal/ytdlp"
 )
+
+// socialPreset is a named shortcut for a yt-dlp format selector, so
+// picking a quality doesn't require knowing yt-dlp's selector syntax.
+// Format == "" means "don't pass -f at all" — yt-dlp's own default,
+// which is already the best combined stream.
+type socialPreset struct {
+	Name        string
+	Format      string
+	Description string
+}
+
+var socialPresets = []socialPreset{
+	{"best", "", "Best combined quality (yt-dlp's default)"},
+	{"1080p", "bv*[height<=1080]+ba/b[height<=1080]", "Cap at 1080p, best audio"},
+	{"720p", "bv*[height<=720]+ba/b[height<=720]", "Cap at 720p, best audio"},
+	{"480p", "bv*[height<=480]+ba/b[height<=480]", "Cap at 480p, best audio"},
+	{"worst", "worst", "Lowest quality (quick preview/test)"},
+	{"audio", "bestaudio/best", "Audio only, best available quality"},
+}
+
+func lookupSocialPreset(name string) (socialPreset, bool) {
+	for _, p := range socialPresets {
+		if p.Name == name {
+			return p, true
+		}
+	}
+	return socialPreset{}, false
+}
+
+// printSocialPresets lists the presets without touching yt-dlp or the
+// network — a static, local, always-available complement to
+// --list-formats' live per-link probe.
+func printSocialPresets() error {
+	rows := make([]string, 0, len(socialPresets))
+	for _, p := range socialPresets {
+		rows = append(rows, fmt.Sprintf("%s\t%s", p.Name, p.Description))
+	}
+	return printTable("PRESET\tDESCRIPTION", rows)
+}
 
 var socialCmd = &cobra.Command{
 	Use:   "social <link>",
@@ -24,14 +64,20 @@ immediately — track it with "godl status" (live progress bar, speed,
 ETA) or "godl list". Pass --wait to instead stay attached and stream
 yt-dlp's own output live, the way url/torrent don't.
 
-Picking a video/audio resolution — the -f/--format flag is passed
-straight through to yt-dlp's own format selector, so anything yt-dlp
-accepts there works here:
+Picking a video/audio resolution — easiest via a named preset with
+-p/--preset (see "godl social --list-presets" for the full list):
 
-  godl social <link>                                     # best combined quality (default)
-  godl social <link> -f worst                            # lowest quality (quick preview/test)
-  godl social <link> -f "bv*+ba"                          # best video + best audio, merged (needs ffmpeg — auto-installed)
-  godl social <link> -f "bv*[height<=1080]+ba"            # cap at 1080p, best audio
+  godl social <link>                 # best combined quality (default)
+  godl social <link> -p 1080p        # cap at 1080p, best audio
+  godl social <link> -p 720p         # cap at 720p, best audio
+  godl social <link> -p worst        # lowest quality (quick preview/test)
+  godl social <link> -p audio        # audio only, best available quality
+
+Or, for full control, pass a yt-dlp format selector directly with
+-f/--format instead (not together with -p):
+
+  godl social <link> -f "bv*+ba"                              # best video + best audio, merged (needs ffmpeg — auto-installed)
+  godl social <link> -f "bv*[height<=1080]+ba"                # cap at 1080p, best audio
   godl social <link> -f "bv*[height<=720]+ba/b[height<=720]"  # 720p, falling back to a combined stream if separate ones aren't available
 
 Not sure which resolutions/formats exist for a given link? List them
@@ -46,8 +92,20 @@ GitHub releases the first time it's needed (saved under godl's data dir
 for reuse) — no separate install step required, though a system install
 (pip install -U yt-dlp) is used instead if present. Same goes for
 ffmpeg, needed to merge separately-downloaded video+audio streams.`,
-	Args: cobra.ExactArgs(1),
+	// --list-presets is a static, local list unrelated to any particular
+	// link, so (unlike --list-formats, which probes a specific link) it
+	// shouldn't require one — a custom Args check relaxes ExactArgs(1)
+	// for that one case.
+	Args: func(cmd *cobra.Command, args []string) error {
+		if listPresets, _ := cmd.Flags().GetBool("list-presets"); listPresets {
+			return cobra.MaximumNArgs(1)(cmd, args)
+		}
+		return cobra.ExactArgs(1)(cmd, args)
+	},
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if listPresets, _ := cmd.Flags().GetBool("list-presets"); listPresets {
+			return printSocialPresets()
+		}
 		link := args[0]
 
 		if listFormats, _ := cmd.Flags().GetBool("list-formats"); listFormats {
@@ -56,9 +114,25 @@ ffmpeg, needed to merge separately-downloaded video+audio streams.`,
 
 		output, _ := cmd.Flags().GetString("output")
 		format, _ := cmd.Flags().GetString("format")
+		preset, _ := cmd.Flags().GetString("preset")
 		wait, _ := cmd.Flags().GetBool("wait")
+
+		if preset != "" {
+			if format != "" {
+				return fmt.Errorf("pass either -p/--preset or -f/--format, not both")
+			}
+			p, ok := lookupSocialPreset(preset)
+			if !ok {
+				return fmt.Errorf("unknown preset %q — see \"godl social --list-presets\"", preset)
+			}
+			format = p.Format
+		}
 		if output == "" {
-			output = "."
+			dir, err := paths.DownloadsDir()
+			if err != nil {
+				return err
+			}
+			output = dir
 		}
 		abs, err := resolveOutputPath(output)
 		if err != nil {
@@ -130,8 +204,10 @@ func runListFormats(link string) error {
 }
 
 func init() {
-	socialCmd.Flags().StringP("output", "o", ".", "output directory")
-	socialCmd.Flags().StringP("format", "f", "", `yt-dlp format selector (passed through as -f), e.g. "bv*+ba" or "bv*[height<=1080]+ba"`)
+	socialCmd.Flags().StringP("output", "o", "", "output directory (default: your Downloads folder)")
+	socialCmd.Flags().StringP("format", "f", "", `yt-dlp format selector (passed through as -f), e.g. "bv*+ba" or "bv*[height<=1080]+ba" — not together with -p`)
+	socialCmd.Flags().StringP("preset", "p", "", "quality preset (see --list-presets); not together with -f")
 	socialCmd.Flags().BoolP("wait", "w", false, "stay attached and stream yt-dlp's output live instead of returning immediately")
 	socialCmd.Flags().BoolP("list-formats", "F", false, "list available formats/resolutions for <link> and exit, without downloading")
+	socialCmd.Flags().Bool("list-presets", false, "list available quality presets and exit")
 }

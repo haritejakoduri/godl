@@ -2,8 +2,6 @@ package cmd
 
 import (
 	"fmt"
-	"path/filepath"
-	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -12,12 +10,16 @@ import (
 	"godl/internal/store"
 )
 
-var torrentCmd = &cobra.Command{
-	Use:   "torrent <magnet-or-file>",
-	Short: "Download via BitTorrent, from a magnet link or a .torrent file",
-	Args:  cobra.ExactArgs(1),
+var webdavCmd = &cobra.Command{
+	Use:   "webdav <connection> <remote-path>",
+	Short: "Download a file, or an entire folder recursively, from a saved WebDAV connection",
+	Long: `Downloads from a WebDAV server using credentials saved with
+"godl connection add". If <remote-path> is a file, just that file is
+downloaded; if it's a folder, the whole folder is downloaded
+recursively, preserving its directory structure under -o.`,
+	Args: cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		source := args[0]
+		connName, remotePath := args[0], args[1]
 		output, _ := cmd.Flags().GetString("output")
 
 		if output == "" {
@@ -33,18 +35,14 @@ var torrentCmd = &cobra.Command{
 		}
 		output = abs
 
-		if !strings.HasPrefix(source, "magnet:") {
-			absSrc, err := filepath.Abs(source)
-			if err != nil {
-				return err
-			}
-			source = absSrc
-		}
-
 		if err := daemon.EnsureRunning(); err != nil {
 			return err
 		}
-		resp, err := daemon.Call(daemon.Request{Cmd: daemon.CmdAddTorrent, Source: source, Output: output})
+		resp, err := daemon.Call(daemon.Request{
+			Cmd:    daemon.CmdAddWebDAV,
+			Source: connName + ":" + remotePath,
+			Output: output,
+		})
 		if err != nil {
 			return err
 		}
@@ -58,5 +56,5 @@ var torrentCmd = &cobra.Command{
 }
 
 func init() {
-	torrentCmd.Flags().StringP("output", "o", "", "output directory (default: your Downloads folder)")
+	webdavCmd.Flags().StringP("output", "o", "", "output directory (default: your Downloads folder)")
 }

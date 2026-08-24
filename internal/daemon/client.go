@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"runtime/debug"
 	"time"
 
 	"godl/internal/paths"
@@ -248,6 +249,19 @@ func Subscribe(ctx context.Context) (<-chan []*JobView, <-chan error) {
 // RunForeground runs the daemon in the current process until the socket
 // listener is closed. Used by the hidden __daemon subcommand.
 func RunForeground() error {
+	// The daemon is a long-running, throughput-oriented process moving
+	// megabytes/sec through short-lived buffers (see internal/downloader,
+	// internal/webdav) — the default GOGC=100 collects far more often
+	// than a job like that needs, and its usual RSS (tens of MB) leaves
+	// plenty of room to trade some memory for fewer GC cycles. Raise the
+	// GC trigger, but cap it with a soft memory limit so behavior stays
+	// bounded on a memory-constrained host instead of just growing
+	// unchecked — the collector still runs (harder) if the limit is
+	// approached. Scoped to the daemon process only; short-lived CLI
+	// invocations (godl url, godl list, ...) keep Go's defaults.
+	debug.SetGCPercent(400)
+	debug.SetMemoryLimit(512 << 20) // 512MiB
+
 	d, err := NewDaemon()
 	if err != nil {
 		return err

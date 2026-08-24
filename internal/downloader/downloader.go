@@ -44,6 +44,14 @@ type Result struct {
 
 func sidecarPath(output string) string { return output + ".godl-progress.json" }
 
+// copyBufSize is the read/write buffer size for the streaming copy loops
+// below. 256KiB rather than a smaller default (e.g. 32KiB) cuts the
+// number of Read/WriteAt syscalls (and the goroutine wakeups that go
+// with them) per MB transferred by 8x, which matters most on a
+// concurrently chunked download where several goroutines are each
+// doing this in parallel.
+const copyBufSize = 256 * 1024
+
 func Run(ctx context.Context, opt Options) (Result, error) {
 	if opt.Concurrency < 1 {
 		opt.Concurrency = 1
@@ -152,7 +160,7 @@ func runSingle(ctx context.Context, client *http.Client, opt Options, supportsRa
 		return Result{BytesDone: start}, fmt.Errorf("unexpected status: %s", resp.Status)
 	}
 
-	buf := make([]byte, 32*1024)
+	buf := make([]byte, copyBufSize)
 	written := start
 	lastReport := time.Now()
 	for {
@@ -301,7 +309,7 @@ func runChunked(ctx context.Context, client *http.Client, opt Options, total int
 				return
 			}
 
-			buf := make([]byte, 32*1024)
+			buf := make([]byte, copyBufSize)
 			pos := rangeStart
 			for {
 				n, rerr := resp.Body.Read(buf)

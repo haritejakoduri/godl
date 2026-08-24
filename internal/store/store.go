@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sync"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -22,6 +23,7 @@ const (
 	JobURL     JobType = "url"
 	JobSocial  JobType = "social"
 	JobTorrent JobType = "torrent"
+	JobWebDAV  JobType = "webdav"
 )
 
 type JobStatus string
@@ -71,6 +73,16 @@ type Job struct {
 
 type Store struct {
 	db *sql.DB
+
+	// resolvedMu serializes AppendResolvedPath's read-modify-write
+	// (read the current list, append, write the whole list back) across
+	// goroutines. db.SetMaxOpenConns(1) below only serializes individual
+	// statements, not this multi-statement sequence — without this,
+	// concurrent callers (e.g. a WebDAV folder job downloading several
+	// files at once) can each read the same pre-append list and then
+	// both write, and whichever write lands second silently discards
+	// the other's entry.
+	resolvedMu sync.Mutex
 }
 
 func Open(path string) (*Store, error) {
@@ -247,6 +259,9 @@ func (s *Store) UpdateStatus(ctx context.Context, id string, status JobStatus, e
 // Output is a directory (social, occasionally playlists producing more
 // than one final file). No-ops if path is already recorded.
 func (s *Store) AppendResolvedPath(ctx context.Context, id, path string) error {
+	s.resolvedMu.Lock()
+	defer s.resolvedMu.Unlock()
+
 	j, err := s.GetJob(ctx, id)
 	if err != nil {
 		return err

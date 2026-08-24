@@ -1,7 +1,10 @@
 // Package ytdlp locates a yt-dlp binary for "godl social" to shell out
-// to, auto-downloading a standalone (no Python required) copy from
-// yt-dlp's GitHub releases the first time it's needed if one isn't
-// already on PATH.
+// to. godl always installs and keeps its own standalone (no Python
+// required) copy from yt-dlp's GitHub releases, downloading it the
+// first time it's needed and checking for a newer release
+// periodically after that — PATH is never consulted, so godl's copy
+// stays current on its own regardless of what else might be installed
+// on the system.
 package ytdlp
 
 import (
@@ -9,7 +12,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -65,16 +67,14 @@ func localName() string {
 	return "yt-dlp"
 }
 
-// Ensure returns a path to a working yt-dlp binary: one already on PATH
-// if present, otherwise a copy godl downloaded on a previous run,
-// otherwise a freshly downloaded one (saved under godl's data dir so
-// it's reused next time). progress, if non-nil, is called with
-// human-readable status lines while a download is in flight.
+// Ensure returns a path to godl's own managed yt-dlp binary — a copy
+// downloaded on a previous run if present (checked for staleness and
+// silently updated if a newer release exists), otherwise a freshly
+// downloaded one (saved under godl's data dir so it's reused next
+// time). PATH is never consulted; see the package doc for why.
+// progress, if non-nil, is called with human-readable status lines
+// while a download is in flight.
 func Ensure(ctx context.Context, progress func(string)) (string, error) {
-	if p, err := exec.LookPath("yt-dlp"); err == nil {
-		return p, nil
-	}
-
 	dataDir, err := paths.DataDir()
 	if err != nil {
 		return "", err
@@ -153,26 +153,19 @@ func checkAndUpdate(ctx context.Context, localPath string, progress func(string)
 // ForceUpdate immediately checks for (and installs) a newer yt-dlp
 // release, ignoring the normal staleAfter cadence — the direct remedy
 // for "yt-dlp seems broken against a site, check for an update" via
-// `godl update`. managed reports whether yt-dlp is one of godl's own
-// auto-installed copies at all; a system install already on PATH is
-// left alone, since updating that is the user's own package manager's
-// job.
-func ForceUpdate(ctx context.Context, progress func(string)) (managed, updated bool, err error) {
-	if _, err := exec.LookPath("yt-dlp"); err == nil {
-		return false, false, nil
-	}
+// `godl update`.
+func ForceUpdate(ctx context.Context, progress func(string)) (updated bool, err error) {
 	dataDir, err := paths.DataDir()
 	if err != nil {
-		return false, false, err
+		return false, err
 	}
 	binDir := filepath.Join(dataDir, "bin")
 	localPath := filepath.Join(binDir, localName())
 	if fi, err := os.Stat(localPath); err != nil || fi.IsDir() {
-		return false, false, fmt.Errorf("no auto-installed yt-dlp found (run a social download first, or install yt-dlp yourself)")
+		return false, fmt.Errorf("no managed yt-dlp installed yet (run a social download first to install one)")
 	}
 	os.WriteFile(checkedFile(binDir), nil, 0o644)
-	updated, err = checkAndUpdate(ctx, localPath, progress)
-	return true, updated, err
+	return checkAndUpdate(ctx, localPath, progress)
 }
 
 func report(progress func(string), msg string) {

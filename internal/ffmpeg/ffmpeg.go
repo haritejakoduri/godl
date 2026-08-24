@@ -1,10 +1,12 @@
 // Package ffmpeg locates ffmpeg/ffprobe for yt-dlp to use when merging
-// separately-downloaded video and audio streams. If neither is on PATH,
-// it auto-downloads a static build from BtbN/FFmpeg-Builds — a
+// separately-downloaded video and audio streams. godl always installs
+// and keeps its own static build from BtbN/FFmpeg-Builds — a
 // long-running community source of prebuilt ffmpeg binaries (ffmpeg.org
 // itself doesn't publish simple direct-download static binaries) widely
-// used by other CLI tools for exactly this purpose — the first time
-// they're actually needed, and caches them under godl's data dir.
+// used by other CLI tools for exactly this purpose — downloading it the
+// first time it's actually needed and caching it under godl's data
+// dir. PATH is never consulted, so godl's copy stays current on its
+// own regardless of what else might be installed on the system.
 package ffmpeg
 
 import (
@@ -15,7 +17,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -89,16 +90,14 @@ func binNames() (ffmpeg, ffprobe string) {
 	return "ffmpeg", "ffprobe"
 }
 
-// Ensure returns a directory containing working ffmpeg and ffprobe
-// binaries — wherever they already are on PATH, a previously
-// auto-downloaded copy, or a freshly downloaded one. progress, if
-// non-nil, is called with human-readable status lines while a download
-// is in flight.
+// Ensure returns a directory containing godl's own managed ffmpeg and
+// ffprobe binaries — a previously auto-downloaded copy if present
+// (checked for staleness and silently updated if a newer build
+// exists), otherwise a freshly downloaded one. PATH is never
+// consulted; see the package doc for why. progress, if non-nil, is
+// called with human-readable status lines while a download is in
+// flight.
 func Ensure(ctx context.Context, progress func(string)) (dir string, err error) {
-	if p, err := exec.LookPath("ffmpeg"); err == nil {
-		return filepath.Dir(p), nil
-	}
-
 	dataDir, err := paths.DataDir()
 	if err != nil {
 		return "", err
@@ -243,24 +242,18 @@ func checkAndUpdate(ctx context.Context, binDir, ffmpegName, ffprobeName string,
 // ForceUpdate immediately checks for (and installs) a newer ffmpeg
 // build, ignoring the normal staleAfter cadence — see
 // godl/internal/ytdlp.ForceUpdate, its counterpart for `godl update`.
-// managed reports whether ffmpeg is one of godl's own auto-installed
-// copies at all; a system install already on PATH is left alone.
-func ForceUpdate(ctx context.Context, progress func(string)) (managed, updated bool, err error) {
-	if _, err := exec.LookPath("ffmpeg"); err == nil {
-		return false, false, nil
-	}
+func ForceUpdate(ctx context.Context, progress func(string)) (updated bool, err error) {
 	dataDir, err := paths.DataDir()
 	if err != nil {
-		return false, false, err
+		return false, err
 	}
 	binDir := filepath.Join(dataDir, "bin")
 	ffmpegName, ffprobeName := binNames()
 	if fi, err := os.Stat(filepath.Join(binDir, ffmpegName)); err != nil || fi.IsDir() {
-		return false, false, fmt.Errorf("no auto-installed ffmpeg found (run a social download first, or install ffmpeg yourself)")
+		return false, fmt.Errorf("no managed ffmpeg installed yet (run a social download first to install one)")
 	}
 	os.WriteFile(checkedFile(binDir), nil, 0o644)
-	updated, err = checkAndUpdate(ctx, binDir, ffmpegName, ffprobeName, progress)
-	return true, updated, err
+	return checkAndUpdate(ctx, binDir, ffmpegName, ffprobeName, progress)
 }
 
 func report(progress func(string), msg string) {

@@ -31,7 +31,18 @@ func New(dataDir string) (*Manager, error) {
 	cfg.DataDir = dataDir
 	cl, err := torrent.NewClient(cfg)
 	if err != nil {
-		return nil, fmt.Errorf("starting torrent client: %w", err)
+		// The default config listens on both IPv4 and IPv6; on a host/
+		// container without IPv6 support at all (common — some VPS
+		// images, some Docker network modes, some CI runners) that
+		// dual-stack listen fails outright and NewClient errors, which
+		// would otherwise take down the whole daemon — url/social/
+		// webdav jobs too, not just torrent. Retry IPv4-only before
+		// giving up.
+		cfg.DisableIPv6 = true
+		cl, err = torrent.NewClient(cfg)
+		if err != nil {
+			return nil, fmt.Errorf("starting torrent client: %w", err)
+		}
 	}
 	return &Manager{client: cl, active: map[string]*torrent.Torrent{}}, nil
 }
@@ -68,14 +79,29 @@ func (m *Manager) Add(jobID, source, outputDir string) (*torrent.Torrent, error)
 }
 
 func specFromSource(source string) (*torrent.TorrentSpec, error) {
+	var spec *torrent.TorrentSpec
 	if strings.HasPrefix(source, "magnet:") {
-		return torrent.TorrentSpecFromMagnetUri(source)
+		s, err := torrent.TorrentSpecFromMagnetUri(source)
+		if err != nil {
+			return nil, err
+		}
+		spec = s
+	} else {
+		mi, err := metainfo.LoadFromFile(source)
+		if err != nil {
+			return nil, fmt.Errorf("loading torrent file: %w", err)
+		}
+		spec = torrent.TorrentSpecFromMetaInfo(mi)
 	}
-	mi, err := metainfo.LoadFromFile(source)
-	if err != nil {
-		return nil, fmt.Errorf("loading torrent file: %w", err)
+	// A degenerate/malformed source (e.g. a magnet link whose btih is
+	// all zeros) parses without error but yields a zero info hash, which
+	// anacrolix/torrent's AddTorrentSpec panics on rather than erroring —
+	// and since a panic here would take down the whole daemon process
+	// (see startTorrent's caller), reject it cleanly up front instead.
+	if spec.InfoHash.IsZero() {
+		return nil, fmt.Errorf("invalid torrent source: empty/zero info hash")
 	}
-	return torrent.TorrentSpecFromMetaInfo(mi), nil
+	return spec, nil
 }
 
 // Pause drops the torrent from the client, halting network activity.

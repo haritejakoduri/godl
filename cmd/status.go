@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/progress"
@@ -13,6 +14,7 @@ import (
 	"github.com/muesli/termenv"
 	"github.com/spf13/cobra"
 
+	"godl/internal/connections"
 	"godl/internal/daemon"
 	"godl/internal/paths"
 	"godl/internal/store"
@@ -62,6 +64,7 @@ type statusModel struct {
 	jobs      []*daemon.JobView
 	err       error
 	statusMsg string
+	width     int // last known terminal width, for responsive column sizing
 
 	// confirmRemove holds a pending "d"/"D" keypress awaiting a y/N
 	// answer — remove (especially with purge) is a step more
@@ -74,6 +77,11 @@ type statusModel struct {
 	// alongside confirmRemove, following the same overlay-over-the-
 	// existing-table convention rather than a separate full-screen mode.
 	newJob *newJobState
+
+	// webdavBrowse holds in-progress "browse a saved WebDAV connection"
+	// state, or is nil when the overlay isn't showing — same
+	// overlay-over-the-table convention as newJob/confirmRemove.
+	webdavBrowse *webdavBrowseState
 }
 
 type pendingRemove struct {
@@ -84,14 +92,16 @@ type pendingRemove struct {
 type newJobStep int
 
 const (
-	newJobPickType newJobStep = iota
+	newJobPickType   newJobStep = iota
+	newJobPickPreset            // social only — skipped for url/torrent
 	newJobEnterLink
 )
 
 type newJobState struct {
-	step      newJobStep
-	typeIndex int
-	input     textinput.Model
+	step        newJobStep
+	typeIndex   int
+	presetIndex int // into socialPresets, social jobs only
+	input       textinput.Model
 }
 
 // newJobTypes are the job types the TUI can start directly, in the
@@ -106,23 +116,69 @@ var newJobTypes = []struct {
 	{"Torrent — magnet link or .torrent file", daemon.CmdAddTorrent},
 }
 
+// fixedColumns are every table column except Path and Source, which grow
+// or shrink with the terminal width instead of holding a constant size —
+// see columnsForWidth.
+var fixedColumns = []table.Column{
+	{Title: "ID", Width: 9},
+	{Title: "Type", Width: 8},
+	{Title: "Status", Width: 10},
+	{Title: "Progress", Width: 24},
+	{Title: "Speed", Width: 12},
+	{Title: "ETA", Width: 8},
+}
+
+// minPathWidth/minSourceWidth are floors for the two variable-width
+// columns — narrow enough to still fit in a small terminal without the
+// table itself needing to horizontally scroll.
+const (
+	minPathWidth   = 16
+	minSourceWidth = 20
+	numColumns     = 8 // fixedColumns + Path + Source
+	// bubbles/table pads every cell 1 space on each side (see
+	// table.DefaultStyles), on top of the column's own Width.
+	perColumnPadding = 2
+)
+
+// columnsForWidth builds the table's columns for a terminal width chars
+// wide, giving Path and Source (a local filesystem path and a URL/
+// magnet/file source respectively — both often too long to fit in a
+// fixed-width column without heavy truncation) whatever room is left
+// over after the fixed columns and per-cell padding, instead of a
+// constant width that either wastes space on a wide terminal or gets
+// truncated hard on a narrow one. Source gets more of the extra room
+// than Path, since links tend to run longer than local paths.
+func columnsForWidth(width int) []table.Column {
+	fixedWidth := 0
+	for _, c := range fixedColumns {
+		fixedWidth += c.Width
+	}
+	avail := width - fixedWidth - numColumns*perColumnPadding
+	pathW, sourceW := minPathWidth, minSourceWidth
+	if extra := avail - pathW - sourceW; extra > 0 {
+		pathW += extra * 2 / 5
+		sourceW += extra - extra*2/5
+	}
+	cols := make([]table.Column, 0, numColumns)
+	cols = append(cols, fixedColumns...)
+	cols = append(cols, table.Column{Title: "Path", Width: pathW}, table.Column{Title: "Source", Width: sourceW})
+	return cols
+}
+
 func newStatusModel() statusModel {
 	ctx, cancel := context.WithCancel(context.Background())
 	snapCh, errCh := daemon.Subscribe(ctx)
 
-	columns := []table.Column{
-		{Title: "ID", Width: 9},
-		{Title: "Type", Width: 8},
-		{Title: "Status", Width: 10},
-		{Title: "Progress", Width: 24},
-		{Title: "Speed", Width: 12},
-		{Title: "ETA", Width: 8},
-		{Title: "Source", Width: 36},
-	}
-	t := table.New(table.WithColumns(columns), table.WithFocused(true), table.WithHeight(15))
+	t := table.New(table.WithColumns(columnsForWidth(0)), table.WithFocused(true), table.WithHeight(15))
 	styles := table.DefaultStyles()
 	styles.Header = styles.Header.Bold(true)
-	styles.Selected = styles.Selected.Bold(true).Foreground(lipgloss.Color("0")).Background(lipgloss.Color("6"))
+	// Fixed hex, not ANSI palette indices ("0"/"6"): those map to
+	// whatever the terminal's own theme has assigned them, and on a lot
+	// of terminals (Windows Terminal/PowerShell in particular) a
+	// re-themed index 0 can land close enough to index 6 that the
+	// selected row's text becomes unreadable. Explicit hex colors
+	// render the same guaranteed-contrast pairing everywhere.
+	styles.Selected = styles.Selected.Bold(true).Foreground(lipgloss.Color("#0B0B0B")).Background(lipgloss.Color("#5FD6C9"))
 	t.SetStyles(styles)
 
 	// bubbles/table truncates cells with go-runewidth, which doesn't parse
@@ -173,21 +229,29 @@ func doRemove(jobID string, purge bool) tea.Cmd {
 func buildAddRequest(apiCmd, source string) (daemon.Request, error) {
 	switch apiCmd {
 	case daemon.CmdAddURL:
-		output, err := resolveOutputPath(filenameFromURL(source))
+		dir, err := paths.DownloadsDir()
+		if err != nil {
+			return daemon.Request{}, err
+		}
+		output, err := resolveOutputPath(filepath.Join(dir, filenameFromURL(source)))
 		if err != nil {
 			return daemon.Request{}, err
 		}
 		return daemon.Request{Cmd: apiCmd, Source: source, Output: output, Concurrency: 4}, nil
 
 	case daemon.CmdAddSocial:
-		output, err := resolveOutputPath(".")
+		dir, err := paths.DownloadsDir()
+		if err != nil {
+			return daemon.Request{}, err
+		}
+		output, err := resolveOutputPath(dir)
 		if err != nil {
 			return daemon.Request{}, err
 		}
 		return daemon.Request{Cmd: apiCmd, Source: source, Output: output}, nil
 
 	case daemon.CmdAddTorrent:
-		def, err := paths.TorrentDataDir()
+		def, err := paths.DownloadsDir()
 		if err != nil {
 			return daemon.Request{}, err
 		}
@@ -209,7 +273,12 @@ func buildAddRequest(apiCmd, source string) (daemon.Request, error) {
 	}
 }
 
-func startNewJob(apiCmd, source string) tea.Cmd {
+// startNewJob starts apiCmd's job for source. format is only meaningful
+// for CmdAddSocial (the chosen preset's yt-dlp format selector, or ""
+// for the default); buildAddRequest never sets Format for url/torrent,
+// and the daemon ignores Format for those job types, so passing it
+// through unconditionally is harmless for them.
+func startNewJob(apiCmd, source, format string) tea.Cmd {
 	return func() tea.Msg {
 		if err := daemon.EnsureRunning(); err != nil {
 			return actionDoneMsg{err}
@@ -218,6 +287,7 @@ func startNewJob(apiCmd, source string) tea.Cmd {
 		if err != nil {
 			return actionDoneMsg{err}
 		}
+		req.Format = format
 		_, err = daemon.Call(req)
 		return actionDoneMsg{err}
 	}
@@ -230,6 +300,8 @@ func (m statusModel) Init() tea.Cmd {
 func (m statusModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.table.SetColumns(columnsForWidth(msg.Width))
 		m.table.SetWidth(msg.Width)
 		if h := msg.Height - 7; h > 3 {
 			m.table.SetHeight(h)
@@ -257,9 +329,41 @@ func (m statusModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case webdavListedMsg:
+		if m.webdavBrowse != nil {
+			m.webdavBrowse.loading = false
+			m.webdavBrowse.err = ""
+			m.webdavBrowse.path = msg.path
+			m.webdavBrowse.entries = msg.entries
+			m.webdavBrowse.cursor = 0
+			m.webdavBrowse.cache[msg.path] = msg.entries
+		}
+		return m, nil
+
+	case webdavListErrMsg:
+		if m.webdavBrowse != nil {
+			m.webdavBrowse.loading = false
+			m.webdavBrowse.err = msg.err.Error()
+		}
+		return m, nil
+
+	case webdavStartedMsg:
+		switch {
+		case msg.err != nil && msg.n > 0:
+			m.statusMsg = fmt.Sprintf("started %d download(s), then: %s", msg.n, msg.err.Error())
+		case msg.err != nil:
+			m.statusMsg = "error: " + msg.err.Error()
+		default:
+			m.statusMsg = fmt.Sprintf("Started %d download(s) -> %s. Track them with \"godl status\"/\"godl list\".", msg.n, shortenHome(msg.output))
+		}
+		return m, nil
+
 	case tea.KeyMsg:
 		if m.newJob != nil {
 			return m.updateNewJob(msg)
+		}
+		if m.webdavBrowse != nil {
+			return m.updateWebDAVBrowse(msg)
 		}
 		if m.confirmRemove != nil {
 			pending := *m.confirmRemove
@@ -284,6 +388,18 @@ func (m statusModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			ti.CharLimit = 2048
 			ti.Width = 60
 			m.newJob = &newJobState{step: newJobPickType, input: ti}
+			return m, nil
+		case "w":
+			conns, err := connections.List()
+			if err != nil {
+				m.statusMsg = "error: " + err.Error()
+				return m, nil
+			}
+			if len(conns) == 0 {
+				m.statusMsg = `No saved connections. Run "godl connection add <name> --url ..." first.`
+				return m, nil
+			}
+			m.webdavBrowse = &webdavBrowseState{step: webdavPickConn, conns: conns}
 			return m, nil
 		case "p", "r", "x", "R":
 			row := m.table.SelectedRow()
@@ -333,16 +449,41 @@ func (m statusModel) updateNewJob(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.newJob.typeIndex++
 			}
 		case "enter":
-			m.newJob.step = newJobEnterLink
+			if newJobTypes[m.newJob.typeIndex].cmd == daemon.CmdAddSocial {
+				m.newJob.step = newJobPickPreset
+			} else {
+				m.newJob.step = newJobEnterLink
+			}
 		case "esc":
 			m.newJob = nil
+		}
+		return m, nil
+
+	case newJobPickPreset:
+		switch msg.String() {
+		case "up", "k":
+			if m.newJob.presetIndex > 0 {
+				m.newJob.presetIndex--
+			}
+		case "down", "j":
+			if m.newJob.presetIndex < len(socialPresets)-1 {
+				m.newJob.presetIndex++
+			}
+		case "enter":
+			m.newJob.step = newJobEnterLink
+		case "esc":
+			m.newJob.step = newJobPickType
 		}
 		return m, nil
 
 	default: // newJobEnterLink
 		switch msg.String() {
 		case "esc":
-			m.newJob.step = newJobPickType
+			if newJobTypes[m.newJob.typeIndex].cmd == daemon.CmdAddSocial {
+				m.newJob.step = newJobPickPreset
+			} else {
+				m.newJob.step = newJobPickType
+			}
 			return m, nil
 		case "enter":
 			link := strings.TrimSpace(m.newJob.input.Value())
@@ -350,9 +491,13 @@ func (m statusModel) updateNewJob(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			apiCmd := newJobTypes[m.newJob.typeIndex].cmd
+			format := ""
+			if apiCmd == daemon.CmdAddSocial {
+				format = socialPresets[m.newJob.presetIndex].Format
+			}
 			m.newJob = nil
 			m.statusMsg = "starting..."
-			return m, startNewJob(apiCmd, link)
+			return m, startNewJob(apiCmd, link, format)
 		default:
 			var cmd tea.Cmd
 			m.newJob.input, cmd = m.newJob.input.Update(msg)
@@ -387,7 +532,8 @@ func (m *statusModel) rebuildRows() {
 			bar,
 			humanSpeed(j.SpeedBps),
 			humanETA(j.ETASeconds, j.Status),
-			truncate(j.Source, 36),
+			shortenHome(j.Output),
+			shortenHome(j.Source),
 		})
 	}
 	m.table.SetRows(rows)
@@ -406,6 +552,8 @@ func (m statusModel) View() string {
 	switch {
 	case m.newJob != nil:
 		b.WriteString(m.viewNewJob())
+	case m.webdavBrowse != nil:
+		b.WriteString(m.viewWebDAVBrowse())
 	case m.statusMsg != "":
 		b.WriteString(statStyle.Render(m.statusMsg))
 		b.WriteString("\n")
@@ -416,12 +564,13 @@ func (m statusModel) View() string {
 		b.WriteString(errStyle.Render(m.selectedJobError()))
 		b.WriteString("\n")
 	}
-	b.WriteString(helpStyle.Render("p pause  r resume  x cancel  R retry  d remove  D remove+delete file  n new download  ↑/↓ navigate  q quit"))
+	b.WriteString(helpStyle.Render("p pause  r resume  x cancel  R retry  d remove  D remove+delete file  n new download  w browse webdav  ↑/↓ navigate  q quit"))
 	return b.String()
 }
 
 func (m statusModel) viewNewJob() string {
-	if m.newJob.step == newJobPickType {
+	switch m.newJob.step {
+	case newJobPickType:
 		var b strings.Builder
 		b.WriteString(statStyle.Render("Start a new download — pick a type:"))
 		b.WriteString("\n")
@@ -434,13 +583,32 @@ func (m statusModel) viewNewJob() string {
 		}
 		b.WriteString(helpStyle.Render("↑/↓ select  enter next  esc cancel"))
 		return b.String()
+
+	case newJobPickPreset:
+		var b strings.Builder
+		b.WriteString(statStyle.Render("Social/media — pick a quality preset:"))
+		b.WriteString("\n")
+		for i, p := range socialPresets {
+			cursor := "  "
+			if i == m.newJob.presetIndex {
+				cursor = "> "
+			}
+			b.WriteString(fmt.Sprintf("%s%-8s %s\n", cursor, p.Name, p.Description))
+		}
+		b.WriteString(helpStyle.Render("↑/↓ select  enter next  esc back"))
+		return b.String()
+
+	default: // newJobEnterLink
+		label := newJobTypes[m.newJob.typeIndex].label
+		if newJobTypes[m.newJob.typeIndex].cmd == daemon.CmdAddSocial {
+			label += " [" + socialPresets[m.newJob.presetIndex].Name + "]"
+		}
+		var b strings.Builder
+		b.WriteString(statStyle.Render(fmt.Sprintf("%s — paste the link:", label)))
+		b.WriteString("\n")
+		b.WriteString(m.newJob.input.View())
+		b.WriteString("\n")
+		b.WriteString(helpStyle.Render("enter start  esc back"))
+		return b.String()
 	}
-	label := newJobTypes[m.newJob.typeIndex].label
-	var b strings.Builder
-	b.WriteString(statStyle.Render(fmt.Sprintf("%s — paste the link:", label)))
-	b.WriteString("\n")
-	b.WriteString(m.newJob.input.View())
-	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("enter start  esc back"))
-	return b.String()
 }

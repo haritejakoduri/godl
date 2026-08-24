@@ -12,10 +12,10 @@ import (
 
 var rootCmd = &cobra.Command{
 	Use:   "godl",
-	Short: "A terminal download manager for direct links, torrents, and social/media sites",
-	Long: `godl downloads direct HTTP(S) links, torrents, and yt-dlp-supported
-social/media links through a background daemon, so jobs keep running
-after you close the terminal.
+	Short: "A terminal download manager for direct links, torrents, social/media sites, and WebDAV",
+	Long: `godl downloads direct HTTP(S) links, torrents, yt-dlp-supported
+social/media links, and files/folders from WebDAV servers, through a
+background daemon, so jobs keep running after you close the terminal.
 
 Run "godl" with no arguments for a live TUI dashboard (start new
 downloads, track progress), or use the pause/resume/retry/cancel/
@@ -41,6 +41,8 @@ func init() {
 		urlCmd,
 		socialCmd,
 		torrentCmd,
+		webdavCmd,
+		connectionCmd,
 		statusCmd,
 		pauseCmd,
 		resumeCmd,

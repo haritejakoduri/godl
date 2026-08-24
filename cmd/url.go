@@ -14,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"godl/internal/daemon"
+	"godl/internal/paths"
 	"godl/internal/store"
 )
 
@@ -27,7 +28,11 @@ var urlCmd = &cobra.Command{
 		concurrency, _ := cmd.Flags().GetInt("concurrency")
 
 		if output == "" {
-			output = filenameFromURL(link)
+			dir, err := paths.DownloadsDir()
+			if err != nil {
+				return err
+			}
+			output = filepath.Join(dir, filenameFromURL(link))
 		}
 		abs, err := resolveOutputPath(output)
 		if err != nil {
@@ -272,6 +277,6 @@ func extByContentType(contentType string) string {
 }
 
 func init() {
-	urlCmd.Flags().StringP("output", "o", "", "output file path (default: derived from the URL, or from the server's Content-Disposition/Content-Type if the URL alone doesn't give us a usable name)")
+	urlCmd.Flags().StringP("output", "o", "", "output file path (default: your Downloads folder, with a name derived from the URL or the server's Content-Disposition/Content-Type)")
 	urlCmd.Flags().IntP("concurrency", "c", 4, "number of concurrent chunks (ignored if the server can't do ranges)")
 }

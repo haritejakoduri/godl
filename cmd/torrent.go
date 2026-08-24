@@ -21,7 +21,7 @@ var torrentCmd = &cobra.Command{
 		output, _ := cmd.Flags().GetString("output")
 
 		if output == "" {
-			def, err := paths.TorrentDataDir()
+			def, err := paths.DownloadsDir()
 			if err != nil {
 				return err
 			}
@@ -58,5 +58,5 @@ var torrentCmd = &cobra.Command{
 }
 
 func init() {
-	torrentCmd.Flags().StringP("output", "o", "", "output directory (default: godl's data dir under torrents/)")
+	torrentCmd.Flags().StringP("output", "o", "", "output directory (default: your Downloads folder)")
 }

@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"godl/internal/daemon"
+	"godl/internal/paths"
 	"godl/internal/ytdlp"
 )
 
@@ -127,7 +128,11 @@ ffmpeg, needed to merge separately-downloaded video+audio streams.`,
 			format = p.Format
 		}
 		if output == "" {
-			output = "."
+			dir, err := paths.DownloadsDir()
+			if err != nil {
+				return err
+			}
+			output = dir
 		}
 		abs, err := resolveOutputPath(output)
 		if err != nil {
@@ -199,7 +204,7 @@ func runListFormats(link string) error {
 }
 
 func init() {
-	socialCmd.Flags().StringP("output", "o", ".", "output directory")
+	socialCmd.Flags().StringP("output", "o", "", "output directory (default: your Downloads folder)")
 	socialCmd.Flags().StringP("format", "f", "", `yt-dlp format selector (passed through as -f), e.g. "bv*+ba" or "bv*[height<=1080]+ba" — not together with -p`)
 	socialCmd.Flags().StringP("preset", "p", "", "quality preset (see --list-presets); not together with -f")
 	socialCmd.Flags().BoolP("wait", "w", false, "stay attached and stream yt-dlp's output live instead of returning immediately")

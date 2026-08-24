@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/progress"
@@ -187,21 +188,29 @@ func doRemove(jobID string, purge bool) tea.Cmd {
 func buildAddRequest(apiCmd, source string) (daemon.Request, error) {
 	switch apiCmd {
 	case daemon.CmdAddURL:
-		output, err := resolveOutputPath(filenameFromURL(source))
+		dir, err := paths.DownloadsDir()
+		if err != nil {
+			return daemon.Request{}, err
+		}
+		output, err := resolveOutputPath(filepath.Join(dir, filenameFromURL(source)))
 		if err != nil {
 			return daemon.Request{}, err
 		}
 		return daemon.Request{Cmd: apiCmd, Source: source, Output: output, Concurrency: 4}, nil
 
 	case daemon.CmdAddSocial:
-		output, err := resolveOutputPath(".")
+		dir, err := paths.DownloadsDir()
+		if err != nil {
+			return daemon.Request{}, err
+		}
+		output, err := resolveOutputPath(dir)
 		if err != nil {
 			return daemon.Request{}, err
 		}
 		return daemon.Request{Cmd: apiCmd, Source: source, Output: output}, nil
 
 	case daemon.CmdAddTorrent:
-		def, err := paths.TorrentDataDir()
+		def, err := paths.DownloadsDir()
 		if err != nil {
 			return daemon.Request{}, err
 		}

@@ -87,6 +87,17 @@ godl rm <job-id> --purge    # drop from the list AND delete the downloaded file
 Job state and logs live under `~/.local/share/godl` (override with
 `GODL_DATA_DIR`).
 
+Every download — `url`, `social`, `torrent`, `webdav`, from the CLI or
+the TUI's `n` wizard — defaults to your **actual system Downloads
+folder** when you don't pass `-o`, the same place a browser or any
+other download manager would put things: the real Windows
+known-folder path (which a user can relocate to another drive via
+Explorer) on Windows, your Linux desktop's configured XDG user-dirs
+location (which can be relocated, or in a non-English locale renamed
+entirely) on Linux, and `~/Downloads` — already correct there — on
+macOS. `GODL_DOWNLOADS_DIR` overrides all of that if you want
+downloads to land somewhere else by default.
+
 ### `godl url` — direct HTTP(S) downloads
 
 Resumable, and splits into concurrent chunks when the server supports
@@ -157,15 +168,8 @@ godl connection remove mynas
 `godl webdav <connection> <remote-path> [-o output-dir]` then downloads
 from it: if `<remote-path>` is a file, just that file is fetched; if
 it's a folder, the whole folder is downloaded recursively, preserving
-its directory structure under `-o`. Without `-o`, files land straight
-in your **actual system Downloads folder** — the same place a browser
-or any other download manager would put them, resolved properly rather
-than just guessed at `~/Downloads`: the real Windows known-folder path
-(which a user can relocate to another drive via Explorer) on Windows,
-your Linux desktop's configured XDG user-dirs location (which can be
-relocated or, in a non-English locale, renamed entirely) on Linux, and
-`~/Downloads` — already correct there — on macOS. `GODL_DOWNLOADS_DIR`
-overrides all of that if you want somewhere else. The TUI's WebDAV
+its directory structure under `-o`. Without `-o`, it uses the same
+Downloads default as every other command above. The TUI's WebDAV
 browser (`w` in `godl status`) shows exactly where files will land
 right in the overlay, and confirms the destination again once a
 download starts.

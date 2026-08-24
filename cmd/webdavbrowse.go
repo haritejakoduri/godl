@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"os"
 	"path"
 	"sort"
 	"strings"
@@ -37,11 +38,12 @@ type webdavBrowseState struct {
 	connIndex int
 
 	// step 2: browsing.
-	connName string
-	client   *webdav.Client
-	path     string // current remote directory, always starting with "/"
-	entries  []webdav.Entry
-	cursor   int
+	connName  string
+	client    *webdav.Client
+	outputDir string // local destination downloads from this session land in
+	path      string // current remote directory, always starting with "/"
+	entries   []webdav.Entry
+	cursor    int
 	// selected holds entry paths queued for bulk download — both files
 	// and folders can be selected together, since each becomes its own
 	// daemon job regardless (a folder's job downloads it recursively).
@@ -64,8 +66,9 @@ type webdavListedMsg struct {
 }
 type webdavListErrMsg struct{ err error }
 type webdavStartedMsg struct {
-	n   int
-	err error
+	n      int
+	output string
+	err    error
 }
 
 // listWebDAVDir lists one directory's immediate children, dirs first
@@ -90,18 +93,14 @@ func listWebDAVDir(client *webdav.Client, dir string) tea.Cmd {
 }
 
 // startWebDAVDownloads queues one background daemon job per remote
-// path, all against the same connection and default output directory —
-// same as "godl webdav <conn> <path>" run once per selection.
-func startWebDAVDownloads(connName string, remotePaths []string) tea.Cmd {
+// path, all against the same connection and outputDir — same as
+// "godl webdav <conn> <path> -o <outputDir>" run once per selection.
+func startWebDAVDownloads(connName, outputDir string, remotePaths []string) tea.Cmd {
 	return func() tea.Msg {
 		if err := daemon.EnsureRunning(); err != nil {
 			return webdavStartedMsg{err: err}
 		}
-		def, err := paths.WebDAVDataDir()
-		if err != nil {
-			return webdavStartedMsg{err: err}
-		}
-		output, err := resolveOutputPath(def)
+		output, err := resolveOutputPath(outputDir)
 		if err != nil {
 			return webdavStartedMsg{err: err}
 		}
@@ -121,7 +120,7 @@ func startWebDAVDownloads(connName string, remotePaths []string) tea.Cmd {
 			}
 			started++
 		}
-		return webdavStartedMsg{n: started, err: firstErr}
+		return webdavStartedMsg{n: started, output: output, err: firstErr}
 	}
 }
 
@@ -162,8 +161,15 @@ func (m statusModel) updateWebDAVBrowse(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.statusMsg = "error: " + err.Error()
 				return m, nil
 			}
+			outputDir, err := paths.DownloadsDir()
+			if err != nil {
+				m.webdavBrowse = nil
+				m.statusMsg = "error: " + err.Error()
+				return m, nil
+			}
 			wb.connName = conn.Name
 			wb.client = client
+			wb.outputDir = outputDir
 			wb.selected = map[string]bool{}
 			wb.cache = map[string][]webdav.Entry{}
 			wb.step = webdavBrowsing
@@ -217,10 +223,10 @@ func (m statusModel) updateWebDAVBrowse(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if len(targets) == 0 {
 			return m, nil
 		}
-		connName := wb.connName
+		connName, outputDir := wb.connName, wb.outputDir
 		m.webdavBrowse = nil
 		m.statusMsg = "starting..."
-		return m, startWebDAVDownloads(connName, targets)
+		return m, startWebDAVDownloads(connName, outputDir, targets)
 	}
 	return m, nil
 }
@@ -249,6 +255,8 @@ func (m statusModel) viewWebDAVBrowse() string {
 	}
 
 	b.WriteString(statStyle.Render(fmt.Sprintf("%s:%s  (%d selected)", wb.connName, wb.path, len(wb.selected))))
+	b.WriteString("\n")
+	b.WriteString(helpStyle.Render("downloading to " + shortenHome(wb.outputDir)))
 	b.WriteString("\n")
 
 	switch {
@@ -291,4 +299,23 @@ func (m statusModel) viewWebDAVBrowse() string {
 
 	b.WriteString(helpStyle.Render("↑/↓ move  enter open folder  space select  d download selected (or current)  ←/backspace up  esc cancel"))
 	return b.String()
+}
+
+// shortenHome renders p with the user's home directory prefix replaced
+// by "~", the way most CLI tools display a path back to the user —
+// "/home/alice/Downloads" reads as noise next to "~/Downloads".
+// Falls back to p unchanged if the home directory can't be determined
+// or isn't actually a prefix of p.
+func shortenHome(p string) string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return p
+	}
+	if p == home {
+		return "~"
+	}
+	if rest, ok := strings.CutPrefix(p, home+string(os.PathSeparator)); ok {
+		return "~" + string(os.PathSeparator) + rest
+	}
+	return p
 }

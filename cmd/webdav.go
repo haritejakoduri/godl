@@ -23,7 +23,7 @@ recursively, preserving its directory structure under -o.`,
 		output, _ := cmd.Flags().GetString("output")
 
 		if output == "" {
-			def, err := paths.WebDAVDataDir()
+			def, err := paths.DownloadsDir()
 			if err != nil {
 				return err
 			}
@@ -56,5 +56,5 @@ recursively, preserving its directory structure under -o.`,
 }
 
 func init() {
-	webdavCmd.Flags().StringP("output", "o", "", "output directory (default: godl's data dir under webdav/)")
+	webdavCmd.Flags().StringP("output", "o", "", "output directory (default: your Downloads folder)")
 }

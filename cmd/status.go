@@ -302,7 +302,7 @@ func (m statusModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case msg.err != nil:
 			m.statusMsg = "error: " + msg.err.Error()
 		default:
-			m.statusMsg = fmt.Sprintf("Started %d download(s). Track them with \"godl status\"/\"godl list\".", msg.n)
+			m.statusMsg = fmt.Sprintf("Started %d download(s) -> %s. Track them with \"godl status\"/\"godl list\".", msg.n, shortenHome(msg.output))
 		}
 		return m, nil
 

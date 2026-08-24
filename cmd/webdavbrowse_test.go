@@ -3,6 +3,7 @@ package cmd
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 
@@ -324,5 +325,41 @@ func TestWebDAVBrowseCachesVisitedDirectories(t *testing.T) {
 	}
 	if propfindCount["/dav/subdir/"] != 1 {
 		t.Errorf("PROPFIND count for /dav/subdir/ = %d, want 1 (cache should have prevented a second request)", propfindCount["/dav/subdir/"])
+	}
+}
+
+func TestShortenHome(t *testing.T) {
+	home := "/home/alice"
+	t.Setenv("HOME", home)
+
+	cases := []struct{ in, want string }{
+		{"/home/alice/Downloads", "~/Downloads"},
+		{"/home/alice/Downloads/sub", "~/Downloads/sub"},
+		{"/home/alice", "~"},
+		{"/var/other/place", "/var/other/place"},
+		{"/home/alice2/Downloads", "/home/alice2/Downloads"}, // not actually under home
+	}
+	for _, c := range cases {
+		if got := shortenHome(c.in); got != c.want {
+			t.Errorf("shortenHome(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// TestWebDAVBrowseShowsDownloadDestination verifies the browse overlay
+// displays where files will actually land, resolved once when
+// connecting (not recomputed per keypress) and shown regardless of
+// which folder the user is currently looking at.
+func TestWebDAVBrowseShowsDownloadDestination(t *testing.T) {
+	m := statusModel{webdavBrowse: &webdavBrowseState{
+		step:      webdavBrowsing,
+		connName:  "mynas",
+		outputDir: "/home/alice/Downloads",
+		path:      "/",
+		selected:  map[string]bool{},
+	}}
+	view := m.viewWebDAVBrowse()
+	if !strings.Contains(view, "/home/alice/Downloads") && !strings.Contains(view, "~/Downloads") {
+		t.Errorf("browse view doesn't show the download destination:\n%s", view)
 	}
 }

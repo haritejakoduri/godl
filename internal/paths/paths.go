@@ -102,15 +102,26 @@ func ConnectionsPath() (string, error) {
 	return filepath.Join(dir, "connections.json"), nil
 }
 
-// WebDAVDataDir returns the default base directory for WebDAV downloads
-// when the user doesn't pass -o.
-func WebDAVDataDir() (string, error) {
-	dir, err := DataDir()
+// DownloadsDir returns the default destination for WebDAV downloads
+// when the user doesn't pass -o: the OS's normal Downloads folder
+// (~/Downloads), not godl's own internal data directory — files landing
+// somewhere the user already expects to find downloads, the same as a
+// browser or any other download manager, beats a tucked-away app data
+// path. Honors GODL_DOWNLOADS_DIR for overrides (tests, containers, or
+// a host where ~/Downloads isn't the right place).
+func DownloadsDir() (string, error) {
+	if v := os.Getenv("GODL_DOWNLOADS_DIR"); v != "" {
+		if err := os.MkdirAll(v, 0o755); err != nil {
+			return "", err
+		}
+		return v, nil
+	}
+	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}
-	d := filepath.Join(dir, "webdav")
-	if err := os.MkdirAll(d, 0o700); err != nil {
+	d := filepath.Join(home, "Downloads")
+	if err := os.MkdirAll(d, 0o755); err != nil {
 		return "", err
 	}
 	return d, nil

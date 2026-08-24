@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -235,32 +236,77 @@ func normalizeDirPath(p string) string {
 	return trimmed
 }
 
+// walkConcurrency bounds how many PROPFIND requests Walk has in flight
+// at once. The tree can fan out arbitrarily wide (spawning a goroutine
+// per subdirectory found costs only a few KB of stack each, so that
+// part is unbounded), but actual network requests are capped here —
+// matching godl url's default chunk concurrency, and staying polite to
+// WebDAV servers that may not expect a flood of concurrent requests.
+const walkConcurrency = 8
+
 // Walk recursively lists every file (not directory) under root, using
 // Depth:1 PROPFIND at each level rather than Depth:infinity — many
 // WebDAV servers reject or cap infinite-depth requests on large trees.
+// Sibling and cross-level directories are listed concurrently (up to
+// walkConcurrency at once) rather than one at a time, so a deep or wide
+// tree doesn't pay for its PROPFIND round-trips serially.
 func (c *Client) Walk(ctx context.Context, root string) ([]Entry, error) {
-	var files []Entry
-	var walk func(p string) error
-	walk = func(p string) error {
-		if err := ctx.Err(); err != nil {
-			return err
+	sem := make(chan struct{}, walkConcurrency)
+	var (
+		mu       sync.Mutex
+		files    []Entry
+		firstErr error
+		wg       sync.WaitGroup
+	)
+
+	var walk func(p string)
+	walk = func(p string) {
+		defer wg.Done()
+
+		mu.Lock()
+		stop := firstErr != nil
+		mu.Unlock()
+		if stop || ctx.Err() != nil {
+			return
 		}
+
+		sem <- struct{}{}
 		children, err := c.List(ctx, p)
+		<-sem
 		if err != nil {
-			return err
+			mu.Lock()
+			if firstErr == nil {
+				firstErr = err
+			}
+			mu.Unlock()
+			return
 		}
+
+		var dirs []string
+		mu.Lock()
 		for _, e := range children {
 			if e.IsDir {
-				if err := walk(e.Path); err != nil {
-					return err
-				}
+				dirs = append(dirs, e.Path)
 			} else {
 				files = append(files, e)
 			}
 		}
-		return nil
+		mu.Unlock()
+
+		for _, d := range dirs {
+			wg.Add(1)
+			go walk(d)
+		}
 	}
-	if err := walk(root); err != nil {
+
+	wg.Add(1)
+	go walk(root)
+	wg.Wait()
+
+	if firstErr != nil {
+		return nil, firstErr
+	}
+	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	return files, nil

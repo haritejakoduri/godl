@@ -46,8 +46,16 @@ type webdavBrowseState struct {
 	// and folders can be selected together, since each becomes its own
 	// daemon job regardless (a folder's job downloads it recursively).
 	selected map[string]bool
-	loading  bool
-	err      string
+	// cache holds every directory listing already fetched this browse
+	// session, keyed by path — revisiting a folder (going back up, then
+	// back down, a common navigation pattern) is then instant instead
+	// of a fresh PROPFIND round-trip. Session-scoped only: it's
+	// discarded with the rest of webdavBrowseState on esc, so a folder
+	// that changes on the server mid-session is picked up next time the
+	// browser is opened, not stale forever.
+	cache   map[string][]webdav.Entry
+	loading bool
+	err     string
 }
 
 type webdavListedMsg struct {
@@ -117,6 +125,22 @@ func startWebDAVDownloads(connName string, remotePaths []string) tea.Cmd {
 	}
 }
 
+// openWebDAVDir navigates to target, using this session's cache if
+// target's already been listed (instant, no round-trip) or kicking off
+// a fresh PROPFIND otherwise.
+func (m statusModel) openWebDAVDir(target string) tea.Cmd {
+	wb := m.webdavBrowse
+	if cached, ok := wb.cache[target]; ok {
+		wb.path = target
+		wb.entries = cached
+		wb.cursor = 0
+		wb.err = ""
+		return nil
+	}
+	wb.loading = true
+	return listWebDAVDir(wb.client, target)
+}
+
 func (m statusModel) updateWebDAVBrowse(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	wb := m.webdavBrowse
 
@@ -141,6 +165,7 @@ func (m statusModel) updateWebDAVBrowse(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			wb.connName = conn.Name
 			wb.client = client
 			wb.selected = map[string]bool{}
+			wb.cache = map[string][]webdav.Entry{}
 			wb.step = webdavBrowsing
 			wb.loading = true
 			return m, listWebDAVDir(client, "/")
@@ -164,14 +189,12 @@ func (m statusModel) updateWebDAVBrowse(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "left", "h", "backspace":
 		if !wb.loading && wb.path != "/" {
-			wb.loading = true
-			return m, listWebDAVDir(wb.client, path.Dir(strings.TrimSuffix(wb.path, "/")))
+			return m, m.openWebDAVDir(path.Dir(strings.TrimSuffix(wb.path, "/")))
 		}
 	case "enter":
 		if !wb.loading && wb.cursor < len(wb.entries) {
 			if e := wb.entries[wb.cursor]; e.IsDir {
-				wb.loading = true
-				return m, listWebDAVDir(wb.client, e.Path)
+				return m, m.openWebDAVDir(e.Path)
 			}
 		}
 	case " ":

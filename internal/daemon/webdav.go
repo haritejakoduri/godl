@@ -8,12 +8,21 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"godl/internal/connections"
 	"godl/internal/store"
 	"godl/internal/webdav"
 )
+
+// webdavDownloadConcurrency bounds how many files a folder job downloads
+// at once — matches godl url's default chunk concurrency (-c 4), so a
+// folder of many small-to-medium files moves roughly as fast as a
+// single large one split into that many chunks, instead of paying for
+// each file's round-trip and transfer serially.
+const webdavDownloadConcurrency = 4
 
 // splitWebDAVSource parses the "<connection-name>:<remote-path>" form
 // createWebDAVSource builds — see cmd/webdav.go.
@@ -94,21 +103,20 @@ func (d *Daemon) startWebDAV(j *store.Job) {
 			alreadyDone[p] = true
 		}
 
-		var cumulative int64
-		d.reportProgress(j.ID, cumulative, total)
+		// cumulative is updated concurrently (each in-flight file's own
+		// progress callback adds its delta), so every read/write of it
+		// past this point goes through the atomic.
+		var cumulative atomic.Int64
 
+		// Skipping already-downloaded files is cheap (a stat, not a
+		// request) and doesn't need to compete for the download
+		// semaphore below, so it's done up front, sequentially.
+		pending := make([]webdav.Entry, 0, len(files))
 		for _, f := range files {
-			if ctx.Err() != nil {
-				d.finishJob(j.ID, cumulative, false, context.Canceled)
-				return
-			}
-
 			localPath := webdavLocalPath(j.Output, remotePath, f.Path, root.IsDir)
-
 			if alreadyDone[localPath] {
 				if fi, serr := os.Stat(localPath); serr == nil {
-					cumulative += fi.Size()
-					d.reportProgress(j.ID, cumulative, total)
+					cumulative.Add(fi.Size())
 					continue
 				}
 				// Recorded as already downloaded, but the local file is
@@ -117,24 +125,64 @@ func (d *Daemon) startWebDAV(j *store.Job) {
 				// it again rather than silently treating a missing file
 				// as done.
 			}
+			pending = append(pending, f)
+		}
+		d.reportProgress(j.ID, cumulative.Load(), total)
 
-			base := cumulative
-			written, derr := client.Download(ctx, f.Path, localPath, func(done, _ int64) {
-				d.reportProgress(j.ID, base+done, total)
-			})
-			cumulative = base + written
-			if derr != nil {
-				if errors.Is(derr, context.Canceled) || ctx.Err() != nil {
-					d.finishJob(j.ID, cumulative, false, context.Canceled)
+		// Download up to webdavDownloadConcurrency files at once —
+		// otherwise a folder of many files pays for each one's
+		// round-trip and transfer serially, the same problem godl url's
+		// chunked concurrency solves for a single large file.
+		sem := make(chan struct{}, webdavDownloadConcurrency)
+		var wg sync.WaitGroup
+		var mu sync.Mutex
+		var firstErr error
+
+		for _, f := range pending {
+			if ctx.Err() != nil {
+				break
+			}
+			wg.Add(1)
+			sem <- struct{}{}
+			go func() {
+				defer wg.Done()
+				defer func() { <-sem }()
+
+				localPath := webdavLocalPath(j.Output, remotePath, f.Path, root.IsDir)
+				var lastDone int64
+				written, derr := client.Download(ctx, f.Path, localPath, func(done, _ int64) {
+					newCum := cumulative.Add(done - lastDone)
+					lastDone = done
+					d.reportProgress(j.ID, newCum, total)
+				})
+				if derr != nil {
+					mu.Lock()
+					if firstErr == nil {
+						firstErr = fmt.Errorf("downloading %s: %w", f.Path, derr)
+						cancel() // stop the rest of this job's in-flight downloads too
+					}
+					mu.Unlock()
 					return
 				}
-				d.finishJob(j.ID, cumulative, false, fmt.Errorf("downloading %s: %w", f.Path, derr))
-				return
-			}
-			d.st.AppendResolvedPath(context.Background(), j.ID, localPath)
+				if delta := written - lastDone; delta != 0 {
+					cumulative.Add(delta)
+				}
+				d.st.AppendResolvedPath(context.Background(), j.ID, localPath)
+			}()
 		}
+		wg.Wait()
 
-		d.finishJob(j.ID, cumulative, true, nil)
+		final := cumulative.Load()
+		switch {
+		case firstErr != nil && (errors.Is(firstErr, context.Canceled) || ctx.Err() != nil):
+			d.finishJob(j.ID, final, false, context.Canceled)
+		case firstErr != nil:
+			d.finishJob(j.ID, final, false, firstErr)
+		case ctx.Err() != nil:
+			d.finishJob(j.ID, final, false, context.Canceled)
+		default:
+			d.finishJob(j.ID, final, true, nil)
+		}
 	}()
 }
 

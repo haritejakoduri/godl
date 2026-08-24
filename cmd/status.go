@@ -278,6 +278,7 @@ func (m statusModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.webdavBrowse.path = msg.path
 			m.webdavBrowse.entries = msg.entries
 			m.webdavBrowse.cursor = 0
+			m.webdavBrowse.cache[msg.path] = msg.entries
 		}
 		return m, nil
 

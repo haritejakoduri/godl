@@ -3,6 +3,7 @@ package cmd
 import (
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -215,5 +216,113 @@ func TestWebDAVBrowseBackspaceGoesToParentNotSameDir(t *testing.T) {
 	}
 	if listed.path != "/" {
 		t.Errorf("backspace from /sub/ listed %q, want parent \"/\"", listed.path)
+	}
+}
+
+// TestWebDAVBrowseCachesVisitedDirectories verifies that revisiting a
+// directory already listed this session (going back up, then back
+// down again — an extremely common browsing pattern) reuses the
+// cached listing instead of issuing another PROPFIND: the returned
+// tea.Cmd should be nil (nothing to run), and state should update
+// synchronously.
+func TestWebDAVBrowseCachesVisitedDirectories(t *testing.T) {
+	var mu sync.Mutex
+	propfindCount := map[string]int{}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/dav/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "PROPFIND" {
+			http.NotFound(w, r)
+			return
+		}
+		mu.Lock()
+		propfindCount["/dav/"]++
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/xml")
+		w.WriteHeader(http.StatusMultiStatus)
+		w.Write([]byte(`<?xml version="1.0"?><D:multistatus xmlns:D="DAV:">
+  <D:response><D:href>/dav/</D:href><D:propstat><D:prop><D:resourcetype><D:collection/></D:resourcetype></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response>
+  <D:response><D:href>/dav/subdir/</D:href><D:propstat><D:prop><D:resourcetype><D:collection/></D:resourcetype></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response>
+</D:multistatus>`))
+	})
+	mux.HandleFunc("/dav/subdir/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "PROPFIND" {
+			http.NotFound(w, r)
+			return
+		}
+		mu.Lock()
+		propfindCount["/dav/subdir/"]++
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/xml")
+		w.WriteHeader(http.StatusMultiStatus)
+		w.Write([]byte(`<?xml version="1.0"?><D:multistatus xmlns:D="DAV:">
+  <D:response><D:href>/dav/subdir/</D:href><D:propstat><D:prop><D:resourcetype><D:collection/></D:resourcetype></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response>
+</D:multistatus>`))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	client, err := webdav.New(srv.URL+"/dav/", "", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	m := statusModel{webdavBrowse: &webdavBrowseState{
+		step:     webdavBrowsing,
+		connName: "mynas",
+		client:   client,
+		path:     "/",
+		selected: map[string]bool{},
+		cache:    map[string][]webdav.Entry{},
+	}}
+
+	// Root listing: real network round-trip.
+	msg := listWebDAVDir(client, "/")()
+	mm, _ := m.Update(msg)
+	m = mm.(statusModel)
+	if m.webdavBrowse.path != "/" || len(m.webdavBrowse.entries) != 1 {
+		t.Fatalf("root listing didn't populate as expected: path=%q entries=%v", m.webdavBrowse.path, m.webdavBrowse.entries)
+	}
+
+	// Descend into subdir: cache miss, real round-trip.
+	mm, cmd := m.updateWebDAVBrowse(key("enter"))
+	m = mm.(statusModel)
+	if cmd == nil {
+		t.Fatal("first descent into /subdir/ should be a cache miss and return a command")
+	}
+	msg = cmd()
+	mm, _ = m.Update(msg)
+	m = mm.(statusModel)
+	if m.webdavBrowse.path != "/subdir/" {
+		t.Fatalf("path after descending = %q, want /subdir/", m.webdavBrowse.path)
+	}
+
+	// Back up to root: should be a cache hit (no command, no new request).
+	mm, cmd = m.updateWebDAVBrowse(key("backspace"))
+	m = mm.(statusModel)
+	if cmd != nil {
+		t.Error("backspace to an already-visited /, should be a cache hit (nil command)")
+	}
+	if m.webdavBrowse.path != "/" {
+		t.Errorf("path after cached backspace = %q, want /", m.webdavBrowse.path)
+	}
+
+	// Down into subdir again: should also be a cache hit.
+	mm, cmd = m.updateWebDAVBrowse(key("enter"))
+	m = mm.(statusModel)
+	if cmd != nil {
+		t.Error("re-descending into an already-visited /subdir/, should be a cache hit (nil command)")
+	}
+	if m.webdavBrowse.path != "/subdir/" {
+		t.Errorf("path after cached descent = %q, want /subdir/", m.webdavBrowse.path)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if propfindCount["/dav/"] != 1 {
+		t.Errorf("PROPFIND count for /dav/ = %d, want 1 (cache should have prevented a second request)", propfindCount["/dav/"])
+	}
+	if propfindCount["/dav/subdir/"] != 1 {
+		t.Errorf("PROPFIND count for /dav/subdir/ = %d, want 1 (cache should have prevented a second request)", propfindCount["/dav/subdir/"])
 	}
 }

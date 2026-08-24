@@ -2,6 +2,7 @@ package webdav
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -223,5 +224,77 @@ func TestDownloadAndResume(t *testing.T) {
 	}
 	if string(data) != "hello world!" {
 		t.Errorf("resumed content = %q, want %q", data, "hello world!")
+	}
+}
+
+// TestWalkWideTreeFindsEveryFile exercises Walk's concurrent fan-out
+// properly: newTestServer's tree has only one subdirectory, never
+// stressing walkConcurrency's semaphore or the shared files slice's
+// locking. This tree has many sibling directories, each with its own
+// files, so multiple PROPFIND requests are genuinely in flight at once.
+func TestWalkWideTreeFindsEveryFile(t *testing.T) {
+	const dirs = 20
+	const filesPerDir = 3
+
+	mux := http.NewServeMux()
+	multistatus := func(w http.ResponseWriter, body string) {
+		w.Header().Set("Content-Type", "application/xml")
+		w.WriteHeader(http.StatusMultiStatus)
+		w.Write([]byte(body))
+	}
+	mux.HandleFunc("/wide/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "PROPFIND" {
+			http.NotFound(w, r)
+			return
+		}
+		var b strings.Builder
+		b.WriteString(`<?xml version="1.0"?><D:multistatus xmlns:D="DAV:">`)
+		b.WriteString(`<D:response><D:href>/wide/</D:href><D:propstat><D:prop><D:resourcetype><D:collection/></D:resourcetype></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response>`)
+		for i := 0; i < dirs; i++ {
+			fmt.Fprintf(&b, `<D:response><D:href>/wide/d%d/</D:href><D:propstat><D:prop><D:resourcetype><D:collection/></D:resourcetype></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response>`, i)
+		}
+		b.WriteString(`</D:multistatus>`)
+		multistatus(w, b.String())
+	})
+	for i := 0; i < dirs; i++ {
+		i := i
+		mux.HandleFunc(fmt.Sprintf("/wide/d%d/", i), func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != "PROPFIND" {
+				http.NotFound(w, r)
+				return
+			}
+			var b strings.Builder
+			b.WriteString(`<?xml version="1.0"?><D:multistatus xmlns:D="DAV:">`)
+			fmt.Fprintf(&b, `<D:response><D:href>/wide/d%d/</D:href><D:propstat><D:prop><D:resourcetype><D:collection/></D:resourcetype></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response>`, i)
+			for j := 0; j < filesPerDir; j++ {
+				fmt.Fprintf(&b, `<D:response><D:href>/wide/d%d/f%d.txt</D:href><D:propstat><D:prop><D:resourcetype/><D:getcontentlength>7</D:getcontentlength></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response>`, i, j)
+			}
+			b.WriteString(`</D:multistatus>`)
+			multistatus(w, b.String())
+		})
+	}
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c, err := New(srv.URL+"/wide/", "", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	files, err := c.Walk(context.Background(), "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != dirs*filesPerDir {
+		t.Fatalf("Walk found %d files, want %d", len(files), dirs*filesPerDir)
+	}
+	seen := map[string]bool{}
+	for _, f := range files {
+		if seen[f.Path] {
+			t.Errorf("duplicate entry for %s", f.Path)
+		}
+		seen[f.Path] = true
+		if f.IsDir {
+			t.Errorf("%s reported as a directory", f.Path)
+		}
 	}
 }

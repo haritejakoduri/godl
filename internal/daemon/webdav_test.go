@@ -1,7 +1,9 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -236,6 +238,99 @@ func TestStartWebDAVResumeRedownloadsMissingResolvedFile(t *testing.T) {
 	}
 	if data, err := os.ReadFile(filepath.Join(output, "a.txt")); err != nil || string(data) != "hello root\n" {
 		t.Errorf("a.txt was not re-downloaded after being deleted: content=%q err=%v", data, err)
+	}
+}
+
+// newWideTestWebDAVServer serves a single folder /wide/ containing n
+// flat files (/wide/file0.bin .. file<n-1>.bin), each fileSize bytes of
+// a byte-index-derived, verifiable pattern — used to stress the
+// concurrent-download path (more files than
+// webdavDownloadConcurrency) rather than internal/daemon's usual
+// 2-file fixture, which never exceeds the concurrency limit.
+func newWideTestWebDAVServer(t *testing.T, n int, fileSize int) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+
+	mux.HandleFunc("/wide/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "PROPFIND" {
+			http.NotFound(w, r)
+			return
+		}
+		var b strings.Builder
+		b.WriteString(`<?xml version="1.0"?><D:multistatus xmlns:D="DAV:">`)
+		b.WriteString(`<D:response><D:href>/wide/</D:href><D:propstat><D:prop><D:resourcetype><D:collection/></D:resourcetype></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response>`)
+		if r.Header.Get("Depth") != "0" {
+			for i := 0; i < n; i++ {
+				fmt.Fprintf(&b, `<D:response><D:href>/wide/file%d.bin</D:href><D:propstat><D:prop><D:resourcetype/><D:getcontentlength>%d</D:getcontentlength></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response>`, i, fileSize)
+			}
+		}
+		b.WriteString(`</D:multistatus>`)
+		w.Header().Set("Content-Type", "application/xml")
+		w.WriteHeader(http.StatusMultiStatus)
+		w.Write([]byte(b.String()))
+	})
+	for i := 0; i < n; i++ {
+		i := i
+		mux.HandleFunc(fmt.Sprintf("/wide/file%d.bin", i), func(w http.ResponseWriter, r *http.Request) {
+			data := bytes.Repeat([]byte{byte(i)}, fileSize)
+			http.ServeContent(w, r, fmt.Sprintf("file%d.bin", i), time.Time{}, bytes.NewReader(data))
+		})
+	}
+	return httptest.NewServer(mux)
+}
+
+// TestStartWebDAVConcurrentDownloadsDontLoseFiles is a regression test
+// for the AppendResolvedPath race the concurrent-download path exposed:
+// several goroutines calling it at once could each read the job's
+// pre-append ResolvedPaths, then all write their own single-entry
+// version back, silently discarding every entry but the last writer's.
+// More files than webdavDownloadConcurrency forces the semaphore's
+// backpressure path too (later downloads queued behind the first
+// batch), not just "a few files that all start at once".
+func TestStartWebDAVConcurrentDownloadsDontLoseFiles(t *testing.T) {
+	t.Setenv("GODL_DATA_DIR", t.TempDir())
+	const n = 12
+	const fileSize = 4096
+	srv := newWideTestWebDAVServer(t, n, fileSize)
+	defer srv.Close()
+
+	if err := connections.Add(connections.Connection{
+		Name: "wideconn", Type: connections.TypeWebDAV, URL: srv.URL + "/wide/",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	d := newTestDaemon(t)
+	output := t.TempDir()
+
+	j, err := d.createJob(context.Background(), store.JobWebDAV, "wideconn:/", output, "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.startWebDAV(j)
+	final := waitForTerminal(t, d, j.ID)
+
+	if final.Status != store.StatusCompleted {
+		t.Fatalf("job ended as %s: %s", final.Status, final.ErrorMsg)
+	}
+	if len(final.ResolvedPaths) != n {
+		t.Fatalf("ResolvedPaths has %d entries, want %d (this is the lost-update race if it regresses): %v",
+			len(final.ResolvedPaths), n, final.ResolvedPaths)
+	}
+	if final.BytesDone != int64(n*fileSize) {
+		t.Errorf("BytesDone = %d, want %d", final.BytesDone, n*fileSize)
+	}
+	for i := 0; i < n; i++ {
+		p := filepath.Join(output, fmt.Sprintf("file%d.bin", i))
+		data, err := os.ReadFile(p)
+		if err != nil {
+			t.Errorf("file%d.bin: %v", i, err)
+			continue
+		}
+		want := bytes.Repeat([]byte{byte(i)}, fileSize)
+		if !bytes.Equal(data, want) {
+			t.Errorf("file%d.bin content mismatch (wrong file's bytes ended up here?)", i)
+		}
 	}
 }
 

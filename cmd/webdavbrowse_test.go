@@ -141,6 +141,60 @@ func TestWebDAVBrowseDownloadUsesSelectionOrCursor(t *testing.T) {
 	}
 }
 
+// TestWebDAVBrowseDownloadWholeFolderKey is a regression test: opening a
+// folder (enter) resets the cursor to its first entry, so pressing "d"
+// with nothing checked only grabs that one entry — a folder's actual
+// recursive download (see internal/daemon/webdav.go's startWebDAV,
+// already fully recursive and structure-preserving) was only reachable
+// by backing out and selecting the folder from its parent listing.
+// "D" must target the folder currently being browsed (wb.path) instead,
+// regardless of the cursor position or what (if anything) is checked —
+// giving an unambiguous "download everything in here" action.
+func TestWebDAVBrowseDownloadWholeFolderKey(t *testing.T) {
+	m := statusModel{webdavBrowse: &webdavBrowseState{
+		step:     webdavBrowsing,
+		connName: "mynas",
+		path:     "/Photos/vacation/",
+		cursor:   0,
+		selected: map[string]bool{"/Photos/vacation/unrelated.jpg": true},
+		entries: []webdav.Entry{
+			{Path: "/Photos/vacation/img1.jpg", IsDir: false},
+			{Path: "/Photos/vacation/img2.jpg", IsDir: false},
+		},
+	}}
+	mm, cmd := m.updateWebDAVBrowse(key("D"))
+	m = mm.(statusModel)
+	if m.webdavBrowse != nil {
+		t.Fatal("D should close the browse overlay")
+	}
+	if cmd == nil {
+		t.Fatal("D should return a command to start the download")
+	}
+	if m.statusMsg == "" {
+		t.Error("expected a status message after starting a download")
+	}
+}
+
+// TestWebDAVBrowseDownloadWholeFolderKeyNoopWhileLoading guards against
+// firing a download for a stale/incomplete listing.
+func TestWebDAVBrowseDownloadWholeFolderKeyNoopWhileLoading(t *testing.T) {
+	m := statusModel{webdavBrowse: &webdavBrowseState{
+		step:     webdavBrowsing,
+		connName: "mynas",
+		path:     "/Photos/",
+		loading:  true,
+		selected: map[string]bool{},
+	}}
+	mm, cmd := m.updateWebDAVBrowse(key("D"))
+	m = mm.(statusModel)
+	if cmd != nil {
+		t.Fatal("D while loading should be a no-op")
+	}
+	if m.webdavBrowse == nil {
+		t.Fatal("D while loading should not close the overlay")
+	}
+}
+
 func TestWebDAVBrowseEnterDescendsOnlyIntoDirectories(t *testing.T) {
 	m := statusModel{webdavBrowse: &webdavBrowseState{
 		step:     webdavBrowsing,

@@ -167,12 +167,17 @@ godl connection remove mynas
 
 `godl webdav <connection> <remote-path> [-o output-dir]` then downloads
 from it: if `<remote-path>` is a file, just that file is fetched; if
-it's a folder, the whole folder is downloaded recursively, preserving
-its directory structure under `-o`. Without `-o`, it uses the same
+it's a folder, the whole folder is downloaded recursively into
+`-o/<folder name>`, preserving its own name and its full directory
+structure underneath (so `godl webdav mynas /Photos` lands at
+`<Downloads>/Photos/...`, not with `Photos` itself dropped and its
+contents dumped straight into `-o`). Without `-o`, it uses the same
 Downloads default as every other command above. The TUI's WebDAV
 browser (`w` in `godl status`) shows exactly where files will land
 right in the overlay, and confirms the destination again once a
-download starts.
+download starts; `D` downloads the folder currently being browsed, in
+full, regardless of the cursor position or what's individually
+checked with space.
 
 Connections are the first of what's meant to be a general "remote
 storage" mechanism — Google Drive, OneDrive, and other cloud storage

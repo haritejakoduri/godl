@@ -189,15 +189,26 @@ func (d *Daemon) startWebDAV(j *store.Job) {
 // webdavLocalPath maps a remote file (found under root, itself relative
 // to the connection's base URL) to its destination on disk under output.
 // For a single-file job (root itself is the file), it's just
-// output/<basename>; for a folder job, the folder's own directory
-// structure is preserved under output.
+// output/<basename>; for a folder job, the folder's own name plus its
+// directory structure is preserved under output — downloading ".../Photos"
+// lands at output/Photos/..., not dumped straight into output with the
+// "Photos" name itself lost (which would also risk one folder's files
+// silently overwriting another's if two folders share a subfolder name,
+// e.g. two different albums each containing "vacation/"). The
+// connection's own root ("/") has no name of its own to preserve, so
+// downloading it still flattens directly under output, same as before.
 func webdavLocalPath(output, root, filePath string, rootIsDir bool) string {
 	if !rootIsDir {
 		return filepath.Join(output, path.Base(filePath))
 	}
-	rel := strings.TrimPrefix(filePath, strings.TrimSuffix(root, "/"))
+	trimmedRoot := strings.TrimSuffix(root, "/")
+	rel := strings.TrimPrefix(filePath, trimmedRoot)
 	rel = strings.TrimPrefix(rel, "/")
-	joined := filepath.Join(output, filepath.FromSlash(rel))
+	rootBase := ""
+	if trimmedRoot != "" {
+		rootBase = path.Base(trimmedRoot)
+	}
+	joined := filepath.Join(output, rootBase, filepath.FromSlash(rel))
 
 	// Defense in depth: filePath comes straight from the WebDAV
 	// server's PROPFIND response. A malicious or compromised server

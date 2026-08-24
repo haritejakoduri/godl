@@ -227,6 +227,23 @@ func (m statusModel) updateWebDAVBrowse(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.webdavBrowse = nil
 		m.statusMsg = "starting..."
 		return m, startWebDAVDownloads(connName, outputDir, targets)
+	case "D":
+		// Downloads the folder currently being browsed, in full — not
+		// whatever's under the cursor or individually checked with space.
+		// Without this, navigating into a folder to look around and then
+		// pressing "d" only grabs the single entry the cursor happens to
+		// be on (the first one, right after entering) rather than
+		// everything inside, which reads as "it only downloaded the first
+		// item" even though the daemon's folder-job download is and
+		// always was fully recursive — the gap was that there was no way
+		// to target the folder you're standing in, only its children.
+		if wb.loading {
+			return m, nil
+		}
+		connName, outputDir, target := wb.connName, wb.outputDir, wb.path
+		m.webdavBrowse = nil
+		m.statusMsg = "starting..."
+		return m, startWebDAVDownloads(connName, outputDir, []string{target})
 	}
 	return m, nil
 }
@@ -297,7 +314,7 @@ func (m statusModel) viewWebDAVBrowse() string {
 		}
 	}
 
-	b.WriteString(helpStyle.Render("↑/↓ move  enter open folder  space select  d download selected (or current)  ←/backspace up  esc cancel"))
+	b.WriteString(helpStyle.Render("↑/↓ move  enter open folder  space select  d download selected (or current)  D download this whole folder  ←/backspace up  esc cancel"))
 	return b.String()
 }
 

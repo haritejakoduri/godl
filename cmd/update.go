@@ -23,8 +23,9 @@ if "godl social" starts failing: YouTube and other sites change often
 enough that yt-dlp needs to keep up, and a stale bundled copy is the
 most common cause.
 
-Only applies to godl's own auto-installed copies, not a system install
-already on PATH — updating that is your OS package manager's job.`,
+godl always installs and maintains its own copy of yt-dlp/ffmpeg
+(under its data dir), never a system install on PATH, so this always
+checks the copy godl itself is actually using.`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -33,23 +34,21 @@ already on PATH — updating that is your OS package manager's job.`,
 		printLine := func(msg string) { fmt.Println(" ", msg) }
 
 		fmt.Println("yt-dlp:")
-		managed, updated, err := ytdlp.ForceUpdate(ctx, printLine)
-		reportUpdateResult(managed, updated, err)
+		updated, err := ytdlp.ForceUpdate(ctx, printLine)
+		reportUpdateResult(updated, err)
 
 		fmt.Println("ffmpeg:")
-		managed, updated, err = ffmpeg.ForceUpdate(ctx, printLine)
-		reportUpdateResult(managed, updated, err)
+		updated, err = ffmpeg.ForceUpdate(ctx, printLine)
+		reportUpdateResult(updated, err)
 
 		return nil
 	},
 }
 
-func reportUpdateResult(managed, updated bool, err error) {
+func reportUpdateResult(updated bool, err error) {
 	switch {
 	case err != nil:
 		fmt.Println("  error:", err)
-	case !managed:
-		fmt.Println("  using a system install on PATH; not managed by godl.")
 	case !updated:
 		fmt.Println("  already up to date.")
 	}

@@ -132,9 +132,10 @@ pick the Social/media type.
 
 [yt-dlp](https://github.com/yt-dlp/yt-dlp) and, if a format needs muxing
 separate video/audio streams, [ffmpeg](https://ffmpeg.org) are both
-auto-downloaded on first use if not already on your `PATH` — no manual
-setup required. `godl url`, `godl torrent`, and job management all work
-without either.
+auto-downloaded and self-managed by godl on first use — no manual setup
+required, and no dependency on (or interference from) anything already
+on your `PATH`; `godl update` keeps both current from then on. `godl
+url`, `godl torrent`, and job management all work without either.
 
 ### `godl torrent` — BitTorrent downloads
 

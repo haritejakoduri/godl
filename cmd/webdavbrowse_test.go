@@ -141,6 +141,219 @@ func TestWebDAVBrowseDownloadUsesSelectionOrCursor(t *testing.T) {
 	}
 }
 
+// TestWebDAVBrowseDownloadWholeFolderKey is a regression test: opening a
+// folder (enter) resets the cursor to its first entry, so pressing "d"
+// with nothing checked only grabs that one entry — a folder's actual
+// recursive download (see internal/daemon/webdav.go's startWebDAV,
+// already fully recursive and structure-preserving) was only reachable
+// by backing out and selecting the folder from its parent listing.
+// "D" must target the folder currently being browsed (wb.path) instead,
+// regardless of the cursor position or what (if anything) is checked —
+// giving an unambiguous "download everything in here" action.
+func TestWebDAVBrowseDownloadWholeFolderKey(t *testing.T) {
+	m := statusModel{webdavBrowse: &webdavBrowseState{
+		step:     webdavBrowsing,
+		connName: "mynas",
+		path:     "/Photos/vacation/",
+		cursor:   0,
+		selected: map[string]bool{"/Photos/vacation/unrelated.jpg": true},
+		entries: []webdav.Entry{
+			{Path: "/Photos/vacation/img1.jpg", IsDir: false},
+			{Path: "/Photos/vacation/img2.jpg", IsDir: false},
+		},
+	}}
+	mm, cmd := m.updateWebDAVBrowse(key("D"))
+	m = mm.(statusModel)
+	if m.webdavBrowse != nil {
+		t.Fatal("D should close the browse overlay")
+	}
+	if cmd == nil {
+		t.Fatal("D should return a command to start the download")
+	}
+	if m.statusMsg == "" {
+		t.Error("expected a status message after starting a download")
+	}
+}
+
+// TestWebDAVBrowseDownloadWholeFolderKeyNoopWhileLoading guards against
+// firing a download for a stale/incomplete listing.
+func TestWebDAVBrowseDownloadWholeFolderKeyNoopWhileLoading(t *testing.T) {
+	m := statusModel{webdavBrowse: &webdavBrowseState{
+		step:     webdavBrowsing,
+		connName: "mynas",
+		path:     "/Photos/",
+		loading:  true,
+		selected: map[string]bool{},
+	}}
+	mm, cmd := m.updateWebDAVBrowse(key("D"))
+	m = mm.(statusModel)
+	if cmd != nil {
+		t.Fatal("D while loading should be a no-op")
+	}
+	if m.webdavBrowse == nil {
+		t.Fatal("D while loading should not close the overlay")
+	}
+}
+
+// TestWebDAVBrowseSearchFiltersEntries covers the "/" search flow: "/"
+// opens the prompt, typed runes narrow the list live (before enter is
+// even pressed), and only entries whose own name (not full path)
+// contains the query, case-insensitively, remain visible.
+func TestWebDAVBrowseSearchFiltersEntries(t *testing.T) {
+	m := statusModel{webdavBrowse: &webdavBrowseState{
+		step:     webdavBrowsing,
+		connName: "mynas",
+		path:     "/",
+		selected: map[string]bool{},
+		entries: []webdav.Entry{
+			{Path: "/vacation-photos/", IsDir: true},
+			{Path: "/report.pdf", IsDir: false},
+			{Path: "/Report-final.docx", IsDir: false},
+		},
+	}}
+
+	mm, cmd := m.updateWebDAVBrowse(key("/"))
+	m = mm.(statusModel)
+	if cmd != nil {
+		t.Fatal("opening the search prompt shouldn't return a command")
+	}
+	if !m.webdavBrowse.searching {
+		t.Fatal("/ should enter search mode")
+	}
+
+	for _, r := range "report" {
+		mm, _ = m.updateWebDAVBrowse(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = mm.(statusModel)
+	}
+	if m.webdavBrowse.query != "report" {
+		t.Fatalf("query = %q, want %q (should update live as you type)", m.webdavBrowse.query, "report")
+	}
+
+	visible := m.webdavBrowse.visibleEntries()
+	if len(visible) != 2 {
+		t.Fatalf("visibleEntries() = %v, want 2 matches (case-insensitive substring on the name)", visible)
+	}
+	for _, e := range visible {
+		if e.Path == "/vacation-photos/" {
+			t.Error("vacation-photos/ shouldn't match \"report\"")
+		}
+	}
+
+	// enter confirms: still filtered, but no longer capturing keystrokes.
+	mm, _ = m.updateWebDAVBrowse(key("enter"))
+	m = mm.(statusModel)
+	if m.webdavBrowse.searching {
+		t.Fatal("enter should leave search-input mode")
+	}
+	if m.webdavBrowse.query != "report" {
+		t.Fatal("enter should keep the filter applied, not clear it")
+	}
+}
+
+// TestWebDAVBrowseSearchEscCancelsWithoutClosingOverlay is a regression
+// test: esc while actively typing in the search prompt must only clear
+// the in-progress search, not the whole browse overlay — a user
+// backing out of a search they don't want shouldn't lose their place in
+// the connection entirely.
+func TestWebDAVBrowseSearchEscCancelsWithoutClosingOverlay(t *testing.T) {
+	m := statusModel{webdavBrowse: &webdavBrowseState{
+		step:     webdavBrowsing,
+		connName: "mynas",
+		path:     "/",
+		selected: map[string]bool{},
+		entries: []webdav.Entry{
+			{Path: "/a.txt", IsDir: false},
+			{Path: "/b.txt", IsDir: false},
+		},
+	}}
+	mm, _ := m.updateWebDAVBrowse(key("/"))
+	m = mm.(statusModel)
+	mm, _ = m.updateWebDAVBrowse(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	m = mm.(statusModel)
+	if m.webdavBrowse.query != "a" {
+		t.Fatalf("query = %q, want \"a\"", m.webdavBrowse.query)
+	}
+
+	mm, cmd := m.updateWebDAVBrowse(key("esc"))
+	m = mm.(statusModel)
+	if m.webdavBrowse == nil {
+		t.Fatal("esc while searching should not close the browse overlay")
+	}
+	if cmd != nil {
+		t.Error("esc canceling a search shouldn't return a command")
+	}
+	if m.webdavBrowse.searching {
+		t.Error("esc should leave search-input mode")
+	}
+	if m.webdavBrowse.query != "" {
+		t.Errorf("query after esc = %q, want empty (cancel clears the filter)", m.webdavBrowse.query)
+	}
+	if len(m.webdavBrowse.visibleEntries()) != 2 {
+		t.Error("canceling the search should restore the full, unfiltered entry list")
+	}
+}
+
+// TestWebDAVBrowseNavigatingClearsSearch is a regression test: a filter
+// scoped to one directory's contents (e.g. "report") silently carried
+// into a different directory could hide entries the user has no reason
+// to expect are filtered — descending into or backing out of a folder
+// must reset the search.
+func TestWebDAVBrowseNavigatingClearsSearch(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/dav/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "PROPFIND" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/xml")
+		w.WriteHeader(http.StatusMultiStatus)
+		w.Write([]byte(`<?xml version="1.0"?><D:multistatus xmlns:D="DAV:">
+  <D:response><D:href>/dav/</D:href><D:propstat><D:prop><D:resourcetype><D:collection/></D:resourcetype></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response>
+  <D:response><D:href>/dav/sub/</D:href><D:propstat><D:prop><D:resourcetype><D:collection/></D:resourcetype></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response>
+</D:multistatus>`))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	client, err := webdav.New(srv.URL+"/dav/", "", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	m := statusModel{webdavBrowse: &webdavBrowseState{
+		step:     webdavBrowsing,
+		connName: "mynas",
+		client:   client,
+		path:     "/",
+		selected: map[string]bool{},
+		cache:    map[string][]webdav.Entry{},
+		entries:  []webdav.Entry{{Path: "/sub/", IsDir: true}},
+	}}
+
+	mm, _ := m.updateWebDAVBrowse(key("/"))
+	m = mm.(statusModel)
+	mm, _ = m.updateWebDAVBrowse(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	m = mm.(statusModel)
+	mm, _ = m.updateWebDAVBrowse(key("enter")) // confirm search; "sub" still matches "s", so it stays visible
+	m = mm.(statusModel)
+	if m.webdavBrowse.query != "s" {
+		t.Fatalf("query = %q, want \"s\"", m.webdavBrowse.query)
+	}
+
+	mm, cmd := m.updateWebDAVBrowse(key("enter")) // now: open /sub/, the only (filtered) entry under the cursor
+	m = mm.(statusModel)
+	if cmd == nil {
+		t.Fatal("expected a listing command")
+	}
+	msg := cmd()
+	mm, _ = m.Update(msg)
+	m = mm.(statusModel)
+
+	if m.webdavBrowse.query != "" {
+		t.Errorf("query after navigating = %q, want empty", m.webdavBrowse.query)
+	}
+}
+
 func TestWebDAVBrowseEnterDescendsOnlyIntoDirectories(t *testing.T) {
 	m := statusModel{webdavBrowse: &webdavBrowseState{
 		step:     webdavBrowsing,

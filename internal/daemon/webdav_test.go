@@ -190,6 +190,57 @@ func TestStartWebDAVDownloadsSingleFile(t *testing.T) {
 	}
 }
 
+// TestStartWebDAVNamedFolderKeepsItsOwnNameInOutput is a regression
+// test: downloading a folder by name (not the connection's root) used
+// to drop that folder's own name from the destination and dump its
+// contents straight into -o, only preserving structure *underneath* it
+// — so "myconn:/sub" landed at output/b.txt instead of
+// output/sub/b.txt. Besides just being wrong (it doesn't read as "the
+// sub folder, downloaded"), two differently-named remote folders that
+// happen to share a child folder name could silently overwrite each
+// other's files. The selected folder's own name must be preserved as a
+// top-level directory under output.
+func TestStartWebDAVNamedFolderKeepsItsOwnNameInOutput(t *testing.T) {
+	t.Setenv("GODL_DATA_DIR", t.TempDir())
+	srv := newTestWebDAVServer(t)
+	defer srv.Close()
+
+	if err := connections.Add(connections.Connection{
+		Name: "myconn", Type: connections.TypeWebDAV, URL: srv.URL + "/dav/",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	d := newTestDaemon(t)
+	output := t.TempDir()
+
+	// Trailing slash matches how the TUI always sends a folder's path
+	// (directory hrefs from a real WebDAV server's PROPFIND response are
+	// slash-terminated) — webdavLocalPath must handle it either way, but
+	// this keeps the test aligned with the actual call shape in practice.
+	j, err := d.createJob(context.Background(), store.JobWebDAV, "myconn:/sub/", output, "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.startWebDAV(j)
+	final := waitForTerminal(t, d, j.ID)
+
+	if final.Status != store.StatusCompleted {
+		t.Fatalf("job ended as %s: %s", final.Status, final.ErrorMsg)
+	}
+	want := filepath.Join(output, "sub", "b.txt")
+	if len(final.ResolvedPaths) != 1 || final.ResolvedPaths[0] != want {
+		t.Errorf("ResolvedPaths = %v, want [%s]", final.ResolvedPaths, want)
+	}
+	data, err := os.ReadFile(want)
+	if err != nil || string(data) != "hello sub\n" {
+		t.Errorf("%s = %q, %v", want, data, err)
+	}
+	if _, err := os.Stat(filepath.Join(output, "b.txt")); err == nil {
+		t.Error("b.txt landed directly under output, without its \"sub\" folder name preserved")
+	}
+}
+
 // TestStartWebDAVResumeRedownloadsMissingResolvedFile is a regression
 // test for a bug where a file already recorded in job.ResolvedPaths
 // was permanently skipped on resume even if it no longer existed on

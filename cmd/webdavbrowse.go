@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"godl/internal/connections"
@@ -58,6 +59,35 @@ type webdavBrowseState struct {
 	cache   map[string][]webdav.Entry
 	loading bool
 	err     string
+
+	// searching is true while the "/" search prompt is focused and
+	// capturing keystrokes; query is the live filter text (kept even
+	// after leaving the prompt with enter, so the filtered view stays
+	// up until esc clears it or the user navigates to a new directory —
+	// see openWebDAVDir). Matching is a case-insensitive substring
+	// against each entry's own name, not its full remote path.
+	searching   bool
+	query       string
+	searchInput textinput.Model
+}
+
+// visibleEntries returns wb.entries narrowed to wb.query, or every entry
+// unfiltered when there's no active search — the single source every
+// cursor/selection/navigation/render operation reads through, so the
+// cursor always lines up with what's actually on screen.
+func (wb *webdavBrowseState) visibleEntries() []webdav.Entry {
+	if wb.query == "" {
+		return wb.entries
+	}
+	q := strings.ToLower(wb.query)
+	out := make([]webdav.Entry, 0, len(wb.entries))
+	for _, e := range wb.entries {
+		name := strings.ToLower(path.Base(strings.TrimSuffix(e.Path, "/")))
+		if strings.Contains(name, q) {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 type webdavListedMsg struct {
@@ -129,6 +159,12 @@ func startWebDAVDownloads(connName, outputDir string, remotePaths []string) tea.
 // a fresh PROPFIND otherwise.
 func (m statusModel) openWebDAVDir(target string) tea.Cmd {
 	wb := m.webdavBrowse
+	// A search filtered to one directory's contents rarely still makes
+	// sense in a different one — clear it on every navigation rather
+	// than carrying it along and silently hiding entries the user has
+	// no reason to expect are filtered.
+	wb.searching = false
+	wb.query = ""
 	if cached, ok := wb.cache[target]; ok {
 		wb.path = target
 		wb.entries = cached
@@ -181,16 +217,56 @@ func (m statusModel) updateWebDAVBrowse(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// webdavBrowsing, search prompt focused: keystrokes edit the query
+	// live rather than driving navigation/selection.
+	if wb.searching {
+		switch msg.String() {
+		case "esc":
+			// Cancel: back to browsing the unfiltered listing.
+			wb.searching = false
+			wb.query = ""
+			wb.cursor = 0
+			return m, nil
+		case "enter":
+			// Confirm: stop capturing keystrokes but keep the filter
+			// applied, so ↑/↓/space/d immediately act on the narrowed list.
+			wb.searching = false
+			wb.cursor = 0
+			return m, nil
+		default:
+			var cmd tea.Cmd
+			wb.searchInput, cmd = wb.searchInput.Update(msg)
+			wb.query = wb.searchInput.Value()
+			wb.cursor = 0
+			return m, cmd
+		}
+	}
+
+	visible := wb.visibleEntries()
+
 	// webdavBrowsing
 	switch msg.String() {
 	case "esc":
 		m.webdavBrowse = nil
+	case "/":
+		if wb.loading {
+			return m, nil
+		}
+		ti := textinput.New()
+		ti.Placeholder = "search filenames..."
+		ti.SetValue(wb.query)
+		ti.CursorEnd()
+		ti.Focus()
+		ti.CharLimit = 200
+		ti.Width = 40
+		wb.searchInput = ti
+		wb.searching = true
 	case "up", "k":
 		if wb.cursor > 0 {
 			wb.cursor--
 		}
 	case "down", "j":
-		if wb.cursor < len(wb.entries)-1 {
+		if wb.cursor < len(visible)-1 {
 			wb.cursor++
 		}
 	case "left", "h", "backspace":
@@ -198,14 +274,14 @@ func (m statusModel) updateWebDAVBrowse(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, m.openWebDAVDir(path.Dir(strings.TrimSuffix(wb.path, "/")))
 		}
 	case "enter":
-		if !wb.loading && wb.cursor < len(wb.entries) {
-			if e := wb.entries[wb.cursor]; e.IsDir {
+		if !wb.loading && wb.cursor < len(visible) {
+			if e := visible[wb.cursor]; e.IsDir {
 				return m, m.openWebDAVDir(e.Path)
 			}
 		}
 	case " ":
-		if !wb.loading && wb.cursor < len(wb.entries) {
-			p := wb.entries[wb.cursor].Path
+		if !wb.loading && wb.cursor < len(visible) {
+			p := visible[wb.cursor].Path
 			if wb.selected[p] {
 				delete(wb.selected, p)
 			} else {
@@ -217,8 +293,8 @@ func (m statusModel) updateWebDAVBrowse(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		for p := range wb.selected {
 			targets = append(targets, p)
 		}
-		if len(targets) == 0 && !wb.loading && wb.cursor < len(wb.entries) {
-			targets = []string{wb.entries[wb.cursor].Path}
+		if len(targets) == 0 && !wb.loading && wb.cursor < len(visible) {
+			targets = []string{visible[wb.cursor].Path}
 		}
 		if len(targets) == 0 {
 			return m, nil
@@ -227,6 +303,23 @@ func (m statusModel) updateWebDAVBrowse(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.webdavBrowse = nil
 		m.statusMsg = "starting..."
 		return m, startWebDAVDownloads(connName, outputDir, targets)
+	case "D":
+		// Downloads the folder currently being browsed, in full — not
+		// whatever's under the cursor or individually checked with space.
+		// Without this, navigating into a folder to look around and then
+		// pressing "d" only grabs the single entry the cursor happens to
+		// be on (the first one, right after entering) rather than
+		// everything inside, which reads as "it only downloaded the first
+		// item" even though the daemon's folder-job download is and
+		// always was fully recursive — the gap was that there was no way
+		// to target the folder you're standing in, only its children.
+		if wb.loading {
+			return m, nil
+		}
+		connName, outputDir, target := wb.connName, wb.outputDir, wb.path
+		m.webdavBrowse = nil
+		m.statusMsg = "starting..."
+		return m, startWebDAVDownloads(connName, outputDir, []string{target})
 	}
 	return m, nil
 }
@@ -259,22 +352,34 @@ func (m statusModel) viewWebDAVBrowse() string {
 	b.WriteString(helpStyle.Render("downloading to " + shortenHome(wb.outputDir)))
 	b.WriteString("\n")
 
+	if wb.searching {
+		b.WriteString("Search: " + wb.searchInput.View())
+		b.WriteString("\n")
+	} else if wb.query != "" {
+		b.WriteString(statStyle.Render(fmt.Sprintf("filter: %q (/ to edit, esc to clear)", wb.query)))
+		b.WriteString("\n")
+	}
+
+	visible := wb.visibleEntries()
+
 	switch {
 	case wb.loading:
 		b.WriteString("Loading...\n")
 	case wb.err != "":
 		b.WriteString(errStyle.Render(wb.err))
 		b.WriteString("\n")
-	case len(wb.entries) == 0:
+	case len(visible) == 0 && wb.query != "":
+		b.WriteString("(no matches)\n")
+	case len(visible) == 0:
 		b.WriteString("(empty folder)\n")
 	default:
 		start := 0
 		if wb.cursor >= webdavBrowseVisible {
 			start = wb.cursor - webdavBrowseVisible + 1
 		}
-		end := min(start+webdavBrowseVisible, len(wb.entries))
+		end := min(start+webdavBrowseVisible, len(visible))
 		for i := start; i < end; i++ {
-			e := wb.entries[i]
+			e := visible[i]
 			cursor := "  "
 			if i == wb.cursor {
 				cursor = "> "
@@ -292,12 +397,16 @@ func (m statusModel) viewWebDAVBrowse() string {
 			}
 			b.WriteString(fmt.Sprintf("%s%s %-40s %s\n", cursor, check, truncate(name, 40), size))
 		}
-		if len(wb.entries) > webdavBrowseVisible {
-			b.WriteString(helpStyle.Render(fmt.Sprintf("(%d-%d of %d)\n", start+1, end, len(wb.entries))))
+		if len(visible) > webdavBrowseVisible {
+			b.WriteString(helpStyle.Render(fmt.Sprintf("(%d-%d of %d)\n", start+1, end, len(visible))))
 		}
 	}
 
-	b.WriteString(helpStyle.Render("↑/↓ move  enter open folder  space select  d download selected (or current)  ←/backspace up  esc cancel"))
+	if wb.searching {
+		b.WriteString(helpStyle.Render("type to filter  enter confirm  esc cancel"))
+	} else {
+		b.WriteString(helpStyle.Render("↑/↓ move  enter open folder  space select  / search  d download selected (or current)  D download this whole folder  ←/backspace up  esc cancel"))
+	}
 	return b.String()
 }
 

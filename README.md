@@ -167,12 +167,17 @@ godl connection remove mynas
 
 `godl webdav <connection> <remote-path> [-o output-dir]` then downloads
 from it: if `<remote-path>` is a file, just that file is fetched; if
-it's a folder, the whole folder is downloaded recursively, preserving
-its directory structure under `-o`. Without `-o`, it uses the same
+it's a folder, the whole folder is downloaded recursively into
+`-o/<folder name>`, preserving its own name and its full directory
+structure underneath (so `godl webdav mynas /Photos` lands at
+`<Downloads>/Photos/...`, not with `Photos` itself dropped and its
+contents dumped straight into `-o`). Without `-o`, it uses the same
 Downloads default as every other command above. The TUI's WebDAV
 browser (`w` in `godl status`) shows exactly where files will land
 right in the overlay, and confirms the destination again once a
-download starts.
+download starts; `D` downloads the folder currently being browsed, in
+full, regardless of the cursor position or what's individually
+checked with space.
 
 Connections are the first of what's meant to be a general "remote
 storage" mechanism — Google Drive, OneDrive, and other cloud storage
@@ -195,11 +200,16 @@ background).
 
 `w` opens a file browser for one of your saved `godl connection`s:
 `↑`/`↓` moves, `enter` opens a folder, `space` toggles a file or folder
-for bulk selection, `←`/backspace goes up a level, and `d` starts
-downloading — whatever's selected, or just the entry under the cursor
-if nothing is. Each selected file or folder becomes its own background
-job (a folder job pulls it down recursively), so a single `d` press can
-kick off any mix of individual files and whole folders at once.
+for bulk selection, `/` searches the current folder by name (filters
+live as you type; `enter` keeps the filter and returns to browsing,
+`esc` clears it), `←`/backspace goes up a level (also clearing any
+active search), `D` downloads the folder you're currently browsing in
+full, and `d` starts downloading — whatever's selected, or just the
+entry under the cursor if nothing is. Each selected file or folder
+becomes its own background job (a folder job pulls it down
+recursively, preserving that folder's own name and structure under
+the destination), so a single `d` press can kick off any mix of
+individual files and whole folders at once.
 
 ## Building from source
 

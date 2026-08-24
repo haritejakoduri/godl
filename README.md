@@ -200,11 +200,16 @@ background).
 
 `w` opens a file browser for one of your saved `godl connection`s:
 `↑`/`↓` moves, `enter` opens a folder, `space` toggles a file or folder
-for bulk selection, `←`/backspace goes up a level, and `d` starts
-downloading — whatever's selected, or just the entry under the cursor
-if nothing is. Each selected file or folder becomes its own background
-job (a folder job pulls it down recursively), so a single `d` press can
-kick off any mix of individual files and whole folders at once.
+for bulk selection, `/` searches the current folder by name (filters
+live as you type; `enter` keeps the filter and returns to browsing,
+`esc` clears it), `←`/backspace goes up a level (also clearing any
+active search), `D` downloads the folder you're currently browsing in
+full, and `d` starts downloading — whatever's selected, or just the
+entry under the cursor if nothing is. Each selected file or folder
+becomes its own background job (a folder job pulls it down
+recursively, preserving that folder's own name and structure under
+the destination), so a single `d` press can kick off any mix of
+individual files and whole folders at once.
 
 ## Building from source
 

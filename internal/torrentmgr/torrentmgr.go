@@ -79,14 +79,29 @@ func (m *Manager) Add(jobID, source, outputDir string) (*torrent.Torrent, error)
 }
 
 func specFromSource(source string) (*torrent.TorrentSpec, error) {
+	var spec *torrent.TorrentSpec
 	if strings.HasPrefix(source, "magnet:") {
-		return torrent.TorrentSpecFromMagnetUri(source)
+		s, err := torrent.TorrentSpecFromMagnetUri(source)
+		if err != nil {
+			return nil, err
+		}
+		spec = s
+	} else {
+		mi, err := metainfo.LoadFromFile(source)
+		if err != nil {
+			return nil, fmt.Errorf("loading torrent file: %w", err)
+		}
+		spec = torrent.TorrentSpecFromMetaInfo(mi)
 	}
-	mi, err := metainfo.LoadFromFile(source)
-	if err != nil {
-		return nil, fmt.Errorf("loading torrent file: %w", err)
+	// A degenerate/malformed source (e.g. a magnet link whose btih is
+	// all zeros) parses without error but yields a zero info hash, which
+	// anacrolix/torrent's AddTorrentSpec panics on rather than erroring —
+	// and since a panic here would take down the whole daemon process
+	// (see startTorrent's caller), reject it cleanly up front instead.
+	if spec.InfoHash.IsZero() {
+		return nil, fmt.Errorf("invalid torrent source: empty/zero info hash")
 	}
-	return torrent.TorrentSpecFromMetaInfo(mi), nil
+	return spec, nil
 }
 
 // Pause drops the torrent from the client, halting network activity.

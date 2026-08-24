@@ -299,7 +299,25 @@ func (d *Daemon) createJob(ctx context.Context, typ store.JobType, source, outpu
 	return j, nil
 }
 
+// start dispatches a job to its type-specific starter, recovering from any
+// panic that escapes it. Job starters do real work (parsing sources,
+// talking to third-party libraries like anacrolix/torrent) synchronously
+// on this goroutine before handing off to a background one, so a bug or
+// a malformed input surfacing as a panic here would otherwise crash the
+// entire daemon process — every job, not just this one. That's especially
+// bad for resumeInterruptedJobs, which calls start for jobs restored from
+// disk: without this recover, a single bad persisted job would crash the
+// daemon on every subsequent restart, forever. Recovered panics are
+// reported the same way an ordinary error would be: the job fails, and
+// every other job keeps running.
 func (d *Daemon) start(j *store.Job) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("recovered from panic starting job %s (%s): %v", j.ID, j.Type, r)
+			d.clearRuntime(j.ID)
+			d.finishJob(j.ID, j.BytesDone, false, fmt.Errorf("internal error starting job: %v", r))
+		}
+	}()
 	switch j.Type {
 	case store.JobURL:
 		d.startURL(j)

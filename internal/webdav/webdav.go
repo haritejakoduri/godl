@@ -324,7 +324,9 @@ func (c *Client) Download(ctx context.Context, remotePath, localPath string, pro
 		total = start + resp.ContentLength
 	}
 
-	buf := make([]byte, 32*1024)
+	// 256KiB, not a smaller default: fewer Read/Write syscalls per MB
+	// transferred (see the matching constant in internal/downloader).
+	buf := make([]byte, 256*1024)
 	written := start
 	lastReport := time.Now()
 	for {

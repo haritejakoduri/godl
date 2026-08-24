@@ -31,7 +31,18 @@ func New(dataDir string) (*Manager, error) {
 	cfg.DataDir = dataDir
 	cl, err := torrent.NewClient(cfg)
 	if err != nil {
-		return nil, fmt.Errorf("starting torrent client: %w", err)
+		// The default config listens on both IPv4 and IPv6; on a host/
+		// container without IPv6 support at all (common — some VPS
+		// images, some Docker network modes, some CI runners) that
+		// dual-stack listen fails outright and NewClient errors, which
+		// would otherwise take down the whole daemon — url/social/
+		// webdav jobs too, not just torrent. Retry IPv4-only before
+		// giving up.
+		cfg.DisableIPv6 = true
+		cl, err = torrent.NewClient(cfg)
+		if err != nil {
+			return nil, fmt.Errorf("starting torrent client: %w", err)
+		}
 	}
 	return &Manager{client: cl, active: map[string]*torrent.Torrent{}}, nil
 }

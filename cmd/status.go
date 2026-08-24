@@ -64,6 +64,7 @@ type statusModel struct {
 	jobs      []*daemon.JobView
 	err       error
 	statusMsg string
+	width     int // last known terminal width, for responsive column sizing
 
 	// confirmRemove holds a pending "d"/"D" keypress awaiting a y/N
 	// answer — remove (especially with purge) is a step more
@@ -115,20 +116,60 @@ var newJobTypes = []struct {
 	{"Torrent — magnet link or .torrent file", daemon.CmdAddTorrent},
 }
 
+// fixedColumns are every table column except Path and Source, which grow
+// or shrink with the terminal width instead of holding a constant size —
+// see columnsForWidth.
+var fixedColumns = []table.Column{
+	{Title: "ID", Width: 9},
+	{Title: "Type", Width: 8},
+	{Title: "Status", Width: 10},
+	{Title: "Progress", Width: 24},
+	{Title: "Speed", Width: 12},
+	{Title: "ETA", Width: 8},
+}
+
+// minPathWidth/minSourceWidth are floors for the two variable-width
+// columns — narrow enough to still fit in a small terminal without the
+// table itself needing to horizontally scroll.
+const (
+	minPathWidth   = 16
+	minSourceWidth = 20
+	numColumns     = 8 // fixedColumns + Path + Source
+	// bubbles/table pads every cell 1 space on each side (see
+	// table.DefaultStyles), on top of the column's own Width.
+	perColumnPadding = 2
+)
+
+// columnsForWidth builds the table's columns for a terminal width chars
+// wide, giving Path and Source (a local filesystem path and a URL/
+// magnet/file source respectively — both often too long to fit in a
+// fixed-width column without heavy truncation) whatever room is left
+// over after the fixed columns and per-cell padding, instead of a
+// constant width that either wastes space on a wide terminal or gets
+// truncated hard on a narrow one. Source gets more of the extra room
+// than Path, since links tend to run longer than local paths.
+func columnsForWidth(width int) []table.Column {
+	fixedWidth := 0
+	for _, c := range fixedColumns {
+		fixedWidth += c.Width
+	}
+	avail := width - fixedWidth - numColumns*perColumnPadding
+	pathW, sourceW := minPathWidth, minSourceWidth
+	if extra := avail - pathW - sourceW; extra > 0 {
+		pathW += extra * 2 / 5
+		sourceW += extra - extra*2/5
+	}
+	cols := make([]table.Column, 0, numColumns)
+	cols = append(cols, fixedColumns...)
+	cols = append(cols, table.Column{Title: "Path", Width: pathW}, table.Column{Title: "Source", Width: sourceW})
+	return cols
+}
+
 func newStatusModel() statusModel {
 	ctx, cancel := context.WithCancel(context.Background())
 	snapCh, errCh := daemon.Subscribe(ctx)
 
-	columns := []table.Column{
-		{Title: "ID", Width: 9},
-		{Title: "Type", Width: 8},
-		{Title: "Status", Width: 10},
-		{Title: "Progress", Width: 24},
-		{Title: "Speed", Width: 12},
-		{Title: "ETA", Width: 8},
-		{Title: "Source", Width: 36},
-	}
-	t := table.New(table.WithColumns(columns), table.WithFocused(true), table.WithHeight(15))
+	t := table.New(table.WithColumns(columnsForWidth(0)), table.WithFocused(true), table.WithHeight(15))
 	styles := table.DefaultStyles()
 	styles.Header = styles.Header.Bold(true)
 	// Fixed hex, not ANSI palette indices ("0"/"6"): those map to
@@ -259,6 +300,8 @@ func (m statusModel) Init() tea.Cmd {
 func (m statusModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.table.SetColumns(columnsForWidth(msg.Width))
 		m.table.SetWidth(msg.Width)
 		if h := msg.Height - 7; h > 3 {
 			m.table.SetHeight(h)
@@ -489,7 +532,8 @@ func (m *statusModel) rebuildRows() {
 			bar,
 			humanSpeed(j.SpeedBps),
 			humanETA(j.ETASeconds, j.Status),
-			truncate(j.Source, 36),
+			shortenHome(j.Output),
+			shortenHome(j.Source),
 		})
 	}
 	m.table.SetRows(rows)

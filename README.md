@@ -181,7 +181,11 @@ providers are expected to become additional connection types the same
 
 ### `godl status` — live TUI dashboard
 
-Lists every job with progress bars, speed, and ETA.
+Lists every job with progress bars, speed, ETA, its download destination
+(`Path`), and its source link/magnet/file (`Source`). The `Path` and
+`Source` columns are responsive — they take up whatever room is left
+over after the other columns, so widening your terminal shows more of
+a long URL or destination path instead of it staying hard-truncated.
 
 Keybinds: `p` pause, `r` resume, `x` cancel, `R` retry, `d` remove, `D`
 remove + delete downloaded file (both ask for confirmation), `n` start

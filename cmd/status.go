@@ -130,7 +130,13 @@ func newStatusModel() statusModel {
 	t := table.New(table.WithColumns(columns), table.WithFocused(true), table.WithHeight(15))
 	styles := table.DefaultStyles()
 	styles.Header = styles.Header.Bold(true)
-	styles.Selected = styles.Selected.Bold(true).Foreground(lipgloss.Color("0")).Background(lipgloss.Color("6"))
+	// Fixed hex, not ANSI palette indices ("0"/"6"): those map to
+	// whatever the terminal's own theme has assigned them, and on a lot
+	// of terminals (Windows Terminal/PowerShell in particular) a
+	// re-themed index 0 can land close enough to index 6 that the
+	// selected row's text becomes unreadable. Explicit hex colors
+	// render the same guaranteed-contrast pairing everywhere.
+	styles.Selected = styles.Selected.Bold(true).Foreground(lipgloss.Color("#0B0B0B")).Background(lipgloss.Color("#5FD6C9"))
 	t.SetStyles(styles)
 
 	// bubbles/table truncates cells with go-runewidth, which doesn't parse

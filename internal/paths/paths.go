@@ -102,13 +102,20 @@ func ConnectionsPath() (string, error) {
 	return filepath.Join(dir, "connections.json"), nil
 }
 
-// DownloadsDir returns the default destination for WebDAV downloads
-// when the user doesn't pass -o: the OS's normal Downloads folder
-// (~/Downloads), not godl's own internal data directory — files landing
-// somewhere the user already expects to find downloads, the same as a
-// browser or any other download manager, beats a tucked-away app data
-// path. Honors GODL_DOWNLOADS_DIR for overrides (tests, containers, or
-// a host where ~/Downloads isn't the right place).
+// DownloadsDir returns the destination for WebDAV downloads when the
+// user doesn't pass -o: the OS's actual Downloads folder, not godl's
+// own internal data directory, and not just a hardcoded "~/Downloads"
+// guess either — that folder can be relocated (Windows lets a user
+// move it to another drive entirely via Explorer's Properties dialog)
+// or renamed (a non-English Linux desktop locale, e.g.
+// ~/Téléchargements), so guessing wrong would make godl silently
+// create and use a second, disconnected "Downloads" folder next to the
+// user's real one. systemDownloadsDir (platform-specific: queries the
+// real known-folder path on Windows, honors XDG user-dirs on Linux)
+// does that resolution properly; "" falls back to the ~/Downloads
+// default, correct on macOS and any Linux system with no XDG
+// user-dirs configuration. Honors GODL_DOWNLOADS_DIR for an explicit
+// override (tests, containers, or anywhere none of the above fits).
 func DownloadsDir() (string, error) {
 	if v := os.Getenv("GODL_DOWNLOADS_DIR"); v != "" {
 		if err := os.MkdirAll(v, 0o755); err != nil {
@@ -120,7 +127,10 @@ func DownloadsDir() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	d := filepath.Join(home, "Downloads")
+	d := systemDownloadsDir(home)
+	if d == "" {
+		d = filepath.Join(home, "Downloads")
+	}
 	if err := os.MkdirAll(d, 0o755); err != nil {
 		return "", err
 	}

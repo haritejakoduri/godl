@@ -157,11 +157,17 @@ godl connection remove mynas
 from it: if `<remote-path>` is a file, just that file is fetched; if
 it's a folder, the whole folder is downloaded recursively, preserving
 its directory structure under `-o`. Without `-o`, files land straight
-in your **Downloads** folder (`~/Downloads`, overridable with
-`GODL_DOWNLOADS_DIR`) — the same place a browser or any other download
-manager would put them. The TUI's WebDAV browser (`w` in `godl
-status`) shows exactly where files will land right in the overlay, and
-confirms the destination again once a download starts.
+in your **actual system Downloads folder** — the same place a browser
+or any other download manager would put them, resolved properly rather
+than just guessed at `~/Downloads`: the real Windows known-folder path
+(which a user can relocate to another drive via Explorer) on Windows,
+your Linux desktop's configured XDG user-dirs location (which can be
+relocated or, in a non-English locale, renamed entirely) on Linux, and
+`~/Downloads` — already correct there — on macOS. `GODL_DOWNLOADS_DIR`
+overrides all of that if you want somewhere else. The TUI's WebDAV
+browser (`w` in `godl status`) shows exactly where files will land
+right in the overlay, and confirms the destination again once a
+download starts.
 
 Connections are the first of what's meant to be a general "remote
 storage" mechanism — Google Drive, OneDrive, and other cloud storage

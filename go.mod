@@ -10,6 +10,7 @@ require (
 	github.com/muesli/termenv v0.16.0
 	github.com/spf13/cobra v1.10.2
 	github.com/ulikunitz/xz v0.5.16
+	golang.org/x/net v0.57.0
 	golang.org/x/sys v0.47.0
 	golang.org/x/term v0.45.0
 	modernc.org/sqlite v1.55.0
@@ -61,7 +62,7 @@ require (
 	github.com/google/btree v1.1.2 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
-	github.com/gorilla/websocket v1.5.0 // indirect
+	github.com/gorilla/websocket v1.5.3 // indirect
 	github.com/huandu/xstrings v1.3.2 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/klauspost/cpuid/v2 v2.2.3 // indirect
@@ -111,7 +112,6 @@ require (
 	go.opentelemetry.io/otel/trace v1.45.0 // indirect
 	golang.org/x/crypto v0.54.0 // indirect
 	golang.org/x/exp v0.0.0-20251113190631-e25ba8c21ef6 // indirect
-	golang.org/x/net v0.57.0 // indirect
 	golang.org/x/sync v0.22.0 // indirect
 	golang.org/x/text v0.40.0 // indirect
 	golang.org/x/time v0.14.0 // indirect

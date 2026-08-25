@@ -6,10 +6,11 @@
 [![License: MIT](https://img.shields.io/github/license/haritejakoduri/godl)](LICENSE)
 
 A terminal download manager for direct HTTP(S) links, BitTorrent,
-yt-dlp-supported social/media sites, and WebDAV servers. Downloads run
-in a background daemon, so they keep going after you close the
-terminal, and a full-screen TUI dashboard shows live progress across
-all of them.
+yt-dlp-supported social/media sites, and WebDAV servers — and it can
+also serve a local folder the same way (`godl serve`), for other
+devices to browse and download from. Downloads run in a background
+daemon, so they keep going after you close the terminal, and a
+full-screen TUI dashboard shows live progress across all of them.
 
 ## Install
 
@@ -73,6 +74,7 @@ godl social https://example.com/watch?v=xyz -o ~/Videos -p 1080p
 godl torrent "magnet:?xt=urn:btih:..." -o ~/Downloads
 godl connection add mynas --url https://dav.example.com/remote.php/dav/files/alice/ --username alice
 godl webdav mynas /Photos -o ~/Photos     # a file or a whole folder, recursively
+godl serve ~/Public -p 8080 --username alice   # share a folder, over WebDAV + browser
 
 godl status                 # live TUI dashboard
 godl list                   # one-shot table, for scripts
@@ -183,6 +185,57 @@ Connections are the first of what's meant to be a general "remote
 storage" mechanism — Google Drive, OneDrive, and other cloud storage
 providers are expected to become additional connection types the same
 `godl connection` commands manage, alongside WebDAV.
+
+### `godl serve` — share a local folder over HTTP(S)/WebDAV
+
+The other direction: instead of connecting to someone else's server,
+`godl serve <dir>` turns a local directory into one:
+
+```sh
+godl serve ~/Public -p 8080 --username alice          # http://<this machine>:8080
+godl serve ~/Public --self-signed --username alice     # https://, untrusted cert
+godl serve ~/Public --host 127.0.0.1                   # this machine only, no auth needed
+```
+
+It exposes the directory two ways at once:
+
+- **A real WebDAV endpoint** at `/dav/` — mount it as a network drive in
+  Windows Explorer, macOS Finder, or a Linux file manager, point
+  `rclone` at it, or add it as a `godl connection` (the command prints
+  the exact `godl connection add ...` line to run) and browse/bulk-
+  download from it with the same TUI browser — multi-select, `D`,
+  `/` search — used for any other WebDAV connection.
+- **A plain browser page** at `/` for anyone who'd rather just click
+  links: check off any mix of files and folders and hit "Download
+  selected (.zip)" to get them all in one archive, structure preserved,
+  no mounting required.
+
+By default it binds every network interface (`--host 0.0.0.0`), and
+prints each interface's real, actually-connectable IP in the startup
+banner — `0.0.0.0` itself isn't something another device can connect
+to, so this saves hunting it down with `ip addr`/`ifconfig` yourself:
+
+```
+Serving /home/alice/Public
+  Reachable at (use whichever address the other device can actually reach):
+    http://127.0.0.1:8080/      (WebDAV: http://127.0.0.1:8080/dav/)
+    http://192.168.1.42:8080/   (WebDAV: http://192.168.1.42:8080/dav/)
+    http://10.0.0.5:8080/       (WebDAV: http://10.0.0.5:8080/dav/)
+  ...
+```
+
+Read-only by default (pass `--allow-write` to also accept uploads/
+deletes over WebDAV). Binding to anything other than `127.0.0.1`/
+`localhost` refuses to start unless you pass `--username`/`--password`
+or explicitly override with `--insecure-no-auth` — otherwise anyone who
+can reach the address could download everything under `<dir>`.
+`--tls-cert`/`--tls-key` serve a real certificate; `--self-signed`
+generates a throwaway one for https:// without needing files (clients
+will warn until you trust it — fine for your own devices on your own
+network, not for anything wider). If `-p`'s port is already taken, it
+tries the next few ports automatically and prints a warning saying
+which one it actually picked — the printed URLs always reflect the
+port it's really listening on.
 
 ### `godl status` — live TUI dashboard
 

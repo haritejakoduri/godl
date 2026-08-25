@@ -136,6 +136,48 @@ func TestListenWithFallbackGivesUpAfterMaxAttempts(t *testing.T) {
 	}
 }
 
+func TestIsUnspecifiedHost(t *testing.T) {
+	cases := []struct {
+		host string
+		want bool
+	}{
+		{"0.0.0.0", true},
+		{"::", true},
+		{"127.0.0.1", false},
+		{"192.168.1.5", false},
+		{"localhost", false}, // ParseIP doesn't resolve hostnames — deliberately not "unspecified"
+		{"", false},
+	}
+	for _, c := range cases {
+		if got := isUnspecifiedHost(c.host); got != c.want {
+			t.Errorf("isUnspecifiedHost(%q) = %v, want %v", c.host, got, c.want)
+		}
+	}
+}
+
+// TestBannerAddrsExpandsUnspecifiedHost is a regression test: "0.0.0.0"
+// isn't itself something a client can connect to, so the startup
+// banner must show this machine's real reachable IP(s) instead of the
+// literal "0.0.0.0" a user would just copy-paste and have fail.
+func TestBannerAddrsExpandsUnspecifiedHost(t *testing.T) {
+	addrs := bannerAddrs("0.0.0.0")
+	if len(addrs) == 0 {
+		t.Fatal("bannerAddrs(\"0.0.0.0\") returned nothing — should always have at least a loopback fallback")
+	}
+	for _, a := range addrs {
+		if a == "0.0.0.0" {
+			t.Errorf("bannerAddrs(\"0.0.0.0\") = %v, should never include the literal unspecified address itself", addrs)
+		}
+	}
+}
+
+func TestBannerAddrsLeavesSpecificHostAlone(t *testing.T) {
+	addrs := bannerAddrs("192.168.1.50")
+	if len(addrs) != 1 || addrs[0] != "192.168.1.50" {
+		t.Errorf("bannerAddrs(specific host) = %v, want exactly [192.168.1.50] unchanged", addrs)
+	}
+}
+
 func TestIsAddrInUseErr(t *testing.T) {
 	occupied, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

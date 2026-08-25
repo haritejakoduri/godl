@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -93,8 +94,7 @@ everything under <dir>.
 		if actualPort != port {
 			fmt.Fprintf(os.Stderr, "godl: warning: port %d is already in use, using %d instead\n", port, actualPort)
 		}
-		addr := net.JoinHostPort(host, strconv.Itoa(actualPort))
-		srv := &http.Server{Addr: addr, Handler: handler}
+		srv := &http.Server{Addr: net.JoinHostPort(host, strconv.Itoa(actualPort)), Handler: handler}
 
 		useTLS := tlsCert != "" || selfSigned
 		if selfSigned {
@@ -105,7 +105,7 @@ everything under <dir>.
 			srv.TLSConfig = &tls.Config{Certificates: []tls.Certificate{cert}}
 		}
 
-		printServeBanner(abs, addr, useTLS, selfSigned, allowWrite, username, hasAuth)
+		printServeBanner(abs, host, actualPort, useTLS, selfSigned, allowWrite, username, hasAuth)
 
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
@@ -197,14 +197,88 @@ func validateServeFlags(dir, host string, hasAuth, insecureNoAuth bool, tlsCert,
 	return nil
 }
 
-func printServeBanner(dir, addr string, useTLS, selfSigned, allowWrite bool, username string, hasAuth bool) {
+// isUnspecifiedHost reports whether host means "every interface" ("0.0.0.0"
+// or "::") rather than one specific address — that's not itself
+// something a client can connect to, so the banner needs to print the
+// machine's real IPs instead.
+func isUnspecifiedHost(host string) bool {
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsUnspecified()
+}
+
+// reachableIPs lists this machine's own non-loopback IPv4 addresses —
+// what listening on "every interface" actually resolves to from
+// another device's point of view. IPv6 is skipped for the banner
+// specifically: a bare IPv6 literal needs bracket syntax in a URL
+// ("http://[fd00::1]:8080/"), which is more likely to confuse in a
+// quick-start message than help; --host accepts an IPv6 address
+// explicitly if that's what's wanted.
+func reachableIPs() []string {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return nil
+	}
+	var ips []string
+	for _, iface := range ifaces {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, a := range addrs {
+			var ip net.IP
+			switch v := a.(type) {
+			case *net.IPNet:
+				ip = v.IP
+			case *net.IPAddr:
+				ip = v.IP
+			}
+			if ip == nil || ip.To4() == nil || ip.IsLoopback() || ip.IsLinkLocalUnicast() {
+				continue
+			}
+			ips = append(ips, ip.String())
+		}
+	}
+	sort.Strings(ips)
+	return ips
+}
+
+// bannerAddrs resolves what address(es) to actually show for host: a
+// specific host is used as-is; "every interface" is expanded to this
+// machine's real reachable IPs (falling back to loopback if none are
+// found — e.g. a sandboxed container with no LAN interface — so the
+// banner always has at least one usable address to show).
+func bannerAddrs(host string) []string {
+	if !isUnspecifiedHost(host) {
+		return []string{host}
+	}
+	if ips := reachableIPs(); len(ips) > 0 {
+		return ips
+	}
+	return []string{"127.0.0.1"}
+}
+
+func printServeBanner(dir, host string, port int, useTLS, selfSigned, allowWrite bool, username string, hasAuth bool) {
 	scheme := "http"
 	if useTLS {
 		scheme = "https"
 	}
 	fmt.Printf("Serving %s\n", dir)
-	fmt.Printf("  Browse:  %s://%s/\n", scheme, addr)
-	fmt.Printf("  WebDAV:  %s://%s/dav/\n", scheme, addr)
+
+	addrs := bannerAddrs(host)
+	if isUnspecifiedHost(host) {
+		fmt.Println("  Reachable at (use whichever address the other device can actually reach):")
+		for _, ip := range addrs {
+			hostPort := net.JoinHostPort(ip, strconv.Itoa(port))
+			fmt.Printf("    %s://%s/   (WebDAV: %s://%s/dav/)\n", scheme, hostPort, scheme, hostPort)
+		}
+	} else {
+		hostPort := net.JoinHostPort(host, strconv.Itoa(port))
+		fmt.Printf("  Browse:  %s://%s/\n", scheme, hostPort)
+		fmt.Printf("  WebDAV:  %s://%s/dav/\n", scheme, hostPort)
+	}
 	if allowWrite {
 		fmt.Println("  Read-write — uploads and deletes over WebDAV are allowed.")
 	} else {
@@ -218,17 +292,18 @@ func printServeBanner(dir, addr string, useTLS, selfSigned, allowWrite bool, use
 	if selfSigned {
 		fmt.Println("  Self-signed certificate — browsers and WebDAV clients will warn until you trust it.")
 	}
+	exampleAddr := net.JoinHostPort(addrs[0], strconv.Itoa(port))
 	fmt.Println("Add it as a godl connection with:")
 	if hasAuth {
-		fmt.Printf("  godl connection add <name> --url %s://%s/dav/ --username %s\n", scheme, addr, username)
+		fmt.Printf("  godl connection add <name> --url %s://%s/dav/ --username %s\n", scheme, exampleAddr, username)
 	} else {
-		fmt.Printf("  godl connection add <name> --url %s://%s/dav/\n", scheme, addr)
+		fmt.Printf("  godl connection add <name> --url %s://%s/dav/\n", scheme, exampleAddr)
 	}
 	fmt.Println("Ctrl+C to stop.")
 }
 
 func init() {
-	serveCmd.Flags().String("host", "0.0.0.0", "address to bind to (use 127.0.0.1 to only allow this machine)")
+	serveCmd.Flags().String("host", "0.0.0.0", "address to bind to (default: every interface, and the startup banner lists each one's real IP; use 127.0.0.1 to only allow this machine)")
 	serveCmd.Flags().IntP("port", "p", 8080, "port to listen on (if already in use, tries the next few ports and warns which one it picked)")
 	serveCmd.Flags().String("username", "", "require this username for HTTP Basic Auth")
 	serveCmd.Flags().String("password", "", "password for --username (prompted if omitted; or set GODL_SERVE_PASSWORD)")

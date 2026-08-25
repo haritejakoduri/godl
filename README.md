@@ -210,6 +210,19 @@ It exposes the directory two ways at once:
   selected (.zip)" to get them all in one archive, structure preserved,
   no mounting required.
 
+By default it binds every network interface (`--host 0.0.0.0`), and
+prints each interface's real, actually-connectable IP in the startup
+banner — `0.0.0.0` itself isn't something another device can connect
+to, so this saves hunting it down with `ip addr`/`ifconfig` yourself:
+
+```
+Serving /home/alice/Public
+  Reachable at (use whichever address the other device can actually reach):
+    http://192.168.1.42:8080/   (WebDAV: http://192.168.1.42:8080/dav/)
+    http://10.0.0.5:8080/       (WebDAV: http://10.0.0.5:8080/dav/)
+  ...
+```
+
 Read-only by default (pass `--allow-write` to also accept uploads/
 deletes over WebDAV). Binding to anything other than `127.0.0.1`/
 `localhost` refuses to start unless you pass `--username`/`--password`

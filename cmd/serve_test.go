@@ -178,6 +178,35 @@ func TestBannerAddrsLeavesSpecificHostAlone(t *testing.T) {
 	}
 }
 
+// TestBannerAddrsAlwaysIncludesLoopback is a regression test: binding
+// "every interface" genuinely includes the loopback interface too —
+// useful for testing from the same machine, or any tool that only
+// tries localhost — so 127.0.0.1 must always be listed, not just used
+// as a fallback for when no LAN interface is found.
+func TestBannerAddrsAlwaysIncludesLoopback(t *testing.T) {
+	addrs := bannerAddrs("0.0.0.0")
+	if len(addrs) == 0 || addrs[0] != "127.0.0.1" {
+		t.Errorf("bannerAddrs(\"0.0.0.0\") = %v, want 127.0.0.1 listed first", addrs)
+	}
+}
+
+// TestExampleConnectAddrPrefersLANOverLoopback is a regression test:
+// the "godl connection add" suggestion in the banner should hand back
+// an address another device can actually use, not 127.0.0.1 (which
+// only means "this machine" to whoever runs it) whenever a real LAN
+// address is also available.
+func TestExampleConnectAddrPrefersLANOverLoopback(t *testing.T) {
+	if got := exampleConnectAddr([]string{"127.0.0.1", "192.168.1.42"}); got != "192.168.1.42" {
+		t.Errorf("exampleConnectAddr = %q, want the LAN address 192.168.1.42", got)
+	}
+}
+
+func TestExampleConnectAddrFallsBackToLoopback(t *testing.T) {
+	if got := exampleConnectAddr([]string{"127.0.0.1"}); got != "127.0.0.1" {
+		t.Errorf("exampleConnectAddr = %q, want 127.0.0.1 when it's the only address available", got)
+	}
+}
+
 func TestIsAddrInUseErr(t *testing.T) {
 	occupied, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

@@ -218,6 +218,7 @@ to, so this saves hunting it down with `ip addr`/`ifconfig` yourself:
 ```
 Serving /home/alice/Public
   Reachable at (use whichever address the other device can actually reach):
+    http://127.0.0.1:8080/      (WebDAV: http://127.0.0.1:8080/dav/)
     http://192.168.1.42:8080/   (WebDAV: http://192.168.1.42:8080/dav/)
     http://10.0.0.5:8080/       (WebDAV: http://10.0.0.5:8080/dav/)
   ...

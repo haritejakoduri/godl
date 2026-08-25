@@ -247,17 +247,29 @@ func reachableIPs() []string {
 
 // bannerAddrs resolves what address(es) to actually show for host: a
 // specific host is used as-is; "every interface" is expanded to this
-// machine's real reachable IPs (falling back to loopback if none are
-// found — e.g. a sandboxed container with no LAN interface — so the
-// banner always has at least one usable address to show).
+// machine's own LAN IPs, always listed alongside "127.0.0.1" — binding
+// "every interface" really does include the loopback interface, so
+// it's a genuinely usable address too (testing from the same machine,
+// or any tool that only knows to try localhost), not just a fallback
+// for when no LAN interface exists.
 func bannerAddrs(host string) []string {
 	if !isUnspecifiedHost(host) {
 		return []string{host}
 	}
-	if ips := reachableIPs(); len(ips) > 0 {
-		return ips
+	return append([]string{"127.0.0.1"}, reachableIPs()...)
+}
+
+// exampleConnectAddr picks which of addrs to show in the "godl
+// connection add" suggestion: a LAN-reachable address when one exists
+// — that's what another device actually needs — falling back to the
+// first address (loopback, when nothing else was found) otherwise.
+func exampleConnectAddr(addrs []string) string {
+	for _, a := range addrs {
+		if ip := net.ParseIP(a); ip == nil || !ip.IsLoopback() {
+			return a
+		}
 	}
-	return []string{"127.0.0.1"}
+	return addrs[0]
 }
 
 func printServeBanner(dir, host string, port int, useTLS, selfSigned, allowWrite bool, username string, hasAuth bool) {
@@ -292,7 +304,7 @@ func printServeBanner(dir, host string, port int, useTLS, selfSigned, allowWrite
 	if selfSigned {
 		fmt.Println("  Self-signed certificate — browsers and WebDAV clients will warn until you trust it.")
 	}
-	exampleAddr := net.JoinHostPort(addrs[0], strconv.Itoa(port))
+	exampleAddr := net.JoinHostPort(exampleConnectAddr(addrs), strconv.Itoa(port))
 	fmt.Println("Add it as a godl connection with:")
 	if hasAuth {
 		fmt.Printf("  godl connection add <name> --url %s://%s/dav/ --username %s\n", scheme, exampleAddr, username)

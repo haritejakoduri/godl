@@ -14,7 +14,9 @@ full-screen TUI dashboard shows live progress across all of them.
 
 ## Demo
 
-<video src="docs/demo.webm" controls muted title="godl demo"></video>
+[![godl demo](docs/demo-thumb.png)](docs/demo.webm)
+
+Click the screenshot to watch (opens the video file directly).
 
 ## Install
 

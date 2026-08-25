@@ -12,6 +12,10 @@ devices to browse and download from. Downloads run in a background
 daemon, so they keep going after you close the terminal, and a
 full-screen TUI dashboard shows live progress across all of them.
 
+## Demo
+
+<video src="docs/demo.webm" controls muted title="godl demo"></video>
+
 ## Install
 
 Grab the latest build for your OS from the

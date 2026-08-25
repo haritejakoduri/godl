@@ -216,6 +216,39 @@ func TestBrowsePageListsAndNavigates(t *testing.T) {
 	}
 }
 
+// TestResolveUnderRootRejectsEscapes is a direct unit test of the
+// security boundary every request path goes through — every value
+// filepath.IsLocal itself documents as unsafe must be rejected, since
+// rel here is always a client-controlled query/form value.
+func TestResolveUnderRootRejectsEscapes(t *testing.T) {
+	root := t.TempDir()
+	for _, rel := range []string{
+		"../secret",
+		"../../etc/passwd",
+		"a/../../secret",
+		"/etc/passwd", // absolute, even without ".."
+		"..",
+	} {
+		if _, err := resolveUnderRoot(root, rel); err == nil {
+			t.Errorf("resolveUnderRoot(root, %q) should have been rejected", rel)
+		}
+	}
+}
+
+func TestResolveUnderRootAllowsOrdinaryPaths(t *testing.T) {
+	root := t.TempDir()
+	for _, rel := range []string{"a.txt", "sub/a.txt", "sub/deeper/a.txt"} {
+		abs, err := resolveUnderRoot(root, rel)
+		if err != nil {
+			t.Errorf("resolveUnderRoot(root, %q) = %v, want no error", rel, err)
+			continue
+		}
+		if !strings.HasPrefix(abs, root) {
+			t.Errorf("resolveUnderRoot(root, %q) = %q, want it under %q", rel, abs, root)
+		}
+	}
+}
+
 func TestBrowseRejectsPathTraversal(t *testing.T) {
 	root := writeTree(t)
 	h, err := New(Config{Root: root, ReadOnly: true})

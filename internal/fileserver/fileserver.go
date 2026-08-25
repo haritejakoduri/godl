@@ -133,15 +133,18 @@ func resolveUnderRoot(root, rel string) (string, error) {
 	if rel == "" {
 		return absRoot, nil
 	}
-	joined := filepath.Join(absRoot, filepath.FromSlash(rel))
-	absJoined, err := filepath.Abs(joined)
-	if err != nil {
-		return "", err
-	}
-	if absJoined != absRoot && !strings.HasPrefix(absJoined, absRoot+string(filepath.Separator)) {
+	// filepath.IsLocal is the standard library's own purpose-built guard
+	// against exactly this: it lexically rejects anything absolute, any
+	// ".."-escaping, and (on Windows) drive letters/UNC/reserved-device
+	// tricks a hand-rolled prefix check could miss — rel is a query
+	// parameter (?dir=) / form value (f=) a client controls directly,
+	// so this has to be airtight before it ever reaches a filesystem
+	// call, not just conventionally safe.
+	relClean := filepath.FromSlash(rel)
+	if !filepath.IsLocal(relClean) {
 		return "", fmt.Errorf("path escapes served directory")
 	}
-	return absJoined, nil
+	return filepath.Join(absRoot, relClean), nil
 }
 
 type browseEntry struct {

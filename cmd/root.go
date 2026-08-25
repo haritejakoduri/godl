@@ -43,6 +43,7 @@ func init() {
 		torrentCmd,
 		webdavCmd,
 		connectionCmd,
+		serveCmd,
 		statusCmd,
 		pauseCmd,
 		resumeCmd,

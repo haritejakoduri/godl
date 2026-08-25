@@ -9,6 +9,8 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -84,7 +86,14 @@ everything under <dir>.
 			return err
 		}
 
-		addr := net.JoinHostPort(host, fmt.Sprintf("%d", port))
+		listener, actualPort, err := listenWithFallback(host, port, maxPortFallbackAttempts)
+		if err != nil {
+			return err
+		}
+		if actualPort != port {
+			fmt.Fprintf(os.Stderr, "godl: warning: port %d is already in use, using %d instead\n", port, actualPort)
+		}
+		addr := net.JoinHostPort(host, strconv.Itoa(actualPort))
 		srv := &http.Server{Addr: addr, Handler: handler}
 
 		useTLS := tlsCert != "" || selfSigned
@@ -108,9 +117,9 @@ everything under <dir>.
 				// carries a certificate (the --self-signed case), Go
 				// uses that instead of trying to load files; the
 				// --tls-cert/--tls-key case passes real filenames.
-				errCh <- srv.ListenAndServeTLS(tlsCert, tlsKey)
+				errCh <- srv.ServeTLS(listener, tlsCert, tlsKey)
 			} else {
-				errCh <- srv.ListenAndServe()
+				errCh <- srv.Serve(listener)
 			}
 		}()
 
@@ -127,6 +136,39 @@ everything under <dir>.
 		}
 		return nil
 	},
+}
+
+// maxPortFallbackAttempts bounds how many consecutive ports
+// listenWithFallback will try past the one the user asked for — enough
+// to get past a handful of stray listeners without silently wandering
+// off to a port far away from what was requested.
+const maxPortFallbackAttempts = 20
+
+// listenWithFallback binds host:port, and if that exact port is
+// already taken, tries host:port+1, host:port+2, ... up to
+// maxAttempts total tries before giving up. Any bind failure that
+// isn't specifically "address already in use" (permission denied on a
+// privileged port, an invalid host, ...) is returned immediately
+// without trying further ports — those aren't going to be fixed by
+// picking a different port number.
+func listenWithFallback(host string, port, maxAttempts int) (net.Listener, int, error) {
+	var lastErr error
+	for i := 0; i < maxAttempts; i++ {
+		p := port + i
+		l, err := net.Listen("tcp", net.JoinHostPort(host, strconv.Itoa(p)))
+		if err == nil {
+			return l, p, nil
+		}
+		lastErr = err
+		if !isAddrInUseErr(err) {
+			return nil, 0, err
+		}
+	}
+	return nil, 0, fmt.Errorf("no free port found starting at %d after %d attempts: %w", port, maxAttempts, lastErr)
+}
+
+func isAddrInUseErr(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "address already in use")
 }
 
 func isLoopbackHost(host string) bool {
@@ -187,7 +229,7 @@ func printServeBanner(dir, addr string, useTLS, selfSigned, allowWrite bool, use
 
 func init() {
 	serveCmd.Flags().String("host", "0.0.0.0", "address to bind to (use 127.0.0.1 to only allow this machine)")
-	serveCmd.Flags().IntP("port", "p", 8080, "port to listen on")
+	serveCmd.Flags().IntP("port", "p", 8080, "port to listen on (if already in use, tries the next few ports and warns which one it picked)")
 	serveCmd.Flags().String("username", "", "require this username for HTTP Basic Auth")
 	serveCmd.Flags().String("password", "", "password for --username (prompted if omitted; or set GODL_SERVE_PASSWORD)")
 	serveCmd.Flags().Bool("allow-write", false, "allow uploads/deletes over WebDAV (default: read-only)")

@@ -218,7 +218,10 @@ can reach the address could download everything under `<dir>`.
 `--tls-cert`/`--tls-key` serve a real certificate; `--self-signed`
 generates a throwaway one for https:// without needing files (clients
 will warn until you trust it — fine for your own devices on your own
-network, not for anything wider).
+network, not for anything wider). If `-p`'s port is already taken, it
+tries the next few ports automatically and prints a warning saying
+which one it actually picked — the printed URLs always reflect the
+port it's really listening on.
 
 ### `godl status` — live TUI dashboard
 

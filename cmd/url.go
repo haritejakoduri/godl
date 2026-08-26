@@ -26,6 +26,10 @@ var urlCmd = &cobra.Command{
 		link := args[0]
 		output, _ := cmd.Flags().GetString("output")
 		concurrency, _ := cmd.Flags().GetInt("concurrency")
+		limitRate, err := limitRateFlag(cmd)
+		if err != nil {
+			return err
+		}
 
 		if output == "" {
 			dir, err := paths.DownloadsDir()
@@ -48,6 +52,7 @@ var urlCmd = &cobra.Command{
 			Source:      link,
 			Output:      output,
 			Concurrency: concurrency,
+			LimitRate:   limitRate,
 		})
 		if err != nil {
 			return err
@@ -279,4 +284,5 @@ func extByContentType(contentType string) string {
 func init() {
 	urlCmd.Flags().StringP("output", "o", "", "output file path (default: your Downloads folder, with a name derived from the URL or the server's Content-Disposition/Content-Type)")
 	urlCmd.Flags().IntP("concurrency", "c", 4, "number of concurrent chunks (ignored if the server can't do ranges)")
+	urlCmd.Flags().StringP("limit-rate", "R", "", "cap this download's speed, e.g. 500K or 2M (default: unlimited)")
 }

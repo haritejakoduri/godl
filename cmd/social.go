@@ -116,6 +116,10 @@ ffmpeg, needed to merge separately-downloaded video+audio streams.`,
 		format, _ := cmd.Flags().GetString("format")
 		preset, _ := cmd.Flags().GetString("preset")
 		wait, _ := cmd.Flags().GetBool("wait")
+		limitRate, err := limitRateFlag(cmd)
+		if err != nil {
+			return err
+		}
 
 		if preset != "" {
 			if format != "" {
@@ -147,7 +151,7 @@ ffmpeg, needed to merge separately-downloaded video+audio streams.`,
 			return err
 		}
 
-		req := daemon.Request{Cmd: daemon.CmdAddSocial, Source: link, Output: output, Format: format}
+		req := daemon.Request{Cmd: daemon.CmdAddSocial, Source: link, Output: output, Format: format, LimitRate: limitRate}
 
 		if !wait {
 			resp, err := daemon.Call(req)
@@ -210,4 +214,5 @@ func init() {
 	socialCmd.Flags().BoolP("wait", "w", false, "stay attached and stream yt-dlp's output live instead of returning immediately")
 	socialCmd.Flags().BoolP("list-formats", "F", false, "list available formats/resolutions for <link> and exit, without downloading")
 	socialCmd.Flags().Bool("list-presets", false, "list available quality presets and exit")
+	socialCmd.Flags().StringP("limit-rate", "R", "", "cap this download's speed, e.g. 500K or 2M (default: unlimited) — passed straight through to yt-dlp's own --limit-rate")
 }

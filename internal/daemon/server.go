@@ -21,6 +21,7 @@ import (
 	"godl/internal/downloader"
 	"godl/internal/ffmpeg"
 	"godl/internal/paths"
+	"godl/internal/ratelimit"
 	"godl/internal/store"
 	"godl/internal/torrentmgr"
 	"godl/internal/ytdlp"
@@ -189,7 +190,7 @@ func (d *Daemon) dispatch(conn net.Conn, req Request) {
 		writeResp(conn, Response{Type: "result", OK: true})
 
 	case CmdAddURL:
-		j, err := d.createJob(ctx, store.JobURL, req.Source, req.Output, "", req.Concurrency)
+		j, err := d.createJob(ctx, store.JobURL, req.Source, req.Output, "", req.Concurrency, req.LimitRate)
 		if err != nil {
 			writeResp(conn, errResp(err))
 			return
@@ -198,7 +199,7 @@ func (d *Daemon) dispatch(conn net.Conn, req Request) {
 		writeResp(conn, Response{Type: "result", OK: true, Job: d.view(j.ID)})
 
 	case CmdAddTorrent:
-		j, err := d.createJob(ctx, store.JobTorrent, req.Source, req.Output, "", 0)
+		j, err := d.createJob(ctx, store.JobTorrent, req.Source, req.Output, "", 0, req.LimitRate)
 		if err != nil {
 			writeResp(conn, errResp(err))
 			return
@@ -207,7 +208,7 @@ func (d *Daemon) dispatch(conn net.Conn, req Request) {
 		writeResp(conn, Response{Type: "result", OK: true, Job: d.view(j.ID)})
 
 	case CmdAddWebDAV:
-		j, err := d.createJob(ctx, store.JobWebDAV, req.Source, req.Output, "", 0)
+		j, err := d.createJob(ctx, store.JobWebDAV, req.Source, req.Output, "", 0, req.LimitRate)
 		if err != nil {
 			writeResp(conn, errResp(err))
 			return
@@ -216,7 +217,7 @@ func (d *Daemon) dispatch(conn net.Conn, req Request) {
 		writeResp(conn, Response{Type: "result", OK: true, Job: d.view(j.ID)})
 
 	case CmdAddSocial:
-		j, err := d.createJob(ctx, store.JobSocial, req.Source, req.Output, req.Format, 0)
+		j, err := d.createJob(ctx, store.JobSocial, req.Source, req.Output, req.Format, 0, req.LimitRate)
 		if err != nil {
 			writeResp(conn, errResp(err))
 			return
@@ -273,7 +274,7 @@ func errResp(err error) Response {
 	return Response{Type: "error", Error: err.Error()}
 }
 
-func (d *Daemon) createJob(ctx context.Context, typ store.JobType, source, output, format string, concurrency int) (*store.Job, error) {
+func (d *Daemon) createJob(ctx context.Context, typ store.JobType, source, output, format string, concurrency int, limitRate int64) (*store.Job, error) {
 	if source == "" {
 		return nil, fmt.Errorf("source is required")
 	}
@@ -291,6 +292,7 @@ func (d *Daemon) createJob(ctx context.Context, typ store.JobType, source, outpu
 		Output:      output,
 		Format:      format,
 		Concurrency: concurrency,
+		LimitRate:   limitRate,
 		Status:      store.StatusQueued,
 	}
 	if err := d.st.CreateJob(ctx, j); err != nil {
@@ -370,6 +372,7 @@ func (d *Daemon) startURL(j *store.Job) {
 			OutputPath:  j.Output,
 			Concurrency: j.Concurrency,
 			StartOffset: j.ResumeOffset,
+			Limiter:     ratelimit.NewLimiter(j.LimitRate),
 			Progress: func(done, total int64) {
 				d.reportProgress(j.ID, done, total)
 				if single {
@@ -386,6 +389,14 @@ func (d *Daemon) startTorrent(j *store.Job) {
 	rt := &runtime{cancel: cancel, done: make(chan struct{}), lastTime: time.Now(), bytesDone: j.BytesDone, bytesTotal: j.BytesTotal}
 	d.setRuntime(j.ID, rt)
 	d.st.UpdateStatus(context.Background(), j.ID, store.StatusActive, "")
+
+	// anacrolix/torrent's rate limiter is shared by its whole Client, not
+	// per-torrent (see torrentmgr's doc comment) — setting it here means
+	// the most recently started torrent job's limit wins for all
+	// concurrently active ones, not just this one.
+	if j.LimitRate > 0 {
+		d.tm.SetDownloadLimit(j.LimitRate)
+	}
 
 	t, err := d.tm.Add(j.ID, j.Source, j.Output)
 	if err != nil {
@@ -492,6 +503,12 @@ func (d *Daemon) startSocial(j *store.Job) {
 		}
 		if j.Format != "" {
 			args = append(args, "-f", j.Format)
+		}
+		if j.LimitRate > 0 {
+			// yt-dlp has its own native rate limiter — no need to
+			// reimplement one for a subprocess we don't read the bytes
+			// of ourselves.
+			args = append(args, "--limit-rate", strconv.FormatInt(j.LimitRate, 10))
 		}
 		// ffmpeg is needed to merge separately-downloaded video+audio
 		// streams (common with -f "bv*+ba" style selectors). Its

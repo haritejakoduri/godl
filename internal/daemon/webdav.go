@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"godl/internal/connections"
+	"godl/internal/ratelimit"
 	"godl/internal/store"
 	"godl/internal/webdav"
 )
@@ -46,6 +47,12 @@ func (d *Daemon) startWebDAV(j *store.Job) {
 	rt := &runtime{cancel: cancel, done: make(chan struct{}), lastTime: time.Now(), bytesDone: j.BytesDone, bytesTotal: j.BytesTotal}
 	d.setRuntime(j.ID, rt)
 	d.st.UpdateStatus(context.Background(), j.ID, store.StatusActive, "")
+
+	// One limiter instance shared by every file this job downloads
+	// concurrently below (see webdavDownloadConcurrency), so the job's
+	// own cap isn't multiplied by how many files happen to be in
+	// flight at once.
+	limiter := ratelimit.NewLimiter(j.LimitRate)
 
 	go func() {
 		defer close(rt.done)
@@ -150,7 +157,7 @@ func (d *Daemon) startWebDAV(j *store.Job) {
 
 				localPath := webdavLocalPath(j.Output, remotePath, f.Path, root.IsDir)
 				var lastDone int64
-				written, derr := client.Download(ctx, f.Path, localPath, func(done, _ int64) {
+				written, derr := client.Download(ctx, f.Path, localPath, limiter, func(done, _ int64) {
 					newCum := cumulative.Add(done - lastDone)
 					lastDone = done
 					d.reportProgress(j.ID, newCum, total)

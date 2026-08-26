@@ -15,6 +15,9 @@ type Request struct {
 	Output      string `json:"output,omitempty"`
 	Concurrency int    `json:"concurrency,omitempty"`
 	Format      string `json:"format,omitempty"`
+	// LimitRate caps the new job's transfer at this many bytes/second
+	// (0 = unlimited). See store.Job.LimitRate for the torrent caveat.
+	LimitRate int64 `json:"limit_rate,omitempty"`
 
 	// pause / resume / retry / cancel / remove
 	JobID string `json:"job_id,omitempty"`

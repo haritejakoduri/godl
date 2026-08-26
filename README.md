@@ -75,6 +75,7 @@ resume automatically on your next install.
 
 ```sh
 godl url https://example.com/big-file.iso -o out.iso -c 8
+godl url https://example.com/big-file.iso -o out.iso -R 2M   # cap at 2MiB/s
 godl social https://example.com/watch?v=xyz -o ~/Videos -p 1080p
 godl torrent "magnet:?xt=urn:btih:..." -o ~/Downloads
 godl connection add mynas --url https://dav.example.com/remote.php/dav/files/alice/ --username alice
@@ -104,6 +105,15 @@ location (which can be relocated, or in a non-English locale renamed
 entirely) on Linux, and `~/Downloads` — already correct there — on
 macOS. `GODL_DOWNLOADS_DIR` overrides all of that if you want
 downloads to land somewhere else by default.
+
+`-R`/`--limit-rate` (on `url`, `social`, `torrent`, and `webdav`) caps
+that job's own transfer speed, e.g. `-R 500K` or `-R 2M` (accepts a bare
+byte count too). Each job's cap is independent and survives pause/
+resume/retry — with one exception: anacrolix/torrent, the BitTorrent
+library godl uses, only supports a rate limit shared across its whole
+client rather than one per torrent, so `-R` on `godl torrent` really
+means "cap every currently-active torrent job at this combined rate,"
+not just the one you passed it to.
 
 ### `godl url` — direct HTTP(S) downloads
 
@@ -268,6 +278,39 @@ becomes its own background job (a folder job pulls it down
 recursively, preserving that folder's own name and structure under
 the destination), so a single `d` press can kick off any mix of
 individual files and whole folders at once.
+
+### `godl update` — update everything godl manages, including itself
+
+Forces an immediate check for a newer yt-dlp/ffmpeg build (godl checks
+on its own too — see `godl social` above) *and* a newer godl release,
+updating whichever it finds:
+
+```sh
+godl update
+```
+
+Self-update downloads and verifies the platform's raw release binary
+(the same sha256-against-GitHub's-own-digest check described in
+`internal/ghrelease`'s doc comment) and swaps it in for the currently
+running one — safe to do even while other godl commands are running,
+since replacing the file at a path doesn't disturb whatever already
+has it open; only the *next* invocation sees the new binary. This only
+works where there's a raw binary to swap in, though:
+
+- **Windows** ships only the installer (`godl-setup-<version>.exe`),
+  not a standalone binary — grab the newer installer from the
+  [Releases page](https://github.com/haritejakoduri/godl/releases/latest)
+  instead, same as a first install.
+- **Installed via `apt`** (the `.deb` package) is left alone
+  deliberately: dpkg owns `/usr/bin/godl`, and self-replacing it would
+  desync the package database from what's actually on disk. Run
+  `sudo apt update && sudo apt upgrade` instead.
+- Any other platform without a published raw binary (currently just
+  linux/amd64 and darwin/arm64 are built — see `scripts/build-all.sh`)
+  falls back to pointing you at the Releases page too.
+
+`godl update` prints which of these applies rather than silently doing
+nothing.
 
 ## Building from source
 

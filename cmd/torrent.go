@@ -19,6 +19,10 @@ var torrentCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		source := args[0]
 		output, _ := cmd.Flags().GetString("output")
+		limitRate, err := limitRateFlag(cmd)
+		if err != nil {
+			return err
+		}
 
 		if output == "" {
 			def, err := paths.DownloadsDir()
@@ -44,7 +48,7 @@ var torrentCmd = &cobra.Command{
 		if err := daemon.EnsureRunning(); err != nil {
 			return err
 		}
-		resp, err := daemon.Call(daemon.Request{Cmd: daemon.CmdAddTorrent, Source: source, Output: output})
+		resp, err := daemon.Call(daemon.Request{Cmd: daemon.CmdAddTorrent, Source: source, Output: output, LimitRate: limitRate})
 		if err != nil {
 			return err
 		}
@@ -59,4 +63,5 @@ var torrentCmd = &cobra.Command{
 
 func init() {
 	torrentCmd.Flags().StringP("output", "o", "", "output directory (default: your Downloads folder)")
+	torrentCmd.Flags().StringP("limit-rate", "R", "", "cap download speed, e.g. 500K or 2M (default: unlimited). Shared across all active torrent jobs, not just this one — anacrolix/torrent's rate limiter is client-wide")
 }

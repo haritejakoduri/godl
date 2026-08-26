@@ -20,6 +20,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/time/rate"
 )
 
 // Entry describes one file or directory found via PROPFIND. Path is
@@ -315,7 +317,12 @@ func (c *Client) Walk(ctx context.Context, root string) ([]Entry, error) {
 // Download fetches remotePath to localPath, resuming from localPath's
 // existing size via a Range request if it's already partially present.
 // Returns the total bytes now on disk (not just bytes newly written).
-func (c *Client) Download(ctx context.Context, remotePath, localPath string, progress func(done, total int64)) (int64, error) {
+// limiter, if non-nil, caps this download's rate — the same
+// *rate.Limiter instance passed by a caller downloading several files
+// of one job concurrently (see internal/daemon's startWebDAV) shares
+// one cap across all of them, so the job's own concurrency doesn't
+// multiply it.
+func (c *Client) Download(ctx context.Context, remotePath, localPath string, limiter *rate.Limiter, progress func(done, total int64)) (int64, error) {
 	if err := os.MkdirAll(filepath.Dir(localPath), 0o755); err != nil {
 		return 0, err
 	}
@@ -378,6 +385,11 @@ func (c *Client) Download(ctx context.Context, remotePath, localPath string, pro
 	for {
 		n, rerr := resp.Body.Read(buf)
 		if n > 0 {
+			if limiter != nil {
+				if werr := limiter.WaitN(ctx, n); werr != nil {
+					return written, werr
+				}
+			}
 			if _, werr := f.Write(buf[:n]); werr != nil {
 				return written, werr
 			}

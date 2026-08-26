@@ -46,9 +46,17 @@ type Job struct {
 	Output      string // destination file (url) or directory (social/torrent)
 	Format      string // yt-dlp -f value, social jobs only
 	Concurrency int    // url jobs only
-	Status      JobStatus
-	BytesDone   int64
-	BytesTotal  int64
+	// LimitRate caps this job's own transfer at this many bytes/second
+	// (0 = unlimited). Persisted so pause/resume/retry reapply the same
+	// cap the job was started with instead of silently going unlimited.
+	// Torrent jobs share one client-wide limiter (see internal/torrentmgr)
+	// rather than a true per-job one — the last torrent job to set this
+	// wins for all of them, a limitation of the underlying torrent
+	// library, not of this field.
+	LimitRate  int64
+	Status     JobStatus
+	BytesDone  int64
+	BytesTotal int64
 	// ResumeOffset is the confirmed-contiguous byte offset for url jobs
 	// (single-stream path). Concurrent chunked url jobs track resume state
 	// in a sidecar file next to the output instead (see internal/downloader).
@@ -155,6 +163,18 @@ CREATE TABLE IF NOT EXISTS jobs (
 			return err
 		}
 	}
+
+	// limit_rate was added after jobs shipped without it, same as
+	// resolved_paths above.
+	hasCol, err = s.hasColumn("jobs", "limit_rate")
+	if err != nil {
+		return err
+	}
+	if !hasCol {
+		if _, err := s.db.Exec(`ALTER TABLE jobs ADD COLUMN limit_rate INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -203,10 +223,10 @@ func (s *Store) CreateJob(ctx context.Context, j *Job) error {
 	}
 	_, err = s.db.ExecContext(ctx, `
 INSERT INTO jobs (id, type, source, output, format, concurrency, status,
-	bytes_done, bytes_total, resume_offset, info_hash, resolved_paths, error_msg, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	bytes_done, bytes_total, resume_offset, info_hash, resolved_paths, error_msg, limit_rate, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		j.ID, j.Type, j.Source, j.Output, j.Format, j.Concurrency, j.Status,
-		j.BytesDone, j.BytesTotal, j.ResumeOffset, j.InfoHash, string(resolved), j.ErrorMsg,
+		j.BytesDone, j.BytesTotal, j.ResumeOffset, j.InfoHash, string(resolved), j.ErrorMsg, j.LimitRate,
 		j.CreatedAt.Unix(), j.UpdatedAt.Unix())
 	return err
 }
@@ -219,10 +239,10 @@ func (s *Store) UpdateJob(ctx context.Context, j *Job) error {
 	}
 	_, err = s.db.ExecContext(ctx, `
 UPDATE jobs SET type=?, source=?, output=?, format=?, concurrency=?, status=?,
-	bytes_done=?, bytes_total=?, resume_offset=?, info_hash=?, resolved_paths=?, error_msg=?, updated_at=?
+	bytes_done=?, bytes_total=?, resume_offset=?, info_hash=?, resolved_paths=?, error_msg=?, limit_rate=?, updated_at=?
 WHERE id=?`,
 		j.Type, j.Source, j.Output, j.Format, j.Concurrency, j.Status,
-		j.BytesDone, j.BytesTotal, j.ResumeOffset, j.InfoHash, string(resolved), j.ErrorMsg,
+		j.BytesDone, j.BytesTotal, j.ResumeOffset, j.InfoHash, string(resolved), j.ErrorMsg, j.LimitRate,
 		j.UpdatedAt.Unix(), j.ID)
 	return err
 }
@@ -290,7 +310,7 @@ func (s *Store) DeleteJob(ctx context.Context, id string) error {
 func (s *Store) GetJob(ctx context.Context, id string) (*Job, error) {
 	row := s.db.QueryRowContext(ctx, `
 SELECT id, type, source, output, format, concurrency, status,
-	bytes_done, bytes_total, resume_offset, info_hash, resolved_paths, error_msg, created_at, updated_at
+	bytes_done, bytes_total, resume_offset, info_hash, resolved_paths, error_msg, limit_rate, created_at, updated_at
 FROM jobs WHERE id=?`, id)
 	return scanJob(row)
 }
@@ -298,7 +318,7 @@ FROM jobs WHERE id=?`, id)
 func (s *Store) ListJobs(ctx context.Context) ([]*Job, error) {
 	rows, err := s.db.QueryContext(ctx, `
 SELECT id, type, source, output, format, concurrency, status,
-	bytes_done, bytes_total, resume_offset, info_hash, resolved_paths, error_msg, created_at, updated_at
+	bytes_done, bytes_total, resume_offset, info_hash, resolved_paths, error_msg, limit_rate, created_at, updated_at
 FROM jobs ORDER BY created_at ASC`)
 	if err != nil {
 		return nil, err
@@ -324,7 +344,7 @@ func scanJob(row scanner) (*Job, error) {
 	var created, updated int64
 	var resolved string
 	if err := row.Scan(&j.ID, &j.Type, &j.Source, &j.Output, &j.Format, &j.Concurrency,
-		&j.Status, &j.BytesDone, &j.BytesTotal, &j.ResumeOffset, &j.InfoHash, &resolved, &j.ErrorMsg,
+		&j.Status, &j.BytesDone, &j.BytesTotal, &j.ResumeOffset, &j.InfoHash, &resolved, &j.ErrorMsg, &j.LimitRate,
 		&created, &updated); err != nil {
 		return nil, err
 	}

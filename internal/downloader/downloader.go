@@ -17,6 +17,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"golang.org/x/time/rate"
 )
 
 // ProgressFunc is called periodically (roughly every 250ms) with the bytes
@@ -32,6 +34,12 @@ type Options struct {
 	// own sidecar file instead.
 	StartOffset int64
 	Progress    ProgressFunc
+	// Limiter, if non-nil, caps this job's total transfer rate across
+	// every chunk goroutine combined — the same *rate.Limiter instance
+	// is shared by all of them (rate.Limiter is safe for concurrent
+	// use), so splitting into more chunks doesn't multiply the cap.
+	// nil means unlimited.
+	Limiter *rate.Limiter
 }
 
 // Result reports how much was written and whether the download reached
@@ -43,6 +51,16 @@ type Result struct {
 }
 
 func sidecarPath(output string) string { return output + ".godl-progress.json" }
+
+// waitLimiter blocks until l's token bucket allows n more bytes through,
+// pacing the read loop to opt.Limiter's rate; a nil limiter (unlimited)
+// or non-positive n returns immediately.
+func waitLimiter(ctx context.Context, l *rate.Limiter, n int) error {
+	if l == nil || n <= 0 {
+		return nil
+	}
+	return l.WaitN(ctx, n)
+}
 
 // copyBufSize is the read/write buffer size for the streaming copy loops
 // below. 256KiB rather than a smaller default (e.g. 32KiB) cuts the
@@ -166,6 +184,9 @@ func runSingle(ctx context.Context, client *http.Client, opt Options, supportsRa
 	for {
 		n, rerr := resp.Body.Read(buf)
 		if n > 0 {
+			if werr := waitLimiter(ctx, opt.Limiter, n); werr != nil {
+				return Result{BytesDone: written}, werr
+			}
 			if _, werr := f.Write(buf[:n]); werr != nil {
 				return Result{BytesDone: written}, werr
 			}
@@ -314,6 +335,10 @@ func runChunked(ctx context.Context, client *http.Client, opt Options, total int
 			for {
 				n, rerr := resp.Body.Read(buf)
 				if n > 0 {
+					if werr := waitLimiter(ctx, opt.Limiter, n); werr != nil {
+						errCh <- werr
+						return
+					}
 					if _, werr := f.WriteAt(buf[:n], pos); werr != nil {
 						errCh <- werr
 						return

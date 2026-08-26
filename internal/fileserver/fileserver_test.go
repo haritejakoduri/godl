@@ -85,7 +85,7 @@ func TestWebDAVInteropListStatDownload(t *testing.T) {
 	}
 
 	dst := filepath.Join(t.TempDir(), "img.jpg")
-	if _, err := client.Download(ctx, files[0].Path, dst, nil); err != nil {
+	if _, err := client.Download(ctx, files[0].Path, dst, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(dst)

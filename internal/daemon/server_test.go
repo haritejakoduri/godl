@@ -28,7 +28,7 @@ func TestStartRecoversFromPanicWithoutCrashingDaemon(t *testing.T) {
 	d := newTestDaemon(t)
 	ctx := context.Background()
 
-	j, err := d.createJob(ctx, store.JobTorrent, "magnet:?xt=urn:btih:a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2&dn=faketest", t.TempDir(), "", 0)
+	j, err := d.createJob(ctx, store.JobTorrent, "magnet:?xt=urn:btih:a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2&dn=faketest", t.TempDir(), "", 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,7 +57,7 @@ func TestStartRecoversFromPanicWithoutCrashingDaemon(t *testing.T) {
 		t.Fatal(err)
 	}
 	output := t.TempDir()
-	j2, err := d.createJob(ctx, store.JobWebDAV, "survives:/a.txt", output, "", 0)
+	j2, err := d.createJob(ctx, store.JobWebDAV, "survives:/a.txt", output, "", 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +76,7 @@ func TestResumeInterruptedJobsSurvivesAPanickingJob(t *testing.T) {
 	d := newTestDaemon(t)
 	ctx := context.Background()
 
-	bad, err := d.createJob(ctx, store.JobTorrent, "magnet:?xt=urn:btih:a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2&dn=faketest", t.TempDir(), "", 0)
+	bad, err := d.createJob(ctx, store.JobTorrent, "magnet:?xt=urn:btih:a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2&dn=faketest", t.TempDir(), "", 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +93,7 @@ func TestResumeInterruptedJobsSurvivesAPanickingJob(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	good, err := d.createJob(ctx, store.JobWebDAV, "good:/a.txt", t.TempDir(), "", 0)
+	good, err := d.createJob(ctx, store.JobWebDAV, "good:/a.txt", t.TempDir(), "", 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,5 +112,48 @@ func TestResumeInterruptedJobsSurvivesAPanickingJob(t *testing.T) {
 	goodFinal := waitForTerminal(t, d, good.ID)
 	if goodFinal.Status != store.StatusCompleted {
 		t.Errorf("good job ended as %s: %s", goodFinal.Status, goodFinal.ErrorMsg)
+	}
+}
+
+// TestCreateJobPersistsLimitRate is a regression test for --limit-rate:
+// createJob's new limitRate parameter has to actually make it into the
+// real sqlite row (via store.Job.LimitRate and the limit_rate column),
+// not just live in the in-memory *store.Job createJob happens to
+// return — pause/resume/retry all re-fetch the job from the store
+// before re-starting it (see resume/retry), so anything that only set
+// the field on the return value without persisting it would silently
+// lose the cap the moment a job was paused and resumed.
+func TestCreateJobPersistsLimitRate(t *testing.T) {
+	d := newTestDaemon(t)
+	ctx := context.Background()
+
+	const wantRate = int64(500 * 1024) // 500KiB/s
+	j, err := d.createJob(ctx, store.JobURL, "http://example.com/f", t.TempDir(), "", 1, wantRate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if j.LimitRate != wantRate {
+		t.Fatalf("createJob's returned job.LimitRate = %d, want %d", j.LimitRate, wantRate)
+	}
+
+	reread, err := d.st.GetJob(ctx, j.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reread.LimitRate != wantRate {
+		t.Fatalf("GetJob after createJob: LimitRate = %d, want %d (not persisted to the DB row)", reread.LimitRate, wantRate)
+	}
+
+	// UpdateJob (used by finishJob, retry, ...) must round-trip it too.
+	reread.BytesDone = 123
+	if err := d.st.UpdateJob(ctx, reread); err != nil {
+		t.Fatal(err)
+	}
+	afterUpdate, err := d.st.GetJob(ctx, j.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterUpdate.LimitRate != wantRate {
+		t.Fatalf("GetJob after UpdateJob: LimitRate = %d, want %d", afterUpdate.LimitRate, wantRate)
 	}
 }

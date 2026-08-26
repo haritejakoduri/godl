@@ -21,6 +21,10 @@ recursively, preserving its directory structure under -o.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		connName, remotePath := args[0], args[1]
 		output, _ := cmd.Flags().GetString("output")
+		limitRate, err := limitRateFlag(cmd)
+		if err != nil {
+			return err
+		}
 
 		if output == "" {
 			def, err := paths.DownloadsDir()
@@ -39,9 +43,10 @@ recursively, preserving its directory structure under -o.`,
 			return err
 		}
 		resp, err := daemon.Call(daemon.Request{
-			Cmd:    daemon.CmdAddWebDAV,
-			Source: connName + ":" + remotePath,
-			Output: output,
+			Cmd:       daemon.CmdAddWebDAV,
+			Source:    connName + ":" + remotePath,
+			Output:    output,
+			LimitRate: limitRate,
 		})
 		if err != nil {
 			return err
@@ -57,4 +62,5 @@ recursively, preserving its directory structure under -o.`,
 
 func init() {
 	webdavCmd.Flags().StringP("output", "o", "", "output directory (default: your Downloads folder)")
+	webdavCmd.Flags().StringP("limit-rate", "R", "", "cap this download's speed, e.g. 500K or 2M (default: unlimited)")
 }

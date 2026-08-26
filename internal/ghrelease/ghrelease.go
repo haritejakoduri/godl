@@ -65,6 +65,38 @@ func AssetDigest(ctx context.Context, releasesURL, assetName string) (sha256Hex 
 	return "", fmt.Errorf("asset %s not found in release metadata", assetName)
 }
 
+// TagName fetches the git tag name of the release at releasesURL (e.g.
+// "v0.3.0" for godl's own releases, which internal/version.Version
+// compares against with the "v" trimmed off). Used by internal/selfupdate
+// to decide whether a newer godl release exists at all, separately from
+// AssetDigest's per-asset checksum lookup.
+func TagName(ctx context.Context, releasesURL string) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, releasesURL, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("fetching release metadata: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("fetching release metadata: unexpected status: %s", resp.Status)
+	}
+
+	var release struct {
+		TagName string `json:"tag_name"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
+		return "", fmt.Errorf("parsing release metadata: %w", err)
+	}
+	if release.TagName == "" {
+		return "", fmt.Errorf("release metadata has no tag_name")
+	}
+	return release.TagName, nil
+}
+
 // HashingCopy copies from r to w (as io.Copy does) while computing the
 // sha256 of everything read, so a caller can verify a download's
 // integrity without a second pass over the data.

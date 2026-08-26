@@ -7,6 +7,9 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/spf13/cobra"
+
+	"godl/internal/ratelimit"
 	"godl/internal/store"
 )
 
@@ -77,6 +80,18 @@ func truncate(s string, n int) string {
 		return string(r[:n])
 	}
 	return string(r[:n-1]) + "…"
+}
+
+// limitRateFlag reads the shared --limit-rate string flag (registered
+// by url/social/torrent/webdav) and parses it into bytes/second, with
+// "flag not set" (empty string, the default) meaning unlimited rather
+// than an error.
+func limitRateFlag(cmd *cobra.Command) (int64, error) {
+	s, _ := cmd.Flags().GetString("limit-rate")
+	if s == "" {
+		return 0, nil
+	}
+	return ratelimit.ParseRate(s)
 }
 
 // resolveOutputPath resolves output to an absolute path. An empty

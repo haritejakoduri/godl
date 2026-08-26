@@ -17,18 +17,35 @@ import (
 	"github.com/anacrolix/torrent"
 	"github.com/anacrolix/torrent/metainfo"
 	"github.com/anacrolix/torrent/storage"
+	"golang.org/x/time/rate"
 )
 
 type Manager struct {
 	client *torrent.Client
 
+	// dlLimiter caps download bandwidth across every torrent this
+	// client is running — anacrolix/torrent only supports a
+	// client-wide rate limiter (ClientConfig.DownloadRateLimiter), not
+	// one per torrent, so unlike godl url/webdav's genuinely per-job
+	// limiting, a torrent job's --limit-rate is really "set the shared
+	// cap all active torrent jobs currently pull against." See
+	// SetDownloadLimit.
+	dlLimiter *rate.Limiter
+
 	mu     sync.Mutex
 	active map[string]*torrent.Torrent // jobID -> live torrent
 }
 
+// unlimitedBurst is large enough that the rate limiter never itself
+// throttles a burst below Inf/no-limit — only SetDownloadLimit's
+// non-default rate does that (via its own, tighter burst).
+const unlimitedBurst = 64 * 1024 * 1024
+
 func New(dataDir string) (*Manager, error) {
 	cfg := torrent.NewDefaultClientConfig()
 	cfg.DataDir = dataDir
+	dlLimiter := rate.NewLimiter(rate.Inf, unlimitedBurst)
+	cfg.DownloadRateLimiter = dlLimiter
 	cl, err := torrent.NewClient(cfg)
 	if err != nil {
 		// The default config listens on both IPv4 and IPv6; on a host/
@@ -44,7 +61,31 @@ func New(dataDir string) (*Manager, error) {
 			return nil, fmt.Errorf("starting torrent client: %w", err)
 		}
 	}
-	return &Manager{client: cl, active: map[string]*torrent.Torrent{}}, nil
+	return &Manager{client: cl, dlLimiter: dlLimiter, active: map[string]*torrent.Torrent{}}, nil
+}
+
+// SetDownloadLimit caps every active (and future) torrent's combined
+// download rate at bytesPerSec bytes/second, or removes the cap
+// entirely for bytesPerSec <= 0. See the client-wide caveat on
+// Manager.dlLimiter: this isn't scoped to one job.
+func (m *Manager) SetDownloadLimit(bytesPerSec int64) {
+	if bytesPerSec <= 0 {
+		m.dlLimiter.SetLimit(rate.Inf)
+		m.dlLimiter.SetBurst(unlimitedBurst)
+		return
+	}
+	// Same reasoning as internal/ratelimit's minBurst: the burst has to
+	// comfortably cover whatever single read/chunk size anacrolix uses
+	// internally, or its WaitN-equivalent calls would error outright
+	// instead of just pacing — so it's floored, never set below a
+	// generous minimum regardless of how low bytesPerSec itself is.
+	const minBurst = 1024 * 1024
+	burst := bytesPerSec
+	if burst < minBurst {
+		burst = minBurst
+	}
+	m.dlLimiter.SetLimit(rate.Limit(bytesPerSec))
+	m.dlLimiter.SetBurst(int(burst))
 }
 
 func (m *Manager) Close() {

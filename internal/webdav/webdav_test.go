@@ -191,7 +191,7 @@ func TestDownloadAndResume(t *testing.T) {
 	dir := t.TempDir()
 	local := filepath.Join(dir, "out.txt")
 
-	n, err := c.Download(context.Background(), "/file1.txt", local, nil, nil)
+	n, err := c.Download(context.Background(), "/file1.txt", local, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -211,7 +211,7 @@ func TestDownloadAndResume(t *testing.T) {
 	if err := os.Truncate(local, 6); err != nil {
 		t.Fatal(err)
 	}
-	n, err = c.Download(context.Background(), "/file1.txt", local, nil, nil)
+	n, err = c.Download(context.Background(), "/file1.txt", local, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

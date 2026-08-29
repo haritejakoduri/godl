@@ -105,6 +105,20 @@ type bulkActionDoneMsg struct {
 	err        error // first error encountered, if failed > 0
 }
 
+// settingsLoadedMsg/settingsSavedMsg carry the daemon's response to
+// get_settings/set_settings back into Update — see loadSettings/
+// saveSettings. Both are handled even if m.settings is nil by the time
+// they arrive (the overlay was closed before the round trip finished),
+// in which case they're just dropped.
+type settingsLoadedMsg struct {
+	settings store.Settings
+	err      error
+}
+type settingsSavedMsg struct {
+	settings store.Settings
+	err      error
+}
+
 type statusModel struct {
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -141,6 +155,11 @@ type statusModel struct {
 	// state, or is nil when the overlay isn't showing — same
 	// overlay-over-the-table convention as newJob/confirmRemove.
 	webdavBrowse *webdavBrowseState
+
+	// settings holds the Settings tab's state, or is nil when it isn't
+	// showing — same overlay-over-the-table convention as newJob/
+	// webdavBrowse/confirmRemove.
+	settings *settingsState
 }
 
 type pendingRemove struct {
@@ -490,12 +509,42 @@ func (m statusModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case settingsLoadedMsg:
+		if m.settings == nil {
+			return m, nil // tab was closed before this response arrived
+		}
+		m.settings.loading = false
+		if msg.err != nil {
+			m.settings.err = msg.err.Error()
+			return m, nil
+		}
+		m.settings.current = msg.settings
+		m.settings.err = ""
+		return m, nil
+
+	case settingsSavedMsg:
+		if m.settings == nil {
+			return m, nil
+		}
+		if msg.err != nil {
+			m.settings.err = msg.err.Error()
+			m.settings.saved = false
+			return m, nil
+		}
+		m.settings.current = msg.settings
+		m.settings.err = ""
+		m.settings.saved = true
+		return m, nil
+
 	case tea.KeyMsg:
 		if m.newJob != nil {
 			return m.updateNewJob(msg)
 		}
 		if m.webdavBrowse != nil {
 			return m.updateWebDAVBrowse(msg)
+		}
+		if m.settings != nil {
+			return m.updateSettings(msg)
 		}
 		if m.confirmRemove != nil {
 			pending := *m.confirmRemove
@@ -534,6 +583,9 @@ func (m statusModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.webdavBrowse = &webdavBrowseState{step: webdavPickConn, conns: conns}
 			return m, nil
+		case "s":
+			m.settings = &settingsState{loading: true}
+			return m, loadSettings()
 		case " ":
 			idx := m.table.Cursor()
 			if idx < 0 || idx >= len(m.jobs) {
@@ -795,6 +847,8 @@ func (m statusModel) View() string {
 		b.WriteString(m.viewNewJob())
 	case m.webdavBrowse != nil:
 		b.WriteString(m.viewWebDAVBrowse())
+	case m.settings != nil:
+		b.WriteString(m.viewSettings())
 	case m.statusMsg != "":
 		b.WriteString(statStyle.Render(m.statusMsg))
 		b.WriteString("\n")
@@ -805,7 +859,7 @@ func (m statusModel) View() string {
 		b.WriteString(errStyle.Render(m.selectedJobError()))
 		b.WriteString("\n")
 	}
-	b.WriteString(helpStyle.Render("space select  p pause  r resume  x cancel  R retry  d remove  D remove+delete file  n new download  w browse webdav  ↑/↓ navigate  q quit"))
+	b.WriteString(helpStyle.Render("space select  p pause  r resume  x cancel  R retry  d remove  D remove+delete file  n new download  w browse webdav  s settings  ↑/↓ navigate  q quit"))
 	return b.String()
 }
 

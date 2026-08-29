@@ -4,6 +4,7 @@
 package ratelimit
 
 import (
+	"context"
 	"fmt"
 	"strconv"
 	"strings"
@@ -74,4 +75,26 @@ func NewLimiter(bytesPerSec int64) *rate.Limiter {
 		burst = minBurst
 	}
 	return rate.NewLimiter(rate.Limit(bytesPerSec), int(burst))
+}
+
+// WaitAll blocks until every non-nil limiter in limiters allows n more
+// bytes through, so a transfer capped by more than one limiter at once
+// (a job's own --limit-rate and the Settings tab's shared global cap,
+// say) waits on whichever is actually more restrictive at that moment
+// instead of only ever checking the first one. nil entries (an unset
+// cap) and n<=0 are no-ops, so callers don't need to filter those out
+// themselves before calling.
+func WaitAll(ctx context.Context, n int, limiters ...*rate.Limiter) error {
+	if n <= 0 {
+		return nil
+	}
+	for _, l := range limiters {
+		if l == nil {
+			continue
+		}
+		if err := l.WaitN(ctx, n); err != nil {
+			return err
+		}
+	}
+	return nil
 }

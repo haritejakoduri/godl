@@ -91,10 +91,12 @@ func newTestDaemon(t *testing.T) *Daemon {
 	}
 	t.Cleanup(func() { st.Close() })
 	return &Daemon{
-		st:       st,
-		dataDir:  dir,
-		runtimes: map[string]*runtime{},
-		logSubs:  map[chan logMsg]struct{}{},
+		st:          st,
+		dataDir:     dir,
+		runtimes:    map[string]*runtime{},
+		logSubs:     map[chan logMsg]struct{}{},
+		settings:    store.DefaultSettings(),
+		retryTimers: map[string]*time.Timer{},
 	}
 }
 

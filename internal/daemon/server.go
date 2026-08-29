@@ -18,8 +18,11 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/time/rate"
+
 	"godl/internal/downloader"
 	"godl/internal/ffmpeg"
+	"godl/internal/notify"
 	"godl/internal/paths"
 	"godl/internal/ratelimit"
 	"godl/internal/store"
@@ -69,6 +72,48 @@ type Daemon struct {
 
 	logMu   sync.Mutex
 	logSubs map[chan logMsg]struct{}
+
+	// settingsMu guards settings, the in-memory cache of the store's
+	// settings table — read on every job start/finish (max concurrency,
+	// default rate limit, auto-retry, notifications), so those hot
+	// paths don't hit sqlite each time. Refreshed on every set_settings.
+	settingsMu sync.RWMutex
+	settings   store.Settings
+
+	// globalMu guards globalLimiter and globalRateLimitBps, both derived
+	// from settings.GlobalRateLimit and rebuilt together (see
+	// rebuildGlobalLimiter) whenever it changes.
+	//
+	// globalLimiter is one *rate.Limiter instance shared by every
+	// concurrently active url/webdav job's download loop — since
+	// rate.Limiter is safe for concurrent use, handing the very same
+	// instance to N jobs at once makes their combined throughput share
+	// one token bucket, actually enforcing "N jobs together stay under
+	// this ceiling" rather than each independently allowing up to it
+	// (which would let combined throughput reach N times the setting).
+	// nil means unlimited.
+	//
+	// globalRateLimitBps is the same cap as a raw bytes/sec number,
+	// for job types that can't share globalLimiter's bucket: torrent
+	// (anacrolix/torrent takes its own single client-wide limiter, not
+	// an externally supplied *rate.Limiter) and social (a yt-dlp
+	// subprocess, capped via its own --limit-rate flag). Those job
+	// types instead each get individually capped at
+	// min(their own LimitRate, globalRateLimitBps) — every such job
+	// individually respects the ceiling, but since they're not drawing
+	// from one shared bucket, several running at once (or alongside
+	// url/webdav jobs, which do share the real bucket) can still add up
+	// to more than globalRateLimitBps combined. 0 means unlimited.
+	globalMu           sync.RWMutex
+	globalLimiter      *rate.Limiter
+	globalRateLimitBps int64
+
+	// retryMu guards retryTimers, the pending auto-retry backoff timers
+	// keyed by job ID (see scheduleAutoRetry/finishJob) — tracked so
+	// Close can stop them, rather than letting one fire after the store
+	// it would write to is already closed.
+	retryMu     sync.Mutex
+	retryTimers map[string]*time.Timer
 }
 
 func NewDaemon() (*Daemon, error) {
@@ -93,13 +138,118 @@ func NewDaemon() (*Daemon, error) {
 		st.Close()
 		return nil, err
 	}
-	return &Daemon{
-		st:       st,
-		tm:       tm,
-		dataDir:  dataDir,
-		runtimes: map[string]*runtime{},
-		logSubs:  map[chan logMsg]struct{}{},
-	}, nil
+	settings, err := st.GetSettings(context.Background())
+	if err != nil {
+		tm.Close()
+		st.Close()
+		return nil, err
+	}
+	d := &Daemon{
+		st:          st,
+		tm:          tm,
+		dataDir:     dataDir,
+		runtimes:    map[string]*runtime{},
+		logSubs:     map[chan logMsg]struct{}{},
+		settings:    settings,
+		retryTimers: map[string]*time.Timer{},
+	}
+	d.rebuildGlobalLimiter(settings)
+	return d, nil
+}
+
+// rebuildGlobalLimiter derives globalLimiter/globalRateLimitBps from
+// s.GlobalRateLimit and swaps them in — called at startup and after
+// every successful applySettings. A fresh *rate.Limiter (rather than
+// mutating the existing one's rate) means every job currently holding
+// a reference to the old instance keeps running against the cap it
+// started with until it naturally picks up the new one on its own next
+// start, the same "don't retroactively change a running job's own
+// LimitRate either" behavior the per-job cap already has.
+func (d *Daemon) rebuildGlobalLimiter(s store.Settings) {
+	var bps int64
+	if s.GlobalRateLimit != "" {
+		if parsed, err := ratelimit.ParseRate(s.GlobalRateLimit); err == nil {
+			bps = parsed
+		}
+	}
+	d.globalMu.Lock()
+	d.globalLimiter = ratelimit.NewLimiter(bps)
+	d.globalRateLimitBps = bps
+	d.globalMu.Unlock()
+}
+
+func (d *Daemon) cachedGlobalLimiter() *rate.Limiter {
+	d.globalMu.RLock()
+	defer d.globalMu.RUnlock()
+	return d.globalLimiter
+}
+
+func (d *Daemon) cachedGlobalRateLimitBps() int64 {
+	d.globalMu.RLock()
+	defer d.globalMu.RUnlock()
+	return d.globalRateLimitBps
+}
+
+// minPositiveRate returns the smaller of a and b, treating <=0 as
+// "unset" rather than "zero" — so a job with no cap of its own still
+// picks up a global cap, and a global cap of 0 (unlimited) doesn't
+// clobber a job's own explicit cap. Returns 0 (unlimited) only when
+// both are unset.
+func minPositiveRate(a, b int64) int64 {
+	switch {
+	case a <= 0:
+		return b
+	case b <= 0:
+		return a
+	case a < b:
+		return a
+	default:
+		return b
+	}
+}
+
+func (d *Daemon) cachedSettings() store.Settings {
+	d.settingsMu.RLock()
+	defer d.settingsMu.RUnlock()
+	return d.settings
+}
+
+func (d *Daemon) setCachedSettings(s store.Settings) {
+	d.settingsMu.Lock()
+	d.settings = s
+	d.settingsMu.Unlock()
+}
+
+// applySettings validates s, persists it, refreshes the in-memory
+// cache, and — since MaxConcurrent may have just gone up — tries to
+// start whatever's queued. Returns the settings actually saved (equal
+// to s on success; validation errors are rejected outright rather than
+// silently clamped, so what the caller sees saved is always exactly
+// what it asked for).
+func (d *Daemon) applySettings(ctx context.Context, s store.Settings) (store.Settings, error) {
+	if s.MaxConcurrent < 0 {
+		return store.Settings{}, fmt.Errorf("max concurrent downloads can't be negative")
+	}
+	if s.DefaultRateLimit != "" {
+		if _, err := ratelimit.ParseRate(s.DefaultRateLimit); err != nil {
+			return store.Settings{}, err
+		}
+	}
+	if s.GlobalRateLimit != "" {
+		if _, err := ratelimit.ParseRate(s.GlobalRateLimit); err != nil {
+			return store.Settings{}, err
+		}
+	}
+	if s.AutoRetryMaxAttempts < 1 {
+		return store.Settings{}, fmt.Errorf("auto-retry max attempts must be at least 1")
+	}
+	if err := d.st.SaveSettings(ctx, s); err != nil {
+		return store.Settings{}, err
+	}
+	d.setCachedSettings(s)
+	d.rebuildGlobalLimiter(s)
+	d.tryStartQueued()
+	return s, nil
 }
 
 // Serve accepts connections on the Unix socket until the listener closes.
@@ -151,10 +301,23 @@ func (d *Daemon) resumeInterruptedJobs() {
 		return
 	}
 	for _, j := range jobs {
-		if j.Status == store.StatusActive || j.Status == store.StatusQueued {
-			log.Printf("resuming interrupted job %s (%s)", j.ID, j.Type)
-			d.start(j)
+		if j.Status != store.StatusActive && j.Status != store.StatusQueued {
+			continue
 		}
+		log.Printf("resuming interrupted job %s (%s)", j.ID, j.Type)
+		// Normalize to Queued before dispatch: start() may leave it
+		// there rather than actually running it (MaxConcurrent already
+		// full from an earlier job in this same loop), and a job stuck
+		// showing "active" while nothing is running it would be wrong —
+		// tryStartQueued only ever looks for StatusQueued.
+		if j.Status != store.StatusQueued {
+			j.Status = store.StatusQueued
+			if err := d.st.UpdateJob(ctx, j); err != nil {
+				log.Printf("resume scan: updating %s to queued: %v", j.ID, err)
+				continue
+			}
+		}
+		d.start(j)
 	}
 }
 
@@ -257,6 +420,22 @@ func (d *Daemon) dispatch(conn net.Conn, req Request) {
 	case CmdSubscribe:
 		d.streamSnapshots(conn)
 
+	case CmdGetSettings:
+		s := d.cachedSettings()
+		writeResp(conn, Response{Type: "result", OK: true, Settings: &s})
+
+	case CmdSetSettings:
+		if req.Settings == nil {
+			writeResp(conn, errResp(fmt.Errorf("settings is required")))
+			return
+		}
+		applied, err := d.applySettings(ctx, *req.Settings)
+		if err != nil {
+			writeResp(conn, errResp(err))
+			return
+		}
+		writeResp(conn, Response{Type: "result", OK: true, Settings: &applied})
+
 	default:
 		writeResp(conn, Response{Type: "error", Error: "unknown command: " + req.Cmd})
 	}
@@ -280,6 +459,18 @@ func (d *Daemon) createJob(ctx context.Context, typ store.JobType, source, outpu
 	}
 	if concurrency < 1 {
 		concurrency = 1
+	}
+	// A job that didn't ask for its own --limit-rate falls back to the
+	// settings-tab default, if one's set — parse errors here would mean
+	// a bad value slipped past applySettings' own validation, so
+	// treating that as "no default" rather than failing job creation
+	// over it is the safer failure mode.
+	if limitRate == 0 {
+		if def := d.cachedSettings().DefaultRateLimit; def != "" {
+			if parsed, err := ratelimit.ParseRate(def); err == nil {
+				limitRate = parsed
+			}
+		}
 	}
 	id, err := d.st.NewID(ctx)
 	if err != nil {
@@ -313,7 +504,19 @@ func (d *Daemon) createJob(ctx context.Context, typ store.JobType, source, outpu
 // daemon on every subsequent restart, forever. Recovered panics are
 // reported the same way an ordinary error would be: the job fails, and
 // every other job keeps running.
+//
+// Every caller that wants a job running — the four add_* handlers,
+// resume, retry, resumeInterruptedJobs, and the auto-retry timer — goes
+// through here rather than calling a startX function directly, so the
+// max-concurrent-downloads cap (see acquireSlot) only has to be
+// enforced in one place. When the cap is full, start is a no-op: the
+// job simply stays in the store as StatusQueued (every caller sets that
+// before calling start, same as a brand new job already does) and
+// tryStartQueued picks it up once a slot frees.
 func (d *Daemon) start(j *store.Job) {
+	if !d.acquireSlot(j.ID) {
+		return
+	}
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("recovered from panic starting job %s (%s): %v", j.ID, j.Type, r)
@@ -330,7 +533,35 @@ func (d *Daemon) start(j *store.Job) {
 		d.startSocial(j)
 	case store.JobWebDAV:
 		d.startWebDAV(j)
+	default:
+		// Unreachable for any job actually created by createJob, but
+		// without this the slot acquired above would never be
+		// released, permanently shrinking capacity by one.
+		d.clearRuntime(j.ID)
 	}
+}
+
+// acquireSlot reserves a concurrency slot for job id, if the daemon's
+// MaxConcurrent setting allows it (0 = unlimited) and id isn't already
+// running. The reservation is a placeholder runtime entry — whichever
+// startX function id's job reaches next immediately overwrites it via
+// its own setRuntime call with the real cancel func — so the capacity
+// check and the reservation happen atomically under one lock, with no
+// gap for a second concurrent start() call to slip through. Released by
+// clearRuntime, which also triggers tryStartQueued so a freed slot
+// doesn't sit idle while other jobs wait.
+func (d *Daemon) acquireSlot(id string) bool {
+	max := d.cachedSettings().MaxConcurrent
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if _, running := d.runtimes[id]; running {
+		return false
+	}
+	if max > 0 && len(d.runtimes) >= max {
+		return false
+	}
+	d.runtimes[id] = &runtime{done: make(chan struct{})}
+	return true
 }
 
 func (d *Daemon) setRuntime(id string, rt *runtime) {
@@ -349,6 +580,47 @@ func (d *Daemon) clearRuntime(id string) {
 	d.mu.Lock()
 	delete(d.runtimes, id)
 	d.mu.Unlock()
+	d.tryStartQueued()
+}
+
+// tryStartQueued starts as many queued jobs (oldest first) as
+// MaxConcurrent currently allows — called whenever a running job's slot
+// frees up (clearRuntime) and whenever the setting itself changes
+// (applySettings), so a raised cap or a job finishing doesn't leave
+// something queued that could be running. A no-op when unlimited or
+// nothing's queued.
+func (d *Daemon) tryStartQueued() {
+	ctx := context.Background()
+	for {
+		max := d.cachedSettings().MaxConcurrent
+		d.mu.Lock()
+		full := max > 0 && len(d.runtimes) >= max
+		d.mu.Unlock()
+		if full {
+			return
+		}
+		j, err := d.nextQueuedJob(ctx)
+		if err != nil || j == nil {
+			return
+		}
+		d.start(j)
+	}
+}
+
+// nextQueuedJob returns the oldest StatusQueued job, or nil if there is
+// none. ListJobs already orders oldest-created-first, so the first
+// match is it.
+func (d *Daemon) nextQueuedJob(ctx context.Context) (*store.Job, error) {
+	jobs, err := d.st.ListJobs(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, j := range jobs {
+		if j.Status == store.StatusQueued {
+			return j, nil
+		}
+	}
+	return nil, nil
 }
 
 func (d *Daemon) startURL(j *store.Job) {
@@ -369,12 +641,13 @@ func (d *Daemon) startURL(j *store.Job) {
 		defer d.clearRuntime(j.ID)
 
 		res, err := downloader.Run(ctx, downloader.Options{
-			URL:         j.Source,
-			OutputPath:  j.Output,
-			Concurrency: j.Concurrency,
-			StartOffset: j.ResumeOffset,
-			Limiter:     ratelimit.NewLimiter(j.LimitRate),
-			Sha256:      j.Sha256,
+			URL:           j.Source,
+			OutputPath:    j.Output,
+			Concurrency:   j.Concurrency,
+			StartOffset:   j.ResumeOffset,
+			Limiter:       ratelimit.NewLimiter(j.LimitRate),
+			GlobalLimiter: d.cachedGlobalLimiter(),
+			Sha256:        j.Sha256,
 			Progress: func(done, total int64) {
 				d.reportProgress(j.ID, done, total)
 				if single {
@@ -395,9 +668,14 @@ func (d *Daemon) startTorrent(j *store.Job) {
 	// anacrolix/torrent's rate limiter is shared by its whole Client, not
 	// per-torrent (see torrentmgr's doc comment) — setting it here means
 	// the most recently started torrent job's limit wins for all
-	// concurrently active ones, not just this one.
-	if j.LimitRate > 0 {
-		d.tm.SetDownloadLimit(j.LimitRate)
+	// concurrently active ones, not just this one. The global cap (see
+	// Daemon.globalRateLimitBps's doc comment) can't share url/webdav's
+	// real single bucket for the same reason — anacrolix only accepts
+	// one client-wide limiter of its own — so it's applied here as an
+	// upper clamp instead: whichever of this job's own rate and the
+	// global cap is more restrictive wins.
+	if effective := minPositiveRate(j.LimitRate, d.cachedGlobalRateLimitBps()); effective > 0 {
+		d.tm.SetDownloadLimit(effective)
 	}
 
 	t, err := d.tm.Add(j.ID, j.Source, j.Output)
@@ -506,11 +784,13 @@ func (d *Daemon) startSocial(j *store.Job) {
 		if j.Format != "" {
 			args = append(args, "-f", j.Format)
 		}
-		if j.LimitRate > 0 {
-			// yt-dlp has its own native rate limiter — no need to
-			// reimplement one for a subprocess we don't read the bytes
-			// of ourselves.
-			args = append(args, "--limit-rate", strconv.FormatInt(j.LimitRate, 10))
+		// yt-dlp has its own native rate limiter — no need to
+		// reimplement one for a subprocess we don't read the bytes of
+		// ourselves. Same clamp-not-share treatment as torrent's global
+		// cap: whichever of this job's own rate and the global cap is
+		// more restrictive is what yt-dlp actually gets told.
+		if effective := minPositiveRate(j.LimitRate, d.cachedGlobalRateLimitBps()); effective > 0 {
+			args = append(args, "--limit-rate", strconv.FormatInt(effective, 10))
 		}
 		// ffmpeg is needed to merge separately-downloaded video+audio
 		// streams (common with -f "bv*+ba" style selectors). Its
@@ -639,20 +919,97 @@ func (d *Daemon) finishJob(id string, bytesDone int64, completed bool, err error
 	if job.Type == store.JobURL {
 		job.ResumeOffset = bytesDone
 	}
+
+	// > 0 once set means "schedule an auto-retry after this persists".
+	var retryDelay time.Duration
 	switch {
 	case completed:
 		job.Status = store.StatusCompleted
 		job.ErrorMsg = ""
+		job.RetryCount = 0
 	case errors.Is(err, context.Canceled):
 		job.Status = store.StatusPaused
 	case err != nil:
 		job.Status = store.StatusFailed
 		job.ErrorMsg = err.Error()
+		if s := d.cachedSettings(); s.AutoRetry && job.RetryCount < s.AutoRetryMaxAttempts {
+			job.RetryCount++
+			retryDelay = autoRetryBackoff(job.RetryCount)
+			job.ErrorMsg = fmt.Sprintf("%s (auto-retry %d/%d in %s)", err.Error(), job.RetryCount, s.AutoRetryMaxAttempts, retryDelay.Round(time.Second))
+		}
 	default:
 		job.Status = store.StatusFailed
 		job.ErrorMsg = "job ended without completing"
 	}
 	d.st.UpdateJob(ctx, job)
+
+	if completed && d.cachedSettings().NotifyOnComplete {
+		go notify.Send("godl: download complete", notifyBody(job))
+	}
+	if retryDelay > 0 {
+		d.scheduleAutoRetry(id, retryDelay)
+	}
+}
+
+// notifyBody is the one-line summary a completion notification shows:
+// the downloaded file's name when known, falling back to the source
+// (e.g. a torrent job before its content path resolves, though by the
+// time a job reaches "completed" that's already set for every type).
+func notifyBody(job *store.Job) string {
+	if job.Output != "" {
+		return filepath.Base(job.Output)
+	}
+	return job.Source
+}
+
+// autoRetryBackoff returns how long to wait before an auto-retry's
+// attempt'th try (1-indexed): 5s, 15s, 45s, ... tripling each time, up
+// to a 5-minute ceiling so a persistently-broken source doesn't retry
+// so slowly it might as well have stopped, nor so fast it hammers a
+// server that's genuinely down. A package-level var (not a const/plain
+// func call) purely so tests can swap in a near-zero delay instead of
+// actually sleeping.
+var autoRetryBackoff = func(attempt int) time.Duration {
+	delay := 5 * time.Second
+	for i := 1; i < attempt; i++ {
+		delay *= 3
+		if delay >= 5*time.Minute {
+			return 5 * time.Minute
+		}
+	}
+	return delay
+}
+
+// scheduleAutoRetry re-queues job id after delay, unless something else
+// (a manual retry/remove/pause-then-resume) has already moved it out of
+// StatusFailed by the time the timer fires — re-checked rather than
+// assumed, since delay can be minutes and a lot can happen to a job in
+// that time. Tracked in retryTimers so Close can stop any still pending
+// at shutdown, rather than one firing after the store it would write to
+// is already closed.
+func (d *Daemon) scheduleAutoRetry(id string, delay time.Duration) {
+	t := time.AfterFunc(delay, func() {
+		d.retryMu.Lock()
+		delete(d.retryTimers, id)
+		d.retryMu.Unlock()
+
+		ctx := context.Background()
+		job, err := d.st.GetJob(ctx, id)
+		if err != nil || job.Status != store.StatusFailed {
+			return
+		}
+		resetForRetry(job)
+		// RetryCount was already incremented in finishJob when this
+		// retry was scheduled — resetForRetry doesn't touch it, unlike
+		// a manual retry's explicit reset to 0.
+		if err := d.st.UpdateJob(ctx, job); err != nil {
+			return
+		}
+		d.start(job)
+	})
+	d.retryMu.Lock()
+	d.retryTimers[id] = t
+	d.retryMu.Unlock()
 }
 
 func (d *Daemon) reportProgress(jobID string, done, total int64) {
@@ -730,21 +1087,34 @@ func (d *Daemon) resume(ctx context.Context, id string) (*store.Job, error) {
 	if job.Status != store.StatusPaused && job.Status != store.StatusFailed {
 		return nil, fmt.Errorf("job %s is %s, cannot resume", id, job.Status)
 	}
+	// Queued before dispatch, same reason as resumeInterruptedJobs:
+	// start() may leave it there rather than actually running it if
+	// MaxConcurrent is already full, and tryStartQueued only looks for
+	// StatusQueued — leaving it Paused/Failed here would hide it from
+	// ever being picked up once a slot frees.
+	job.Status = store.StatusQueued
+	job.ErrorMsg = ""
+	if err := d.st.UpdateJob(ctx, job); err != nil {
+		return nil, err
+	}
 	d.start(job)
 	return d.st.GetJob(ctx, id)
 }
 
-func (d *Daemon) retry(ctx context.Context, id string) (*store.Job, error) {
-	job, err := d.st.GetJob(ctx, id)
-	if err != nil {
-		return nil, fmt.Errorf("job %s not found", id)
-	}
-	if job.Status == store.StatusActive || job.Status == store.StatusQueued {
-		return nil, fmt.Errorf("job %s is already %s", id, job.Status)
-	}
+// resetForRetry clears a job's progress state so the next start begins
+// completely fresh: byte counters zeroed, any partial output removed
+// (a partial file left in place could otherwise be silently reused by
+// a differently-configured retry — e.g. a --sha256 that would now fail
+// against bytes downloaded before the checksum was added), and status
+// set to Queued. Caller persists via UpdateJob and calls start(); it
+// does NOT touch RetryCount, since manual retry and the auto-retry
+// timer (see finishJob/scheduleAutoRetry) want different behavior
+// there — see each caller.
+func resetForRetry(job *store.Job) {
 	job.BytesDone = 0
 	job.ResumeOffset = 0
 	job.ErrorMsg = ""
+	job.Status = store.StatusQueued
 	if job.Type == store.JobURL {
 		os.Remove(job.Output + ".godl-progress.json")
 		os.Remove(job.Output)
@@ -755,7 +1125,21 @@ func (d *Daemon) retry(ctx context.Context, id string) (*store.Job, error) {
 		}
 		job.ResolvedPaths = nil
 	}
-	job.Status = store.StatusQueued
+}
+
+func (d *Daemon) retry(ctx context.Context, id string) (*store.Job, error) {
+	job, err := d.st.GetJob(ctx, id)
+	if err != nil {
+		return nil, fmt.Errorf("job %s not found", id)
+	}
+	if job.Status == store.StatusActive || job.Status == store.StatusQueued {
+		return nil, fmt.Errorf("job %s is already %s", id, job.Status)
+	}
+	resetForRetry(job)
+	// A manual retry is an explicit fresh start, not another automated
+	// attempt — reset the auto-retry streak so it gets the full backoff
+	// budget again rather than picking up where it left off.
+	job.RetryCount = 0
 	if err := d.st.UpdateJob(ctx, job); err != nil {
 		return nil, err
 	}
@@ -988,6 +1372,12 @@ func (lw *lineWriter) flush() {
 }
 
 func (d *Daemon) Close() {
+	d.retryMu.Lock()
+	for _, t := range d.retryTimers {
+		t.Stop()
+	}
+	d.retryTimers = nil
+	d.retryMu.Unlock()
 	d.tm.Close()
 	d.st.Close()
 }

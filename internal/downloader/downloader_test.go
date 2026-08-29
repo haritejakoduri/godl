@@ -10,6 +10,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"golang.org/x/time/rate"
 )
 
 func digestHex(body []byte) string {
@@ -90,5 +93,31 @@ func TestRunSkipsVerificationWhenSha256Empty(t *testing.T) {
 	}
 	if _, statErr := os.Stat(out); statErr != nil {
 		t.Fatalf("expected output file to remain, stat err = %v", statErr)
+	}
+}
+
+// TestRunHonorsGlobalLimiter confirms Options.GlobalLimiter actually
+// participates in the copy loop (via waitLimiters), not just Limiter —
+// an exhausted global limiter with a short-deadline context must make
+// Run fail rather than complete instantly, even though the per-job
+// Limiter field is left nil (unlimited).
+func TestRunHonorsGlobalLimiter(t *testing.T) {
+	body := []byte("this file would download instantly if GlobalLimiter were ignored")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Accept-Ranges", "bytes")
+		w.Write(body)
+	}))
+	defer srv.Close()
+
+	exhausted := rate.NewLimiter(rate.Limit(0.0001), 1) // ~1 token per ~3 hours
+	exhausted.AllowN(time.Now(), 1)                     // drain the one burst token
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	out := filepath.Join(t.TempDir(), "out.bin")
+	_, err := Run(ctx, Options{URL: srv.URL, OutputPath: out, GlobalLimiter: exhausted})
+	if err == nil {
+		t.Fatal("Run with an exhausted GlobalLimiter and a short deadline succeeded, want an error (GlobalLimiter was not consulted)")
 	}
 }

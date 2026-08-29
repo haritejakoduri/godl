@@ -51,8 +51,11 @@ func (d *Daemon) startWebDAV(j *store.Job) {
 	// One limiter instance shared by every file this job downloads
 	// concurrently below (see webdavDownloadConcurrency), so the job's
 	// own cap isn't multiplied by how many files happen to be in
-	// flight at once.
+	// flight at once. globalLimiter is the Settings tab's shared
+	// bandwidth cap, the same instance every url/webdav job across the
+	// whole daemon draws from — see Daemon.globalLimiter's doc comment.
 	limiter := ratelimit.NewLimiter(j.LimitRate)
+	globalLimiter := d.cachedGlobalLimiter()
 
 	go func() {
 		defer close(rt.done)
@@ -157,7 +160,7 @@ func (d *Daemon) startWebDAV(j *store.Job) {
 
 				localPath := webdavLocalPath(j.Output, remotePath, f.Path, root.IsDir)
 				var lastDone int64
-				written, derr := client.Download(ctx, f.Path, localPath, limiter, func(done, _ int64) {
+				written, derr := client.Download(ctx, f.Path, localPath, limiter, globalLimiter, func(done, _ int64) {
 					newCum := cumulative.Add(done - lastDone)
 					lastDone = done
 					d.reportProgress(j.ID, newCum, total)

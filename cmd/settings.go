@@ -96,6 +96,22 @@ var settingsFields = []settingsField{
 		},
 	},
 	{
+		label: "Global bandwidth limit",
+		help:  `e.g. "5M"; empty = unlimited. Caps every job's transfer COMBINED, not each one separately (a true shared cap for url/webdav; torrent and social are each individually capped at it instead — see README).`,
+		kind:  settingsFieldText,
+		get:   func(s store.Settings) string { return s.GlobalRateLimit },
+		set: func(s *store.Settings, v string) error {
+			v = strings.TrimSpace(v)
+			if v != "" {
+				if _, err := ratelimit.ParseRate(v); err != nil {
+					return err
+				}
+			}
+			s.GlobalRateLimit = v
+			return nil
+		},
+	},
+	{
 		label:  "Auto-retry on failure",
 		help:   "Automatically re-queues a failed job after a backoff delay instead of leaving it failed.",
 		kind:   settingsFieldBool,

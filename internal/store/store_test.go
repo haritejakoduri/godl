@@ -34,6 +34,7 @@ func TestSaveSettingsRoundTrips(t *testing.T) {
 	want := Settings{
 		MaxConcurrent:        3,
 		DefaultRateLimit:     "2M",
+		GlobalRateLimit:      "10M",
 		AutoRetry:            true,
 		AutoRetryMaxAttempts: 5,
 		NotifyOnComplete:     true,
@@ -52,7 +53,7 @@ func TestSaveSettingsRoundTrips(t *testing.T) {
 	// A second save overwrites cleanly rather than appending stray rows
 	// (the settings table upserts by key) — round-trip a different value
 	// through the same store to catch that regression.
-	want2 := Settings{MaxConcurrent: 0, DefaultRateLimit: "", AutoRetry: false, AutoRetryMaxAttempts: 1, NotifyOnComplete: false}
+	want2 := Settings{MaxConcurrent: 0, DefaultRateLimit: "", GlobalRateLimit: "", AutoRetry: false, AutoRetryMaxAttempts: 1, NotifyOnComplete: false}
 	if err := st.SaveSettings(ctx, want2); err != nil {
 		t.Fatal(err)
 	}

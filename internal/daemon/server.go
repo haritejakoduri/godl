@@ -18,6 +18,8 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/time/rate"
+
 	"godl/internal/downloader"
 	"godl/internal/ffmpeg"
 	"godl/internal/notify"
@@ -78,6 +80,34 @@ type Daemon struct {
 	settingsMu sync.RWMutex
 	settings   store.Settings
 
+	// globalMu guards globalLimiter and globalRateLimitBps, both derived
+	// from settings.GlobalRateLimit and rebuilt together (see
+	// rebuildGlobalLimiter) whenever it changes.
+	//
+	// globalLimiter is one *rate.Limiter instance shared by every
+	// concurrently active url/webdav job's download loop — since
+	// rate.Limiter is safe for concurrent use, handing the very same
+	// instance to N jobs at once makes their combined throughput share
+	// one token bucket, actually enforcing "N jobs together stay under
+	// this ceiling" rather than each independently allowing up to it
+	// (which would let combined throughput reach N times the setting).
+	// nil means unlimited.
+	//
+	// globalRateLimitBps is the same cap as a raw bytes/sec number,
+	// for job types that can't share globalLimiter's bucket: torrent
+	// (anacrolix/torrent takes its own single client-wide limiter, not
+	// an externally supplied *rate.Limiter) and social (a yt-dlp
+	// subprocess, capped via its own --limit-rate flag). Those job
+	// types instead each get individually capped at
+	// min(their own LimitRate, globalRateLimitBps) — every such job
+	// individually respects the ceiling, but since they're not drawing
+	// from one shared bucket, several running at once (or alongside
+	// url/webdav jobs, which do share the real bucket) can still add up
+	// to more than globalRateLimitBps combined. 0 means unlimited.
+	globalMu           sync.RWMutex
+	globalLimiter      *rate.Limiter
+	globalRateLimitBps int64
+
 	// retryMu guards retryTimers, the pending auto-retry backoff timers
 	// keyed by job ID (see scheduleAutoRetry/finishJob) — tracked so
 	// Close can stop them, rather than letting one fire after the store
@@ -114,7 +144,7 @@ func NewDaemon() (*Daemon, error) {
 		st.Close()
 		return nil, err
 	}
-	return &Daemon{
+	d := &Daemon{
 		st:          st,
 		tm:          tm,
 		dataDir:     dataDir,
@@ -122,7 +152,60 @@ func NewDaemon() (*Daemon, error) {
 		logSubs:     map[chan logMsg]struct{}{},
 		settings:    settings,
 		retryTimers: map[string]*time.Timer{},
-	}, nil
+	}
+	d.rebuildGlobalLimiter(settings)
+	return d, nil
+}
+
+// rebuildGlobalLimiter derives globalLimiter/globalRateLimitBps from
+// s.GlobalRateLimit and swaps them in — called at startup and after
+// every successful applySettings. A fresh *rate.Limiter (rather than
+// mutating the existing one's rate) means every job currently holding
+// a reference to the old instance keeps running against the cap it
+// started with until it naturally picks up the new one on its own next
+// start, the same "don't retroactively change a running job's own
+// LimitRate either" behavior the per-job cap already has.
+func (d *Daemon) rebuildGlobalLimiter(s store.Settings) {
+	var bps int64
+	if s.GlobalRateLimit != "" {
+		if parsed, err := ratelimit.ParseRate(s.GlobalRateLimit); err == nil {
+			bps = parsed
+		}
+	}
+	d.globalMu.Lock()
+	d.globalLimiter = ratelimit.NewLimiter(bps)
+	d.globalRateLimitBps = bps
+	d.globalMu.Unlock()
+}
+
+func (d *Daemon) cachedGlobalLimiter() *rate.Limiter {
+	d.globalMu.RLock()
+	defer d.globalMu.RUnlock()
+	return d.globalLimiter
+}
+
+func (d *Daemon) cachedGlobalRateLimitBps() int64 {
+	d.globalMu.RLock()
+	defer d.globalMu.RUnlock()
+	return d.globalRateLimitBps
+}
+
+// minPositiveRate returns the smaller of a and b, treating <=0 as
+// "unset" rather than "zero" — so a job with no cap of its own still
+// picks up a global cap, and a global cap of 0 (unlimited) doesn't
+// clobber a job's own explicit cap. Returns 0 (unlimited) only when
+// both are unset.
+func minPositiveRate(a, b int64) int64 {
+	switch {
+	case a <= 0:
+		return b
+	case b <= 0:
+		return a
+	case a < b:
+		return a
+	default:
+		return b
+	}
 }
 
 func (d *Daemon) cachedSettings() store.Settings {
@@ -152,6 +235,11 @@ func (d *Daemon) applySettings(ctx context.Context, s store.Settings) (store.Set
 			return store.Settings{}, err
 		}
 	}
+	if s.GlobalRateLimit != "" {
+		if _, err := ratelimit.ParseRate(s.GlobalRateLimit); err != nil {
+			return store.Settings{}, err
+		}
+	}
 	if s.AutoRetryMaxAttempts < 1 {
 		return store.Settings{}, fmt.Errorf("auto-retry max attempts must be at least 1")
 	}
@@ -159,6 +247,7 @@ func (d *Daemon) applySettings(ctx context.Context, s store.Settings) (store.Set
 		return store.Settings{}, err
 	}
 	d.setCachedSettings(s)
+	d.rebuildGlobalLimiter(s)
 	d.tryStartQueued()
 	return s, nil
 }
@@ -552,12 +641,13 @@ func (d *Daemon) startURL(j *store.Job) {
 		defer d.clearRuntime(j.ID)
 
 		res, err := downloader.Run(ctx, downloader.Options{
-			URL:         j.Source,
-			OutputPath:  j.Output,
-			Concurrency: j.Concurrency,
-			StartOffset: j.ResumeOffset,
-			Limiter:     ratelimit.NewLimiter(j.LimitRate),
-			Sha256:      j.Sha256,
+			URL:           j.Source,
+			OutputPath:    j.Output,
+			Concurrency:   j.Concurrency,
+			StartOffset:   j.ResumeOffset,
+			Limiter:       ratelimit.NewLimiter(j.LimitRate),
+			GlobalLimiter: d.cachedGlobalLimiter(),
+			Sha256:        j.Sha256,
 			Progress: func(done, total int64) {
 				d.reportProgress(j.ID, done, total)
 				if single {
@@ -578,9 +668,14 @@ func (d *Daemon) startTorrent(j *store.Job) {
 	// anacrolix/torrent's rate limiter is shared by its whole Client, not
 	// per-torrent (see torrentmgr's doc comment) — setting it here means
 	// the most recently started torrent job's limit wins for all
-	// concurrently active ones, not just this one.
-	if j.LimitRate > 0 {
-		d.tm.SetDownloadLimit(j.LimitRate)
+	// concurrently active ones, not just this one. The global cap (see
+	// Daemon.globalRateLimitBps's doc comment) can't share url/webdav's
+	// real single bucket for the same reason — anacrolix only accepts
+	// one client-wide limiter of its own — so it's applied here as an
+	// upper clamp instead: whichever of this job's own rate and the
+	// global cap is more restrictive wins.
+	if effective := minPositiveRate(j.LimitRate, d.cachedGlobalRateLimitBps()); effective > 0 {
+		d.tm.SetDownloadLimit(effective)
 	}
 
 	t, err := d.tm.Add(j.ID, j.Source, j.Output)
@@ -689,11 +784,13 @@ func (d *Daemon) startSocial(j *store.Job) {
 		if j.Format != "" {
 			args = append(args, "-f", j.Format)
 		}
-		if j.LimitRate > 0 {
-			// yt-dlp has its own native rate limiter — no need to
-			// reimplement one for a subprocess we don't read the bytes
-			// of ourselves.
-			args = append(args, "--limit-rate", strconv.FormatInt(j.LimitRate, 10))
+		// yt-dlp has its own native rate limiter — no need to
+		// reimplement one for a subprocess we don't read the bytes of
+		// ourselves. Same clamp-not-share treatment as torrent's global
+		// cap: whichever of this job's own rate and the global cap is
+		// more restrictive is what yt-dlp actually gets told.
+		if effective := minPositiveRate(j.LimitRate, d.cachedGlobalRateLimitBps()); effective > 0 {
+			args = append(args, "--limit-rate", strconv.FormatInt(effective, 10))
 		}
 		// ffmpeg is needed to merge separately-downloaded video+audio
 		// streams (common with -f "bv*+ba" style selectors). Its

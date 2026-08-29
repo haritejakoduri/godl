@@ -22,6 +22,7 @@ func TestApplySettingsValidates(t *testing.T) {
 	}{
 		{"negative max concurrent", store.Settings{MaxConcurrent: -1, AutoRetryMaxAttempts: 1}},
 		{"unparseable default rate limit", store.Settings{DefaultRateLimit: "not-a-rate", AutoRetryMaxAttempts: 1}},
+		{"unparseable global rate limit", store.Settings{GlobalRateLimit: "not-a-rate", AutoRetryMaxAttempts: 1}},
 		{"zero auto-retry max attempts", store.Settings{AutoRetryMaxAttempts: 0}},
 	}
 	for _, c := range cases {
@@ -34,7 +35,7 @@ func TestApplySettingsValidates(t *testing.T) {
 
 	// A valid save must still work, round-tripping through the store,
 	// not just the in-memory cache.
-	valid := store.Settings{MaxConcurrent: 2, DefaultRateLimit: "1M", AutoRetry: true, AutoRetryMaxAttempts: 3, NotifyOnComplete: true}
+	valid := store.Settings{MaxConcurrent: 2, DefaultRateLimit: "1M", GlobalRateLimit: "10M", AutoRetry: true, AutoRetryMaxAttempts: 3, NotifyOnComplete: true}
 	applied, err := d.applySettings(ctx, valid)
 	if err != nil {
 		t.Fatalf("applySettings(%+v): %v", valid, err)
@@ -253,5 +254,76 @@ func TestAutoRetryReschedulesFailedJobUpToMaxAttempts(t *testing.T) {
 	}
 	if recheck.RetryCount != 2 || recheck.Status != store.StatusFailed {
 		t.Fatalf("job kept changing after hitting the retry cap: status=%s retryCount=%d", recheck.Status, recheck.RetryCount)
+	}
+}
+
+func TestMinPositiveRate(t *testing.T) {
+	cases := []struct {
+		name string
+		a, b int64
+		want int64
+	}{
+		{"both unset", 0, 0, 0},
+		{"a unset, b set", 0, 500, 500},
+		{"a set, b unset", 500, 0, 500},
+		{"a smaller", 200, 500, 200},
+		{"b smaller", 500, 200, 200},
+		{"equal", 300, 300, 300},
+		{"negative treated as unset", -1, 500, 500},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := minPositiveRate(c.a, c.b); got != c.want {
+				t.Errorf("minPositiveRate(%d, %d) = %d, want %d", c.a, c.b, got, c.want)
+			}
+		})
+	}
+}
+
+// TestRebuildGlobalLimiterSharesOneInstanceAcrossJobs is the core
+// regression test for the global bandwidth cap actually being a shared
+// bucket rather than a per-job clone of the same rate: every job
+// started while a given GlobalRateLimit is in effect must be handed
+// the exact same *rate.Limiter pointer (rate.Limiter is safe for
+// concurrent use, so sharing the instance is what makes their combined
+// throughput share one budget — two separate limiters built from the
+// same rate would let combined throughput reach 2x it instead).
+func TestRebuildGlobalLimiterSharesOneInstanceAcrossJobs(t *testing.T) {
+	d := newTestDaemon(t)
+	ctx := context.Background()
+
+	if _, err := d.applySettings(ctx, store.Settings{GlobalRateLimit: "5M", AutoRetryMaxAttempts: 1}); err != nil {
+		t.Fatal(err)
+	}
+	first := d.cachedGlobalLimiter()
+	second := d.cachedGlobalLimiter()
+	if first == nil {
+		t.Fatal("cachedGlobalLimiter() = nil after setting GlobalRateLimit, want a limiter")
+	}
+	if first != second {
+		t.Fatal("two calls to cachedGlobalLimiter() returned different instances — jobs started at different times would not actually share one bucket")
+	}
+
+	// Changing the rate must swap in a new instance (jobs already
+	// holding the old pointer keep their original cap, exactly like a
+	// per-job LimitRate isn't retroactively changed either).
+	if _, err := d.applySettings(ctx, store.Settings{GlobalRateLimit: "1M", AutoRetryMaxAttempts: 1}); err != nil {
+		t.Fatal(err)
+	}
+	third := d.cachedGlobalLimiter()
+	if third == first {
+		t.Fatal("cachedGlobalLimiter() returned the same instance after GlobalRateLimit changed, want a fresh one")
+	}
+
+	// Clearing it must go back to nil (unlimited), not linger at the
+	// last rate.
+	if _, err := d.applySettings(ctx, store.Settings{GlobalRateLimit: "", AutoRetryMaxAttempts: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if got := d.cachedGlobalLimiter(); got != nil {
+		t.Fatalf("cachedGlobalLimiter() after clearing GlobalRateLimit = %v, want nil", got)
+	}
+	if got := d.cachedGlobalRateLimitBps(); got != 0 {
+		t.Fatalf("cachedGlobalRateLimitBps() after clearing GlobalRateLimit = %d, want 0", got)
 	}
 }

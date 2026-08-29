@@ -21,6 +21,8 @@ import (
 	"time"
 
 	"golang.org/x/time/rate"
+
+	"godl/internal/ratelimit"
 )
 
 // ProgressFunc is called periodically (roughly every 250ms) with the bytes
@@ -42,6 +44,14 @@ type Options struct {
 	// use), so splitting into more chunks doesn't multiply the cap.
 	// nil means unlimited.
 	Limiter *rate.Limiter
+	// GlobalLimiter, if non-nil, is the Settings tab's shared bandwidth
+	// cap — the same *rate.Limiter instance handed to every url/webdav
+	// job's download loop across the whole daemon (not just this job's
+	// own chunks), so total combined throughput across every such job
+	// stays under one ceiling regardless of how many are running at
+	// once. Waited on in addition to Limiter, not instead of it — see
+	// waitLimiters.
+	GlobalLimiter *rate.Limiter
 	// Sha256, if set, is the expected hex digest of the completed file.
 	// Verified once after the download reaches 100% (not per-chunk —
 	// see verifyChecksum for why a mismatch means starting over rather
@@ -59,14 +69,12 @@ type Result struct {
 
 func sidecarPath(output string) string { return output + ".godl-progress.json" }
 
-// waitLimiter blocks until l's token bucket allows n more bytes through,
-// pacing the read loop to opt.Limiter's rate; a nil limiter (unlimited)
-// or non-positive n returns immediately.
-func waitLimiter(ctx context.Context, l *rate.Limiter, n int) error {
-	if l == nil || n <= 0 {
-		return nil
-	}
-	return l.WaitN(ctx, n)
+// waitLimiters blocks until both opt.Limiter (this job's own cap) and
+// opt.GlobalLimiter (the daemon-wide shared cap) allow n more bytes
+// through — either being nil (unlimited) is a no-op for that one, same
+// as n<=0 is for both.
+func waitLimiters(ctx context.Context, opt Options, n int) error {
+	return ratelimit.WaitAll(ctx, n, opt.Limiter, opt.GlobalLimiter)
 }
 
 // copyBufSize is the read/write buffer size for the streaming copy loops
@@ -232,7 +240,7 @@ func runSingle(ctx context.Context, client *http.Client, opt Options, supportsRa
 	for {
 		n, rerr := resp.Body.Read(buf)
 		if n > 0 {
-			if werr := waitLimiter(ctx, opt.Limiter, n); werr != nil {
+			if werr := waitLimiters(ctx, opt, n); werr != nil {
 				return Result{BytesDone: written}, werr
 			}
 			if _, werr := f.Write(buf[:n]); werr != nil {
@@ -383,7 +391,7 @@ func runChunked(ctx context.Context, client *http.Client, opt Options, total int
 			for {
 				n, rerr := resp.Body.Read(buf)
 				if n > 0 {
-					if werr := waitLimiter(ctx, opt.Limiter, n); werr != nil {
+					if werr := waitLimiters(ctx, opt, n); werr != nil {
 						errCh <- werr
 						return
 					}

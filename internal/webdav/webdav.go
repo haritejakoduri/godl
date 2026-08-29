@@ -22,6 +22,8 @@ import (
 	"time"
 
 	"golang.org/x/time/rate"
+
+	"godl/internal/ratelimit"
 )
 
 // Entry describes one file or directory found via PROPFIND. Path is
@@ -321,8 +323,11 @@ func (c *Client) Walk(ctx context.Context, root string) ([]Entry, error) {
 // *rate.Limiter instance passed by a caller downloading several files
 // of one job concurrently (see internal/daemon's startWebDAV) shares
 // one cap across all of them, so the job's own concurrency doesn't
-// multiply it.
-func (c *Client) Download(ctx context.Context, remotePath, localPath string, limiter *rate.Limiter, progress func(done, total int64)) (int64, error) {
+// multiply it. globalLimiter, if non-nil, is the Settings tab's shared
+// bandwidth cap — the same instance handed to every webdav (and url)
+// job's download loop across the whole daemon, waited on in addition
+// to limiter rather than instead of it.
+func (c *Client) Download(ctx context.Context, remotePath, localPath string, limiter, globalLimiter *rate.Limiter, progress func(done, total int64)) (int64, error) {
 	if err := os.MkdirAll(filepath.Dir(localPath), 0o755); err != nil {
 		return 0, err
 	}
@@ -385,10 +390,8 @@ func (c *Client) Download(ctx context.Context, remotePath, localPath string, lim
 	for {
 		n, rerr := resp.Body.Read(buf)
 		if n > 0 {
-			if limiter != nil {
-				if werr := limiter.WaitN(ctx, n); werr != nil {
-					return written, werr
-				}
+			if werr := ratelimit.WaitAll(ctx, n, limiter, globalLimiter); werr != nil {
+				return written, werr
 			}
 			if _, werr := f.Write(buf[:n]); werr != nil {
 				return written, werr

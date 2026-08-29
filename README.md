@@ -319,7 +319,23 @@ navigating away or quitting mid-edit):
 - **Default rate limit** — applied to a new job that doesn't pass its
   own `-R`/`--limit-rate`, in the same syntax that flag accepts (e.g.
   `2M`). Empty means unlimited. An explicit `-R` on a given job always
-  overrides this.
+  overrides this. **Per-job**: three jobs each falling back to this
+  default can still add up to 3x it running together — see the next
+  setting for a true combined ceiling.
+- **Global bandwidth limit** — caps every currently-running job's
+  transfer **combined**, not each one separately. For `url` and `webdav`
+  jobs (godl's own in-process transfer code) this is a real shared cap:
+  every concurrently active job of either type draws from the exact
+  same token bucket, so total throughput across all of them together
+  never exceeds this value no matter how many are running. `torrent`
+  (anacrolix/torrent only exposes one client-wide limiter, not a
+  per-job one — see `-R`'s own torrent caveat below) and `social`
+  (yt-dlp, a subprocess capped via its own `--limit-rate`) can't share
+  that bucket, so each such job is instead individually capped at this
+  rate (or its own `-R`/default, if lower) — meaning a torrent or
+  social job running alongside url/webdav ones can still push combined
+  throughput over this ceiling, even though no single job exceeds it.
+  Empty means unlimited.
 - **Auto-retry on failure** — a job that fails (not one you paused or
   canceled) is automatically re-queued after a backoff delay (5s, 15s,
   45s, ... capped at 5 minutes) instead of sitting failed until you run

@@ -106,8 +106,22 @@ type Settings struct {
 	MaxConcurrent int
 	// DefaultRateLimit is applied to a new job that doesn't pass its
 	// own --limit-rate, in the same syntax that flag accepts (e.g.
-	// "2M"); "" means unlimited.
+	// "2M"); "" means unlimited. Per-job: three jobs each falling back
+	// to this default can still add up to 3x it combined — see
+	// GlobalRateLimit for a shared combined ceiling instead.
 	DefaultRateLimit string
+	// GlobalRateLimit caps every job's transfer combined, in the same
+	// syntax as DefaultRateLimit; "" means unlimited. Enforced as one
+	// real shared token bucket for url/webdav jobs (they're godl's own
+	// in-process transfer code); torrent (anacrolix/torrent) and social
+	// (a yt-dlp subprocess) can't share that bucket — each such job is
+	// instead individually capped at this rate (or its own --limit-rate/
+	// DefaultRateLimit if lower), so combined throughput can still
+	// exceed this value when a torrent or social job runs alongside
+	// url/webdav ones. See internal/daemon's globalLimiter/
+	// globalRateLimitBps doc comments for exactly how each job type
+	// applies this.
+	GlobalRateLimit string
 	// AutoRetry, when true, automatically re-queues a job that fails
 	// (not one that's paused/canceled) after a backoff delay, up to
 	// AutoRetryMaxAttempts times, instead of leaving it failed until a
@@ -444,6 +458,7 @@ func scanJob(row scanner) (*Job, error) {
 const (
 	settingsKeyMaxConcurrent        = "max_concurrent"
 	settingsKeyDefaultRateLimit     = "default_rate_limit"
+	settingsKeyGlobalRateLimit      = "global_rate_limit"
 	settingsKeyAutoRetry            = "auto_retry"
 	settingsKeyAutoRetryMaxAttempts = "auto_retry_max_attempts"
 	settingsKeyNotifyOnComplete     = "notify_on_complete"
@@ -481,6 +496,9 @@ func (s *Store) GetSettings(ctx context.Context) (Settings, error) {
 	if v, ok := kv[settingsKeyDefaultRateLimit]; ok {
 		set.DefaultRateLimit = v
 	}
+	if v, ok := kv[settingsKeyGlobalRateLimit]; ok {
+		set.GlobalRateLimit = v
+	}
 	if v, ok := kv[settingsKeyAutoRetry]; ok {
 		set.AutoRetry = v == "true"
 	}
@@ -502,6 +520,7 @@ func (s *Store) SaveSettings(ctx context.Context, set Settings) error {
 	kv := map[string]string{
 		settingsKeyMaxConcurrent:        strconv.Itoa(set.MaxConcurrent),
 		settingsKeyDefaultRateLimit:     set.DefaultRateLimit,
+		settingsKeyGlobalRateLimit:      set.GlobalRateLimit,
 		settingsKeyAutoRetry:            strconv.FormatBool(set.AutoRetry),
 		settingsKeyAutoRetryMaxAttempts: strconv.Itoa(set.AutoRetryMaxAttempts),
 		settingsKeyNotifyOnComplete:     strconv.FormatBool(set.NotifyOnComplete),

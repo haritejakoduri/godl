@@ -212,6 +212,15 @@ download starts; `D` downloads the folder currently being browsed, in
 full, regardless of the cursor position or what's individually
 checked with space.
 
+Every PROPFIND (browsing/walking a folder) and GET (downloading a
+file) request against a connection retries on a `429 Too Many
+Requests` response, honoring the server's own `Retry-After` header
+when it sends one, otherwise backing off exponentially — some
+cloud-storage-backed WebDAV services (TorBox in particular) rate-limit
+aggressively enough that even a single request against the root can
+get 429'd, especially right after browsing around, and that's worth
+retrying rather than immediately failing the job.
+
 Connections are the first of what's meant to be a general "remote
 storage" mechanism — Google Drive, OneDrive, and other cloud storage
 providers are expected to become additional connection types the same

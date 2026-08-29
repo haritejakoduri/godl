@@ -28,7 +28,7 @@ func TestStartRecoversFromPanicWithoutCrashingDaemon(t *testing.T) {
 	d := newTestDaemon(t)
 	ctx := context.Background()
 
-	j, err := d.createJob(ctx, store.JobTorrent, "magnet:?xt=urn:btih:a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2&dn=faketest", t.TempDir(), "", 0, 0)
+	j, err := d.createJob(ctx, store.JobTorrent, "magnet:?xt=urn:btih:a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2&dn=faketest", t.TempDir(), "", 0, 0, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,7 +57,7 @@ func TestStartRecoversFromPanicWithoutCrashingDaemon(t *testing.T) {
 		t.Fatal(err)
 	}
 	output := t.TempDir()
-	j2, err := d.createJob(ctx, store.JobWebDAV, "survives:/a.txt", output, "", 0, 0)
+	j2, err := d.createJob(ctx, store.JobWebDAV, "survives:/a.txt", output, "", 0, 0, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +76,7 @@ func TestResumeInterruptedJobsSurvivesAPanickingJob(t *testing.T) {
 	d := newTestDaemon(t)
 	ctx := context.Background()
 
-	bad, err := d.createJob(ctx, store.JobTorrent, "magnet:?xt=urn:btih:a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2&dn=faketest", t.TempDir(), "", 0, 0)
+	bad, err := d.createJob(ctx, store.JobTorrent, "magnet:?xt=urn:btih:a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2&dn=faketest", t.TempDir(), "", 0, 0, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +93,7 @@ func TestResumeInterruptedJobsSurvivesAPanickingJob(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	good, err := d.createJob(ctx, store.JobWebDAV, "good:/a.txt", t.TempDir(), "", 0, 0)
+	good, err := d.createJob(ctx, store.JobWebDAV, "good:/a.txt", t.TempDir(), "", 0, 0, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +128,7 @@ func TestCreateJobPersistsLimitRate(t *testing.T) {
 	ctx := context.Background()
 
 	const wantRate = int64(500 * 1024) // 500KiB/s
-	j, err := d.createJob(ctx, store.JobURL, "http://example.com/f", t.TempDir(), "", 1, wantRate)
+	j, err := d.createJob(ctx, store.JobURL, "http://example.com/f", t.TempDir(), "", 1, wantRate, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,5 +155,32 @@ func TestCreateJobPersistsLimitRate(t *testing.T) {
 	}
 	if afterUpdate.LimitRate != wantRate {
 		t.Fatalf("GetJob after UpdateJob: LimitRate = %d, want %d", afterUpdate.LimitRate, wantRate)
+	}
+}
+
+// TestCreateJobPersistsSha256 is the --sha256 analog of
+// TestCreateJobPersistsLimitRate above: the expected digest has to
+// survive a real round trip through the store, since startURL re-reads
+// the job (not the in-memory value createJob returned) before handing
+// it to the downloader.
+func TestCreateJobPersistsSha256(t *testing.T) {
+	d := newTestDaemon(t)
+	ctx := context.Background()
+
+	const wantDigest = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b85"
+	j, err := d.createJob(ctx, store.JobURL, "http://example.com/f", t.TempDir(), "", 1, 0, wantDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if j.Sha256 != wantDigest {
+		t.Fatalf("createJob's returned job.Sha256 = %q, want %q", j.Sha256, wantDigest)
+	}
+
+	reread, err := d.st.GetJob(ctx, j.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reread.Sha256 != wantDigest {
+		t.Fatalf("GetJob after createJob: Sha256 = %q, want %q (not persisted to the DB row)", reread.Sha256, wantDigest)
 	}
 }

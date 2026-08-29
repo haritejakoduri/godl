@@ -53,7 +53,14 @@ type Job struct {
 	// rather than a true per-job one — the last torrent job to set this
 	// wins for all of them, a limitation of the underlying torrent
 	// library, not of this field.
-	LimitRate  int64
+	LimitRate int64
+	// Sha256 is the expected hex digest for url jobs (empty = no
+	// verification). Persisted so pause/resume/retry re-verify against
+	// the same value the job was started with. See internal/downloader's
+	// verifyChecksum for why a mismatch means the whole file is
+	// redownloaded rather than repaired: the digest covers the whole
+	// file, so there's no way to know which part is bad.
+	Sha256     string
 	Status     JobStatus
 	BytesDone  int64
 	BytesTotal int64
@@ -175,6 +182,18 @@ CREATE TABLE IF NOT EXISTS jobs (
 			return err
 		}
 	}
+
+	// sha256 was added after jobs shipped without it, same as
+	// resolved_paths above.
+	hasCol, err = s.hasColumn("jobs", "sha256")
+	if err != nil {
+		return err
+	}
+	if !hasCol {
+		if _, err := s.db.Exec(`ALTER TABLE jobs ADD COLUMN sha256 TEXT NOT NULL DEFAULT ''`); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -223,10 +242,10 @@ func (s *Store) CreateJob(ctx context.Context, j *Job) error {
 	}
 	_, err = s.db.ExecContext(ctx, `
 INSERT INTO jobs (id, type, source, output, format, concurrency, status,
-	bytes_done, bytes_total, resume_offset, info_hash, resolved_paths, error_msg, limit_rate, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	bytes_done, bytes_total, resume_offset, info_hash, resolved_paths, error_msg, limit_rate, sha256, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		j.ID, j.Type, j.Source, j.Output, j.Format, j.Concurrency, j.Status,
-		j.BytesDone, j.BytesTotal, j.ResumeOffset, j.InfoHash, string(resolved), j.ErrorMsg, j.LimitRate,
+		j.BytesDone, j.BytesTotal, j.ResumeOffset, j.InfoHash, string(resolved), j.ErrorMsg, j.LimitRate, j.Sha256,
 		j.CreatedAt.Unix(), j.UpdatedAt.Unix())
 	return err
 }
@@ -239,10 +258,10 @@ func (s *Store) UpdateJob(ctx context.Context, j *Job) error {
 	}
 	_, err = s.db.ExecContext(ctx, `
 UPDATE jobs SET type=?, source=?, output=?, format=?, concurrency=?, status=?,
-	bytes_done=?, bytes_total=?, resume_offset=?, info_hash=?, resolved_paths=?, error_msg=?, limit_rate=?, updated_at=?
+	bytes_done=?, bytes_total=?, resume_offset=?, info_hash=?, resolved_paths=?, error_msg=?, limit_rate=?, sha256=?, updated_at=?
 WHERE id=?`,
 		j.Type, j.Source, j.Output, j.Format, j.Concurrency, j.Status,
-		j.BytesDone, j.BytesTotal, j.ResumeOffset, j.InfoHash, string(resolved), j.ErrorMsg, j.LimitRate,
+		j.BytesDone, j.BytesTotal, j.ResumeOffset, j.InfoHash, string(resolved), j.ErrorMsg, j.LimitRate, j.Sha256,
 		j.UpdatedAt.Unix(), j.ID)
 	return err
 }
@@ -310,7 +329,7 @@ func (s *Store) DeleteJob(ctx context.Context, id string) error {
 func (s *Store) GetJob(ctx context.Context, id string) (*Job, error) {
 	row := s.db.QueryRowContext(ctx, `
 SELECT id, type, source, output, format, concurrency, status,
-	bytes_done, bytes_total, resume_offset, info_hash, resolved_paths, error_msg, limit_rate, created_at, updated_at
+	bytes_done, bytes_total, resume_offset, info_hash, resolved_paths, error_msg, limit_rate, sha256, created_at, updated_at
 FROM jobs WHERE id=?`, id)
 	return scanJob(row)
 }
@@ -318,7 +337,7 @@ FROM jobs WHERE id=?`, id)
 func (s *Store) ListJobs(ctx context.Context) ([]*Job, error) {
 	rows, err := s.db.QueryContext(ctx, `
 SELECT id, type, source, output, format, concurrency, status,
-	bytes_done, bytes_total, resume_offset, info_hash, resolved_paths, error_msg, limit_rate, created_at, updated_at
+	bytes_done, bytes_total, resume_offset, info_hash, resolved_paths, error_msg, limit_rate, sha256, created_at, updated_at
 FROM jobs ORDER BY created_at ASC`)
 	if err != nil {
 		return nil, err
@@ -344,7 +363,7 @@ func scanJob(row scanner) (*Job, error) {
 	var created, updated int64
 	var resolved string
 	if err := row.Scan(&j.ID, &j.Type, &j.Source, &j.Output, &j.Format, &j.Concurrency,
-		&j.Status, &j.BytesDone, &j.BytesTotal, &j.ResumeOffset, &j.InfoHash, &resolved, &j.ErrorMsg, &j.LimitRate,
+		&j.Status, &j.BytesDone, &j.BytesTotal, &j.ResumeOffset, &j.InfoHash, &resolved, &j.ErrorMsg, &j.LimitRate, &j.Sha256,
 		&created, &updated); err != nil {
 		return nil, err
 	}

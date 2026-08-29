@@ -18,6 +18,9 @@ type Request struct {
 	// LimitRate caps the new job's transfer at this many bytes/second
 	// (0 = unlimited). See store.Job.LimitRate for the torrent caveat.
 	LimitRate int64 `json:"limit_rate,omitempty"`
+	// Sha256 is the expected hex digest for add_url (empty = skip
+	// verification). See store.Job.Sha256.
+	Sha256 string `json:"sha256,omitempty"`
 
 	// pause / resume / retry / cancel / remove
 	JobID string `json:"job_id,omitempty"`

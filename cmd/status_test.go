@@ -8,6 +8,8 @@ import (
 
 	"github.com/charmbracelet/bubbles/progress"
 	"github.com/charmbracelet/bubbles/table"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/mattn/go-runewidth"
 	"github.com/muesli/termenv"
 
 	"godl/internal/daemon"
@@ -109,7 +111,7 @@ func TestRebuildRowsShowsPathAndSource(t *testing.T) {
 		bar:  progress.New(progress.WithColorProfile(termenv.Ascii), progress.WithWidth(18)),
 		jobs: []*daemon.JobView{{Job: &store.Job{ID: "job1", Type: store.JobURL, Status: store.StatusActive, Output: output, Source: source}, ETASeconds: -1}},
 	}
-	m.rebuildRows()
+	m.rebuildRows(-1)
 
 	rows := m.table.Rows()
 	if len(rows) != 1 {
@@ -165,7 +167,7 @@ func TestRebuildRowsShowsSelectionCheckbox(t *testing.T) {
 		jobs:     []*daemon.JobView{jobView("job1"), jobView("job2")},
 		selected: map[string]bool{"job2": true},
 	}
-	m.rebuildRows()
+	m.rebuildRows(-1)
 
 	rows := m.table.Rows()
 	if len(rows) != 2 {
@@ -189,7 +191,7 @@ func TestActionTargetsPrefersSelectionOverCursor(t *testing.T) {
 
 	// No selection: falls back to whatever's under the cursor.
 	m := statusModel{jobs: jobs, table: table.New(table.WithColumns(columnsForWidth(0)))}
-	m.rebuildRows()
+	m.rebuildRows(-1)
 	m.table.SetCursor(1)
 	got := m.actionTargets()
 	if len(got) != 1 || got[0] != "job2" {
@@ -261,5 +263,76 @@ func TestJobsMsgKeepsCursorOnSameJobAcrossReorder(t *testing.T) {
 
 	if got := m.cursorJobID(); got != "job1" {
 		t.Errorf("cursor followed to %q after a new job arrived, want it to stay on job1", got)
+	}
+}
+
+// TestRenderStatusFitsStatusColumn is a regression test for a subtle
+// rendering-corruption bug, not just a display nicety: bubbles/table
+// truncates every cell with go-runewidth, which isn't ANSI-aware — it
+// overcounts a colored string's width by its escape sequences' own
+// byte length, not just the visible characters, and a truncation
+// triggered by that overcount cuts mid-escape-sequence and corrupts
+// the whole row (the exact trap the progress bar already avoids by
+// forcing plain ASCII — see newStatusModel's comment). statusColWidth
+// has to stay wide enough to clear that overcount for every status
+// string's colored rendering, or this bug comes back the moment
+// someone changes a color or adds a new status without knowing why the
+// column looks oddly wide.
+func TestRenderStatusFitsStatusColumn(t *testing.T) {
+	// Force real ANSI output regardless of this test's own environment
+	// (a non-tty test runner would otherwise silently render plain,
+	// unstyled text — see lipgloss's color-profile auto-detection —
+	// which would make this test pass without ever exercising the
+	// actual bug it's guarding against).
+	orig := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.ANSI256)
+	defer lipgloss.SetColorProfile(orig)
+
+	statuses := []store.JobStatus{
+		store.StatusQueued, store.StatusActive, store.StatusPaused,
+		store.StatusCompleted, store.StatusFailed, store.StatusCanceled,
+	}
+	for _, s := range statuses {
+		rendered := renderStatus(s)
+		if w := runewidth.StringWidth(rendered); w > statusColWidth {
+			t.Errorf("renderStatus(%s) has StringWidth %d, want <= statusColWidth (%d) — bubbles/table will truncate mid-escape-sequence and corrupt this row", s, w, statusColWidth)
+		}
+	}
+}
+
+// TestRebuildRowsSkipsStatusColorOnCursorRow is a regression test for
+// a second ANSI-nesting hazard renderStatus's own doc comment
+// describes: a colored Status cell's closing escape resets state
+// unconditionally, so if it ends up inside the table's Selected
+// row-wide style (which wraps the cursor row's whole rendered line),
+// that reset kills Selected's bold/background for every cell after
+// Status — the cursor row's highlight visibly cuts off partway
+// through. rebuildRows must render the cursorIdx row's Status as
+// plain text specifically to avoid that, not as a stylistic choice.
+func TestRebuildRowsSkipsStatusColorOnCursorRow(t *testing.T) {
+	// Force real ANSI output, same reasoning as
+	// TestRenderStatusFitsStatusColumn: without this, renderStatus
+	// silently renders plain text in a non-tty test runner, which
+	// would make the "colored" and "plain" cells identical and this
+	// test unable to actually detect a regression either way.
+	orig := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.ANSI256)
+	defer lipgloss.SetColorProfile(orig)
+
+	m := statusModel{
+		bar:  progress.New(progress.WithColorProfile(termenv.Ascii), progress.WithWidth(18)),
+		jobs: []*daemon.JobView{jobView("job1"), jobView("job2")},
+	}
+	m.jobs[0].Status = store.StatusCompleted
+	m.jobs[1].Status = store.StatusCompleted
+	m.rebuildRows(1) // job2 (index 1) is the cursor row
+
+	rows := m.table.Rows()
+	statusCol := 3 // check, ID, Type, Status
+	if rows[0][statusCol] != renderStatus(store.StatusCompleted) {
+		t.Errorf("non-cursor row's Status cell = %q, want the colored rendering", rows[0][statusCol])
+	}
+	if rows[1][statusCol] != string(store.StatusCompleted) {
+		t.Errorf("cursor row's Status cell = %q, want plain %q (colored would break the Selected row style's own nesting)", rows[1][statusCol], string(store.StatusCompleted))
 	}
 }

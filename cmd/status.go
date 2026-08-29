@@ -46,7 +46,47 @@ var (
 	helpStyle  = lipgloss.NewStyle().Faint(true).Padding(1, 1, 0, 1)
 	errStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Padding(0, 1)
 	statStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Padding(0, 1)
+
+	// jobStatusStyles color-codes the Status column so a job's state
+	// reads at a glance instead of requiring you to read the word:
+	// gray for not-currently-running (queued/canceled), amber for
+	// paused (idle, but only because someone asked it to be), bright
+	// yellow for active (matches statStyle's own "something's
+	// happening" color), green for completed, red for failed (matches
+	// errStyle). Plain ANSI 0-15 codes, not hex — like errStyle/
+	// statStyle above, these are foreground-only (no background), so
+	// they don't have the Selected style's contrast-on-a-re-themed-
+	// terminal problem that motivated hex there.
+	jobStatusStyles = map[store.JobStatus]lipgloss.Style{
+		store.StatusQueued:    lipgloss.NewStyle().Foreground(lipgloss.Color("8")),
+		store.StatusActive:    lipgloss.NewStyle().Foreground(lipgloss.Color("11")),
+		store.StatusPaused:    lipgloss.NewStyle().Foreground(lipgloss.Color("3")),
+		store.StatusCompleted: lipgloss.NewStyle().Foreground(lipgloss.Color("10")),
+		store.StatusFailed:    lipgloss.NewStyle().Foreground(lipgloss.Color("9")),
+		store.StatusCanceled:  lipgloss.NewStyle().Foreground(lipgloss.Color("8")),
+	}
 )
+
+// renderStatus color-codes status for the jobs table's Status cell.
+// Column width matters here in a way it doesn't for any other cell:
+// bubbles/table truncates every cell via go-runewidth, which (same
+// trap as the progress bar — see newStatusModel's comment) isn't
+// ANSI-aware and overcounts a colored string's width by the escape
+// sequences' own byte length, not just its visible characters. Get
+// the column width wrong and it truncates mid-escape-sequence,
+// corrupting the row. statusColWidth is sized (and verified in
+// TestRenderStatusFitsStatusColumn) to comfortably clear that
+// overcount for every status word with the colors above, so this
+// never happens — unlike the bar, which sidesteps the problem
+// entirely by forcing plain ASCII, coloring the actual text is the
+// point here, so the fix is a wide-enough column instead.
+func renderStatus(status store.JobStatus) string {
+	style, ok := jobStatusStyles[status]
+	if !ok {
+		return string(status)
+	}
+	return style.Render(string(status))
+}
 
 type jobsMsg []*daemon.JobView
 type subErrMsg struct{ err error }
@@ -135,6 +175,11 @@ var newJobTypes = []struct {
 	{"Torrent — magnet link or .torrent file", daemon.CmdAddTorrent},
 }
 
+// statusColWidth is wider than the Status column strictly needs to be
+// for its longest plain word ("completed", 9 chars) — see renderStatus's
+// doc comment for why the extra room is load-bearing, not cosmetic.
+const statusColWidth = 16
+
 // fixedColumns are every table column except Path and Source, which grow
 // or shrink with the terminal width instead of holding a constant size —
 // see columnsForWidth. The first column has no header text: it's just
@@ -144,7 +189,7 @@ var fixedColumns = []table.Column{
 	{Title: "", Width: 3},
 	{Title: "ID", Width: 9},
 	{Title: "Type", Width: 8},
-	{Title: "Status", Width: 10},
+	{Title: "Status", Width: statusColWidth},
 	{Title: "Progress", Width: 24},
 	{Title: "Speed", Width: 12},
 	{Title: "ETA", Width: 8},
@@ -364,20 +409,25 @@ func (m statusModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.jobs = newestFirst(msg)
 		m.err = nil
 		m.pruneSelected()
-		m.rebuildRows()
 		// A newly started job appears at the very top, ahead of
 		// everything already in the list — without this, the cursor
 		// would silently point at whatever new job just landed on the
 		// same row index instead of staying on the job actually being
-		// looked at.
+		// looked at. Found before rebuildRows (not after, via
+		// m.table.Cursor()) so rebuildRows skips status-coloring the
+		// right row the very first time it renders post-reorder — see
+		// its own doc comment for why that skip exists at all.
+		newCursor := 0
 		if prevID != "" {
 			for i, j := range m.jobs {
 				if j.ID == prevID {
-					m.table.SetCursor(i)
+					newCursor = i
 					break
 				}
 			}
 		}
+		m.rebuildRows(newCursor)
+		m.table.SetCursor(newCursor)
 		return m, waitForSnapshot(m.snapCh, m.errCh)
 
 	case subErrMsg:
@@ -495,7 +545,7 @@ func (m statusModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else {
 				m.selected[id] = true
 			}
-			m.rebuildRows()
+			m.rebuildRows(idx)
 			return m, nil
 		case "p", "r", "x", "R":
 			ids := m.actionTargets()
@@ -509,7 +559,7 @@ func (m statusModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				"R": daemon.CmdRetry,
 			}[msg.String()]
 			m.selected = map[string]bool{}
-			m.rebuildRows()
+			m.rebuildRows(m.table.Cursor())
 			return m, doBulkJobAction(apiCmd, ids)
 		case "d", "D":
 			ids := m.actionTargets()
@@ -683,19 +733,39 @@ func (m statusModel) actionTargets() []string {
 	return []string{m.jobs[idx].ID}
 }
 
-func (m *statusModel) rebuildRows() {
+// rebuildRows rebuilds the table's rows from m.jobs. cursorIdx is which
+// row index is (about to be) the cursor row: that one renders Status
+// as plain text rather than through renderStatus.
+//
+// This isn't a style choice — raw ANSI SGR codes don't nest through
+// plain string concatenation the way markup would. renderStatus's
+// closing sequence resets state unconditionally, so if a colored
+// Status cell ends up inside the Selected style's row-wide wrapper
+// (bubbles/table renders the whole joined row, then wraps *that* in
+// Selected for the cursor's row), that reset kills the Selected
+// style's bold/background for every cell after Status too — the
+// cursor row's highlight visibly "cuts off" partway through instead
+// of spanning the row. The cursor row's own highlight already marks
+// it unambiguously, so skipping the redundant status color there
+// costs nothing and sidesteps the corruption entirely rather than
+// fighting raw ANSI nesting to preserve it.
+func (m *statusModel) rebuildRows(cursorIdx int) {
 	rows := make([]table.Row, 0, len(m.jobs))
-	for _, j := range m.jobs {
+	for i, j := range m.jobs {
 		bar := m.bar.ViewAs(percent(j.BytesDone, j.BytesTotal))
 		check := "[ ]"
 		if m.selected[j.ID] {
 			check = "[x]"
 		}
+		status := string(j.Status)
+		if i != cursorIdx {
+			status = renderStatus(j.Status)
+		}
 		rows = append(rows, table.Row{
 			check,
 			j.ID,
 			string(j.Type),
-			string(j.Status),
+			status,
 			bar,
 			humanSpeed(j.SpeedBps),
 			humanETA(j.ETASeconds, j.Status),

@@ -257,10 +257,15 @@ port it's really listening on.
 Lists every job with progress bars, speed, ETA, its download destination
 (`Path`), and its source link/magnet/file (`Source`) — newest job
 first, so whatever you just started is right at the top instead of
-pushed to the bottom behind everything already running. The `Path` and
-`Source` columns are responsive — they take up whatever room is left
-over after the other columns, so widening your terminal shows more of
-a long URL or destination path instead of it staying hard-truncated.
+pushed to the bottom behind everything already running. `Status` is
+color-coded (gray for queued/canceled, amber for paused, yellow for
+active, green for completed, red for failed) so a long list reads at a
+glance instead of requiring you to read every word; the row your
+cursor is on shows it in plain text instead, since that row is already
+unambiguous from its own highlight. The `Path` and `Source` columns
+are responsive — they take up whatever room is left over after the
+other columns, so widening your terminal shows more of a long URL or
+destination path instead of it staying hard-truncated.
 
 Keybinds: `space` toggles a job for multi-select (its checkbox shows
 `[x]`, and the title bar shows the running count), `p` pause, `r`

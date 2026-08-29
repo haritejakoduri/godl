@@ -114,7 +114,9 @@ resume/retry — with one exception: anacrolix/torrent, the BitTorrent
 library godl uses, only supports a rate limit shared across its whole
 client rather than one per torrent, so `-R` on `godl torrent` really
 means "cap every currently-active torrent job at this combined rate,"
-not just the one you passed it to.
+not just the one you passed it to. A job that doesn't pass `-R` at all
+falls back to the Settings tab's **default rate limit** (see `godl
+status` below), if one's set — `-R` always wins when both are present.
 
 ### `godl url` — direct HTTP(S) downloads
 
@@ -304,6 +306,35 @@ becomes its own background job (a folder job pulls it down
 recursively, preserving that folder's own name and structure under
 the destination), so a single `d` press can kick off any mix of
 individual files and whole folders at once.
+
+`s` opens the **Settings tab** — the daemon's configurable defaults,
+edited in place and saved immediately on each change (nothing to lose by
+navigating away or quitting mid-edit):
+
+- **Max concurrent downloads** — caps how many jobs run at once, across
+  every job type combined. 0 (the default) means unlimited, matching
+  godl's behavior before this setting existed. Jobs beyond the cap show
+  as `queued` and start automatically, oldest first, as running ones
+  finish — nothing is dropped or needs to be manually resumed.
+- **Default rate limit** — applied to a new job that doesn't pass its
+  own `-R`/`--limit-rate`, in the same syntax that flag accepts (e.g.
+  `2M`). Empty means unlimited. An explicit `-R` on a given job always
+  overrides this.
+- **Auto-retry on failure** — a job that fails (not one you paused or
+  canceled) is automatically re-queued after a backoff delay (5s, 15s,
+  45s, ... capped at 5 minutes) instead of sitting failed until you run
+  `godl retry` by hand. **Auto-retry max attempts** caps how many times
+  before it's left failed for good; a manual `godl retry` always resets
+  that count, giving the job a fresh budget.
+- **Notify on completion** — fires a best-effort desktop notification
+  when a job finishes successfully (`notify-send` on Linux, `osascript`
+  on macOS; no built-in mechanism on Windows, so it's a silent no-op
+  there). Best-effort by design: the daemon has no guaranteed UI session
+  to notify into, so a failure here never affects the download itself.
+
+`↑`/`↓` moves between settings, `enter` edits a number/text field (a
+second `enter` saves, `esc` cancels the edit) or toggles a checkbox
+field immediately, and `esc` closes the tab.
 
 ### `godl update` — update everything godl manages, including itself
 

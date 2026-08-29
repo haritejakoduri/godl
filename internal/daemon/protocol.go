@@ -26,21 +26,27 @@ type Request struct {
 	JobID string `json:"job_id,omitempty"`
 	// remove: also delete the downloaded file(s), not just the list entry.
 	Purge bool `json:"purge,omitempty"`
+
+	// set_settings: the settings to save. Nil for get_settings (nothing
+	// to send) and every other command.
+	Settings *store.Settings `json:"settings,omitempty"`
 }
 
 const (
-	CmdAddURL     = "add_url"
-	CmdAddSocial  = "add_social"
-	CmdAddTorrent = "add_torrent"
-	CmdAddWebDAV  = "add_webdav"
-	CmdPause      = "pause"
-	CmdResume     = "resume"
-	CmdRetry      = "retry"
-	CmdCancel     = "cancel"
-	CmdRemove     = "remove"
-	CmdList       = "list"
-	CmdSubscribe  = "subscribe"
-	CmdPing       = "ping"
+	CmdAddURL      = "add_url"
+	CmdAddSocial   = "add_social"
+	CmdAddTorrent  = "add_torrent"
+	CmdAddWebDAV   = "add_webdav"
+	CmdPause       = "pause"
+	CmdResume      = "resume"
+	CmdRetry       = "retry"
+	CmdCancel      = "cancel"
+	CmdRemove      = "remove"
+	CmdList        = "list"
+	CmdSubscribe   = "subscribe"
+	CmdPing        = "ping"
+	CmdGetSettings = "get_settings"
+	CmdSetSettings = "set_settings"
 )
 
 // JobView is a store.Job plus the runtime stats (speed, ETA) the daemon
@@ -62,6 +68,11 @@ type Response struct {
 
 	Job  *JobView   `json:"job,omitempty"`
 	Jobs []*JobView `json:"jobs,omitempty"`
+
+	// get_settings / set_settings result: the settings now in effect
+	// (set_settings echoes back what was actually saved, after any
+	// clamping — see daemon.applySettings).
+	Settings *store.Settings `json:"settings,omitempty"`
 
 	// log streaming (add_social)
 	JobIDForLog string `json:"job_id_for_log,omitempty"`

@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 	"sync"
 	"time"
 
@@ -82,8 +83,47 @@ type Job struct {
 	// file. Used by "godl remove --purge" to know what to delete.
 	ResolvedPaths []string
 	ErrorMsg      string
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
+	// RetryCount is how many times the daemon has auto-retried this job
+	// since its last success (see Settings.AutoRetry). A manual "godl
+	// retry" resets it to 0 — it tracks the automated backoff streak,
+	// not a lifetime total. Always 0 unless auto-retry is/was enabled.
+	RetryCount int
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
+}
+
+// Settings holds the daemon's user-configurable defaults, edited from
+// the TUI's Settings tab (or godl settings) and applied to every job
+// from then on until changed again. Stored as individual key/value rows
+// (see the settings table) rather than one JSON blob, so a future field
+// doesn't need a data migration for existing rows — GetSettings just
+// falls back to the zero-ish default below for any key that isn't set.
+type Settings struct {
+	// MaxConcurrent caps how many jobs run at once, across every job
+	// type combined; jobs beyond the cap stay queued and start as
+	// running ones finish. 0 means unlimited (the historical behavior,
+	// and the default).
+	MaxConcurrent int
+	// DefaultRateLimit is applied to a new job that doesn't pass its
+	// own --limit-rate, in the same syntax that flag accepts (e.g.
+	// "2M"); "" means unlimited.
+	DefaultRateLimit string
+	// AutoRetry, when true, automatically re-queues a job that fails
+	// (not one that's paused/canceled) after a backoff delay, up to
+	// AutoRetryMaxAttempts times, instead of leaving it failed until a
+	// manual "godl retry".
+	AutoRetry            bool
+	AutoRetryMaxAttempts int
+	// NotifyOnComplete fires a best-effort desktop notification
+	// (internal/notify) when a job completes successfully.
+	NotifyOnComplete bool
+}
+
+// DefaultSettings is what GetSettings returns before anything has ever
+// been saved — unlimited concurrency and rate, no auto-retry, no
+// notifications, matching godl's behavior before this feature existed.
+func DefaultSettings() Settings {
+	return Settings{AutoRetryMaxAttempts: 3}
 }
 
 type Store struct {
@@ -194,6 +234,27 @@ CREATE TABLE IF NOT EXISTS jobs (
 			return err
 		}
 	}
+
+	// retry_count was added after jobs shipped without it, same as
+	// resolved_paths above.
+	hasCol, err = s.hasColumn("jobs", "retry_count")
+	if err != nil {
+		return err
+	}
+	if !hasCol {
+		if _, err := s.db.Exec(`ALTER TABLE jobs ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return err
+		}
+	}
+
+	if _, err := s.db.Exec(`
+CREATE TABLE IF NOT EXISTS settings (
+	key   TEXT PRIMARY KEY,
+	value TEXT NOT NULL
+);
+`); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -242,10 +303,10 @@ func (s *Store) CreateJob(ctx context.Context, j *Job) error {
 	}
 	_, err = s.db.ExecContext(ctx, `
 INSERT INTO jobs (id, type, source, output, format, concurrency, status,
-	bytes_done, bytes_total, resume_offset, info_hash, resolved_paths, error_msg, limit_rate, sha256, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	bytes_done, bytes_total, resume_offset, info_hash, resolved_paths, error_msg, limit_rate, sha256, retry_count, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		j.ID, j.Type, j.Source, j.Output, j.Format, j.Concurrency, j.Status,
-		j.BytesDone, j.BytesTotal, j.ResumeOffset, j.InfoHash, string(resolved), j.ErrorMsg, j.LimitRate, j.Sha256,
+		j.BytesDone, j.BytesTotal, j.ResumeOffset, j.InfoHash, string(resolved), j.ErrorMsg, j.LimitRate, j.Sha256, j.RetryCount,
 		j.CreatedAt.Unix(), j.UpdatedAt.Unix())
 	return err
 }
@@ -258,10 +319,10 @@ func (s *Store) UpdateJob(ctx context.Context, j *Job) error {
 	}
 	_, err = s.db.ExecContext(ctx, `
 UPDATE jobs SET type=?, source=?, output=?, format=?, concurrency=?, status=?,
-	bytes_done=?, bytes_total=?, resume_offset=?, info_hash=?, resolved_paths=?, error_msg=?, limit_rate=?, sha256=?, updated_at=?
+	bytes_done=?, bytes_total=?, resume_offset=?, info_hash=?, resolved_paths=?, error_msg=?, limit_rate=?, sha256=?, retry_count=?, updated_at=?
 WHERE id=?`,
 		j.Type, j.Source, j.Output, j.Format, j.Concurrency, j.Status,
-		j.BytesDone, j.BytesTotal, j.ResumeOffset, j.InfoHash, string(resolved), j.ErrorMsg, j.LimitRate, j.Sha256,
+		j.BytesDone, j.BytesTotal, j.ResumeOffset, j.InfoHash, string(resolved), j.ErrorMsg, j.LimitRate, j.Sha256, j.RetryCount,
 		j.UpdatedAt.Unix(), j.ID)
 	return err
 }
@@ -329,7 +390,7 @@ func (s *Store) DeleteJob(ctx context.Context, id string) error {
 func (s *Store) GetJob(ctx context.Context, id string) (*Job, error) {
 	row := s.db.QueryRowContext(ctx, `
 SELECT id, type, source, output, format, concurrency, status,
-	bytes_done, bytes_total, resume_offset, info_hash, resolved_paths, error_msg, limit_rate, sha256, created_at, updated_at
+	bytes_done, bytes_total, resume_offset, info_hash, resolved_paths, error_msg, limit_rate, sha256, retry_count, created_at, updated_at
 FROM jobs WHERE id=?`, id)
 	return scanJob(row)
 }
@@ -337,7 +398,7 @@ FROM jobs WHERE id=?`, id)
 func (s *Store) ListJobs(ctx context.Context) ([]*Job, error) {
 	rows, err := s.db.QueryContext(ctx, `
 SELECT id, type, source, output, format, concurrency, status,
-	bytes_done, bytes_total, resume_offset, info_hash, resolved_paths, error_msg, limit_rate, sha256, created_at, updated_at
+	bytes_done, bytes_total, resume_offset, info_hash, resolved_paths, error_msg, limit_rate, sha256, retry_count, created_at, updated_at
 FROM jobs ORDER BY created_at ASC`)
 	if err != nil {
 		return nil, err
@@ -363,7 +424,7 @@ func scanJob(row scanner) (*Job, error) {
 	var created, updated int64
 	var resolved string
 	if err := row.Scan(&j.ID, &j.Type, &j.Source, &j.Output, &j.Format, &j.Concurrency,
-		&j.Status, &j.BytesDone, &j.BytesTotal, &j.ResumeOffset, &j.InfoHash, &resolved, &j.ErrorMsg, &j.LimitRate, &j.Sha256,
+		&j.Status, &j.BytesDone, &j.BytesTotal, &j.ResumeOffset, &j.InfoHash, &resolved, &j.ErrorMsg, &j.LimitRate, &j.Sha256, &j.RetryCount,
 		&created, &updated); err != nil {
 		return nil, err
 	}
@@ -375,4 +436,82 @@ func scanJob(row scanner) (*Job, error) {
 		}
 	}
 	return &j, nil
+}
+
+// settingsKeys names every row GetSettings/SaveSettings read and write
+// in the settings table, so both stay in sync with Settings' fields by
+// construction instead of by convention.
+const (
+	settingsKeyMaxConcurrent        = "max_concurrent"
+	settingsKeyDefaultRateLimit     = "default_rate_limit"
+	settingsKeyAutoRetry            = "auto_retry"
+	settingsKeyAutoRetryMaxAttempts = "auto_retry_max_attempts"
+	settingsKeyNotifyOnComplete     = "notify_on_complete"
+)
+
+// GetSettings reads the daemon's saved settings, falling back to
+// DefaultSettings() for any key that's never been written (a fresh
+// database, or one from before this feature existed) — there's no
+// separate "has this ever been configured" migration step, a missing
+// key just means "use the default".
+func (s *Store) GetSettings(ctx context.Context) (Settings, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT key, value FROM settings`)
+	if err != nil {
+		return Settings{}, err
+	}
+	defer rows.Close()
+	kv := map[string]string{}
+	for rows.Next() {
+		var k, v string
+		if err := rows.Scan(&k, &v); err != nil {
+			return Settings{}, err
+		}
+		kv[k] = v
+	}
+	if err := rows.Err(); err != nil {
+		return Settings{}, err
+	}
+
+	set := DefaultSettings()
+	if v, ok := kv[settingsKeyMaxConcurrent]; ok {
+		if n, err := strconv.Atoi(v); err == nil {
+			set.MaxConcurrent = n
+		}
+	}
+	if v, ok := kv[settingsKeyDefaultRateLimit]; ok {
+		set.DefaultRateLimit = v
+	}
+	if v, ok := kv[settingsKeyAutoRetry]; ok {
+		set.AutoRetry = v == "true"
+	}
+	if v, ok := kv[settingsKeyAutoRetryMaxAttempts]; ok {
+		if n, err := strconv.Atoi(v); err == nil {
+			set.AutoRetryMaxAttempts = n
+		}
+	}
+	if v, ok := kv[settingsKeyNotifyOnComplete]; ok {
+		set.NotifyOnComplete = v == "true"
+	}
+	return set, nil
+}
+
+// SaveSettings persists every field of set, upserting each key/value
+// row. Callers (daemon.applySettings) are expected to validate set
+// first — this just writes whatever it's given.
+func (s *Store) SaveSettings(ctx context.Context, set Settings) error {
+	kv := map[string]string{
+		settingsKeyMaxConcurrent:        strconv.Itoa(set.MaxConcurrent),
+		settingsKeyDefaultRateLimit:     set.DefaultRateLimit,
+		settingsKeyAutoRetry:            strconv.FormatBool(set.AutoRetry),
+		settingsKeyAutoRetryMaxAttempts: strconv.Itoa(set.AutoRetryMaxAttempts),
+		settingsKeyNotifyOnComplete:     strconv.FormatBool(set.NotifyOnComplete),
+	}
+	for k, v := range kv {
+		if _, err := s.db.ExecContext(ctx,
+			`INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`,
+			k, v); err != nil {
+			return err
+		}
+	}
+	return nil
 }

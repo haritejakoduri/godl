@@ -130,7 +130,7 @@ func TestStartWebDAVDownloadsFolderRecursively(t *testing.T) {
 	d := newTestDaemon(t)
 	output := t.TempDir()
 
-	j, err := d.createJob(context.Background(), store.JobWebDAV, "myconn:/", output, "", 0, 0)
+	j, err := d.createJob(context.Background(), store.JobWebDAV, "myconn:/", output, "", 0, 0, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,7 +171,7 @@ func TestStartWebDAVDownloadsSingleFile(t *testing.T) {
 	d := newTestDaemon(t)
 	output := t.TempDir()
 
-	j, err := d.createJob(context.Background(), store.JobWebDAV, "myconn:/a.txt", output, "", 0, 0)
+	j, err := d.createJob(context.Background(), store.JobWebDAV, "myconn:/a.txt", output, "", 0, 0, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -218,7 +218,7 @@ func TestStartWebDAVNamedFolderKeepsItsOwnNameInOutput(t *testing.T) {
 	// (directory hrefs from a real WebDAV server's PROPFIND response are
 	// slash-terminated) — webdavLocalPath must handle it either way, but
 	// this keeps the test aligned with the actual call shape in practice.
-	j, err := d.createJob(context.Background(), store.JobWebDAV, "myconn:/sub/", output, "", 0, 0)
+	j, err := d.createJob(context.Background(), store.JobWebDAV, "myconn:/sub/", output, "", 0, 0, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -261,7 +261,7 @@ func TestStartWebDAVResumeRedownloadsMissingResolvedFile(t *testing.T) {
 	d := newTestDaemon(t)
 	output := t.TempDir()
 
-	j, err := d.createJob(context.Background(), store.JobWebDAV, "myconn:/", output, "", 0, 0)
+	j, err := d.createJob(context.Background(), store.JobWebDAV, "myconn:/", output, "", 0, 0, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -354,7 +354,7 @@ func TestStartWebDAVConcurrentDownloadsDontLoseFiles(t *testing.T) {
 	d := newTestDaemon(t)
 	output := t.TempDir()
 
-	j, err := d.createJob(context.Background(), store.JobWebDAV, "wideconn:/", output, "", 0, 0)
+	j, err := d.createJob(context.Background(), store.JobWebDAV, "wideconn:/", output, "", 0, 0, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -389,7 +389,7 @@ func TestStartWebDAVUnknownConnectionFails(t *testing.T) {
 	t.Setenv("GODL_DATA_DIR", t.TempDir())
 	d := newTestDaemon(t)
 
-	j, err := d.createJob(context.Background(), store.JobWebDAV, "doesnotexist:/a.txt", t.TempDir(), "", 0, 0)
+	j, err := d.createJob(context.Background(), store.JobWebDAV, "doesnotexist:/a.txt", t.TempDir(), "", 0, 0, "")
 	if err != nil {
 		t.Fatal(err)
 	}

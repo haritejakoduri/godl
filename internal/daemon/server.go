@@ -190,7 +190,7 @@ func (d *Daemon) dispatch(conn net.Conn, req Request) {
 		writeResp(conn, Response{Type: "result", OK: true})
 
 	case CmdAddURL:
-		j, err := d.createJob(ctx, store.JobURL, req.Source, req.Output, "", req.Concurrency, req.LimitRate)
+		j, err := d.createJob(ctx, store.JobURL, req.Source, req.Output, "", req.Concurrency, req.LimitRate, req.Sha256)
 		if err != nil {
 			writeResp(conn, errResp(err))
 			return
@@ -199,7 +199,7 @@ func (d *Daemon) dispatch(conn net.Conn, req Request) {
 		writeResp(conn, Response{Type: "result", OK: true, Job: d.view(j.ID)})
 
 	case CmdAddTorrent:
-		j, err := d.createJob(ctx, store.JobTorrent, req.Source, req.Output, "", 0, req.LimitRate)
+		j, err := d.createJob(ctx, store.JobTorrent, req.Source, req.Output, "", 0, req.LimitRate, "")
 		if err != nil {
 			writeResp(conn, errResp(err))
 			return
@@ -208,7 +208,7 @@ func (d *Daemon) dispatch(conn net.Conn, req Request) {
 		writeResp(conn, Response{Type: "result", OK: true, Job: d.view(j.ID)})
 
 	case CmdAddWebDAV:
-		j, err := d.createJob(ctx, store.JobWebDAV, req.Source, req.Output, "", 0, req.LimitRate)
+		j, err := d.createJob(ctx, store.JobWebDAV, req.Source, req.Output, "", 0, req.LimitRate, "")
 		if err != nil {
 			writeResp(conn, errResp(err))
 			return
@@ -217,7 +217,7 @@ func (d *Daemon) dispatch(conn net.Conn, req Request) {
 		writeResp(conn, Response{Type: "result", OK: true, Job: d.view(j.ID)})
 
 	case CmdAddSocial:
-		j, err := d.createJob(ctx, store.JobSocial, req.Source, req.Output, req.Format, 0, req.LimitRate)
+		j, err := d.createJob(ctx, store.JobSocial, req.Source, req.Output, req.Format, 0, req.LimitRate, "")
 		if err != nil {
 			writeResp(conn, errResp(err))
 			return
@@ -274,7 +274,7 @@ func errResp(err error) Response {
 	return Response{Type: "error", Error: err.Error()}
 }
 
-func (d *Daemon) createJob(ctx context.Context, typ store.JobType, source, output, format string, concurrency int, limitRate int64) (*store.Job, error) {
+func (d *Daemon) createJob(ctx context.Context, typ store.JobType, source, output, format string, concurrency int, limitRate int64, sha256 string) (*store.Job, error) {
 	if source == "" {
 		return nil, fmt.Errorf("source is required")
 	}
@@ -293,6 +293,7 @@ func (d *Daemon) createJob(ctx context.Context, typ store.JobType, source, outpu
 		Format:      format,
 		Concurrency: concurrency,
 		LimitRate:   limitRate,
+		Sha256:      sha256,
 		Status:      store.StatusQueued,
 	}
 	if err := d.st.CreateJob(ctx, j); err != nil {
@@ -373,6 +374,7 @@ func (d *Daemon) startURL(j *store.Job) {
 			Concurrency: j.Concurrency,
 			StartOffset: j.ResumeOffset,
 			Limiter:     ratelimit.NewLimiter(j.LimitRate),
+			Sha256:      j.Sha256,
 			Progress: func(done, total int64) {
 				d.reportProgress(j.ID, done, total)
 				if single {

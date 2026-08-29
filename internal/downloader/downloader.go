@@ -7,6 +7,8 @@ package downloader
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -40,6 +42,11 @@ type Options struct {
 	// use), so splitting into more chunks doesn't multiply the cap.
 	// nil means unlimited.
 	Limiter *rate.Limiter
+	// Sha256, if set, is the expected hex digest of the completed file.
+	// Verified once after the download reaches 100% (not per-chunk —
+	// see verifyChecksum for why a mismatch means starting over rather
+	// than a partial repair). Empty means no verification.
+	Sha256 string
 }
 
 // Result reports how much was written and whether the download reached
@@ -80,10 +87,51 @@ func Run(ctx context.Context, opt Options) (Result, error) {
 		return Result{}, err
 	}
 
+	var res Result
 	if opt.Concurrency > 1 && supportsRange && total > 0 {
-		return runChunked(ctx, client, opt, total)
+		res, err = runChunked(ctx, client, opt, total)
+	} else {
+		res, err = runSingle(ctx, client, opt, supportsRange, total)
 	}
-	return runSingle(ctx, client, opt, supportsRange, total)
+	if err != nil || !res.Completed || opt.Sha256 == "" {
+		return res, err
+	}
+	if verr := verifyChecksum(opt.OutputPath, opt.Sha256); verr != nil {
+		os.Remove(opt.OutputPath)
+		os.Remove(sidecarPath(opt.OutputPath))
+		return Result{}, verr
+	}
+	return res, nil
+}
+
+// verifyChecksum hashes the completed download at path and compares it
+// (case-insensitively) against wantHex. A mismatch means the source
+// served bytes that don't match what the caller expected — most likely
+// corruption or tampering in transit, not a bug in godl's own transfer
+// path, which is exactly what this check exists to catch. But the
+// digest covers the whole file, so a mismatch can't be narrowed down to
+// which byte range is wrong: the caller removes the file (and any
+// resume sidecar) and the next attempt has no choice but to redownload
+// everything, the same tradeoff every whole-file-checksum tool makes
+// (curl/wget/aria2 included). True partial repair would need the
+// source to publish per-chunk hashes (as BitTorrent does), which plain
+// HTTP downloads generally don't have.
+func verifyChecksum(path, wantHex string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return err
+	}
+	gotHex := hex.EncodeToString(h.Sum(nil))
+	wantHex = strings.ToLower(strings.TrimSpace(wantHex))
+	if gotHex != wantHex {
+		return fmt.Errorf("sha256 mismatch (got %s, want %s): the downloaded file doesn't match the expected checksum — likely corrupted or altered in transit, not a godl error; deleted it and a retry will redownload the whole file, since a whole-file checksum can't tell which part was bad", gotHex, wantHex)
+	}
+	return nil
 }
 
 // probe determines whether the server honors byte ranges and, if possible,

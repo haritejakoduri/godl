@@ -76,6 +76,7 @@ resume automatically on your next install.
 ```sh
 godl url https://example.com/big-file.iso -o out.iso -c 8
 godl url https://example.com/big-file.iso -o out.iso -R 2M   # cap at 2MiB/s
+godl url https://example.com/big-file.iso -o out.iso --sha256 <64-char-hex>   # verify on completion
 godl social https://example.com/watch?v=xyz -o ~/Videos -p 1080p
 godl torrent "magnet:?xt=urn:btih:..." -o ~/Downloads
 godl connection add mynas --url https://dav.example.com/remote.php/dav/files/alice/ --username alice
@@ -119,6 +120,19 @@ not just the one you passed it to.
 
 Resumable, and splits into concurrent chunks when the server supports
 range requests (`-c`/`--connections`).
+
+`--sha256 <hex>` is opt-in verification: without it, `godl url` behaves
+exactly as before. When set, godl hashes the completed file and compares
+it against the digest you passed, exactly once, after the download
+reaches 100% (there's no per-chunk hashing — a plain HTTP source has no
+manifest of per-chunk hashes to check against, unlike BitTorrent, which
+gets that for free from the protocol). On a match, nothing changes. On a
+mismatch, godl deletes the file and fails the job with an explanation —
+this almost always means the source served corrupted or tampered data in
+transit, not a godl bug, but because the digest covers the whole file
+there's no way to know which part was bad, so `godl retry` has to
+redownload the whole thing rather than repairing just the bad bytes (the
+same tradeoff `curl`/`wget`/`aria2` make with whole-file checksums).
 
 ### `godl social` — yt-dlp-supported sites
 

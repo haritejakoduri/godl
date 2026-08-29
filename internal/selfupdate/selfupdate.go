@@ -38,8 +38,11 @@ var releaseBase = func(tag string) string {
 
 // assetName returns the raw binary asset name scripts/build-all.sh
 // publishes for the current platform at the given version, or false if
-// this platform doesn't get one at all.
-func assetName(ver string) (string, bool) {
+// this platform doesn't get one at all. A var (not a plain func), like
+// releaseAPI/releaseBase/osExecutable above, purely so a test can force
+// the "no asset for this platform" (Windows, in practice) path on
+// whatever platform actually runs the test suite.
+var assetName = func(ver string) (string, bool) {
 	switch runtime.GOOS + "/" + runtime.GOARCH {
 	case "linux/amd64":
 		return fmt.Sprintf("godl-%s-linux-amd64", ver), true
@@ -87,45 +90,53 @@ const (
 // no raw Windows binary asset published anyway (see the package doc).
 var osExecutable = os.Executable
 
-func ForceUpdate(ctx context.Context, progress func(string)) (Result, error) {
+// ForceUpdate's second return value is the latest published version
+// (e.g. "0.4.0"), whenever it was actually looked up — every outcome
+// except the two that return before ever calling the GitHub API
+// (osExecutable failing, or a dpkg-managed install refusing to touch
+// itself at all). Callers use it to tell a genuinely unsupported
+// platform/install ("here's what's new, go get it yourself") apart
+// from one that's already current, even though both currently print
+// through the same Unsupported/AlreadyLatest split — see cmd/update.go.
+func ForceUpdate(ctx context.Context, progress func(string)) (result Result, latestVersion string, err error) {
 	exePath, err := osExecutable()
 	if err != nil {
-		return Unsupported, fmt.Errorf("locating the running godl binary: %w", err)
+		return Unsupported, "", fmt.Errorf("locating the running godl binary: %w", err)
 	}
 	if resolved, err := filepath.EvalSymlinks(exePath); err == nil {
 		exePath = resolved
 	}
 
 	if dpkgManaged(exePath) {
-		return ManagedInstall, nil
+		return ManagedInstall, "", nil
 	}
 
 	latestTag, err := ghrelease.TagName(ctx, releaseAPI)
 	if err != nil {
-		return Unsupported, fmt.Errorf("checking the latest godl release: %w", err)
+		return Unsupported, "", fmt.Errorf("checking the latest godl release: %w", err)
 	}
-	latestVersion := strings.TrimPrefix(latestTag, "v")
+	latestVersion = strings.TrimPrefix(latestTag, "v")
 	if latestVersion == version.Version {
-		return AlreadyLatest, nil
+		return AlreadyLatest, latestVersion, nil
 	}
 
 	asset, ok := assetName(latestVersion)
 	if !ok {
-		return Unsupported, nil
+		return Unsupported, latestVersion, nil
 	}
 
 	report(progress, "fetching godl "+latestVersion+" release checksum...")
 	wantHex, err := ghrelease.AssetDigest(ctx, releaseAPI, asset)
 	if err != nil {
-		return Unsupported, fmt.Errorf("looking up godl's published checksum (refusing to update unverified): %w", err)
+		return Unsupported, latestVersion, fmt.Errorf("looking up godl's published checksum (refusing to update unverified): %w", err)
 	}
 
 	report(progress, "downloading godl "+latestVersion+"...")
 	if err := download(ctx, releaseBase(latestTag)+asset, exePath, wantHex); err != nil {
-		return Unsupported, fmt.Errorf("updating godl: %w", err)
+		return Unsupported, latestVersion, fmt.Errorf("updating godl: %w", err)
 	}
 	report(progress, "godl updated to "+latestVersion+" — already-running commands (godl status, godl serve, ...) keep using the old binary until restarted")
-	return Updated, nil
+	return Updated, latestVersion, nil
 }
 
 func report(progress func(string), msg string) {

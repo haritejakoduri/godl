@@ -66,12 +66,15 @@ func TestForceUpdateDownloadsVerifiesAndReplaces(t *testing.T) {
 	exePath := fakeExecutable(t, []byte("old-binary-contents\n"))
 
 	var lines []string
-	result, err := ForceUpdate(context.Background(), func(msg string) { lines = append(lines, msg) })
+	result, latestVersion, err := ForceUpdate(context.Background(), func(msg string) { lines = append(lines, msg) })
 	if err != nil {
 		t.Fatalf("ForceUpdate error: %v", err)
 	}
 	if result != Updated {
 		t.Fatalf("ForceUpdate result = %v, want Updated (progress: %v)", result, lines)
+	}
+	if latestVersion != "9.9.9" {
+		t.Fatalf("ForceUpdate latestVersion = %q, want %q", latestVersion, "9.9.9")
 	}
 
 	got, err := os.ReadFile(exePath)
@@ -96,12 +99,15 @@ func TestForceUpdateAlreadyLatest(t *testing.T) {
 	fakeRelease(t, "v"+version.Version, "unused", nil)
 	fakeExecutable(t, []byte("current-binary\n"))
 
-	result, err := ForceUpdate(context.Background(), nil)
+	result, latestVersion, err := ForceUpdate(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("ForceUpdate error: %v", err)
 	}
 	if result != AlreadyLatest {
 		t.Fatalf("ForceUpdate result = %v, want AlreadyLatest", result)
+	}
+	if latestVersion != version.Version {
+		t.Fatalf("ForceUpdate latestVersion = %q, want the running version %q", latestVersion, version.Version)
 	}
 }
 
@@ -126,7 +132,7 @@ func TestForceUpdateRejectsChecksumMismatch(t *testing.T) {
 	original := []byte("old-binary-contents\n")
 	exePath := fakeExecutable(t, original)
 
-	result, err := ForceUpdate(context.Background(), nil)
+	result, _, err := ForceUpdate(context.Background(), nil)
 	if err == nil {
 		t.Fatalf("ForceUpdate result = %v, err = nil; want a checksum-mismatch error", result)
 	}
@@ -137,5 +143,33 @@ func TestForceUpdateRejectsChecksumMismatch(t *testing.T) {
 	}
 	if string(got) != string(original) {
 		t.Fatalf("binary at exePath = %q after a rejected update; want it untouched (%q)", got, original)
+	}
+}
+
+// TestForceUpdateUnsupportedStillReportsLatestVersion is the
+// regression test for cmd/update.go's "no self-update available"
+// message: even on a platform with no published raw binary asset
+// (Windows in practice, forced here via assetName so the test isn't
+// tied to whatever platform actually runs it), ForceUpdate must still
+// look up and return the latest published version — so the message
+// shown can say what's actually out there instead of a bare "go check
+// yourself".
+func TestForceUpdateUnsupportedStillReportsLatestVersion(t *testing.T) {
+	origAssetName := assetName
+	assetName = func(string) (string, bool) { return "", false }
+	t.Cleanup(func() { assetName = origAssetName })
+
+	fakeRelease(t, "v9.9.9", "unused", nil)
+	fakeExecutable(t, []byte("current-binary\n"))
+
+	result, latestVersion, err := ForceUpdate(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("ForceUpdate error: %v", err)
+	}
+	if result != Unsupported {
+		t.Fatalf("ForceUpdate result = %v, want Unsupported", result)
+	}
+	if latestVersion != "9.9.9" {
+		t.Fatalf("ForceUpdate latestVersion = %q, want %q (must still be looked up on an unsupported platform)", latestVersion, "9.9.9")
 	}
 }

@@ -41,8 +41,8 @@ get the update instead of trying to replace anything itself.`,
 		printLine := func(msg string) { fmt.Println(" ", msg) }
 
 		fmt.Println("godl:")
-		result, err := selfupdate.ForceUpdate(ctx, printLine)
-		reportSelfUpdateResult(result, err)
+		result, latestVersion, err := selfupdate.ForceUpdate(ctx, printLine)
+		reportSelfUpdateResult(result, latestVersion, err)
 
 		fmt.Println("yt-dlp:")
 		updated, err := ytdlp.ForceUpdate(ctx, printLine)
@@ -65,7 +65,7 @@ func reportUpdateResult(updated bool, err error) {
 	}
 }
 
-func reportSelfUpdateResult(result selfupdate.Result, err error) {
+func reportSelfUpdateResult(result selfupdate.Result, latestVersion string, err error) {
 	switch {
 	case err != nil:
 		fmt.Println("  error:", err)
@@ -76,7 +76,9 @@ func reportSelfUpdateResult(result selfupdate.Result, err error) {
 		fmt.Println("  already up to date.")
 	case result == selfupdate.ManagedInstall:
 		fmt.Println("  installed via apt — run \"sudo apt update && sudo apt upgrade\" instead.")
-	default: // Unsupported
+	case latestVersion != "": // Unsupported, but we know what's actually out there
+		fmt.Printf("  %s available — no self-update for this platform/install; grab it from %s\n", latestVersion, releasesURL)
+	default: // Unsupported, and couldn't even check what's latest
 		fmt.Printf("  no self-update available for this platform/install — grab the latest from %s\n", releasesURL)
 	}
 }

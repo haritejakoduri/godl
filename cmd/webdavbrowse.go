@@ -15,6 +15,7 @@ import (
 	"godl/internal/connections"
 	"godl/internal/daemon"
 	"godl/internal/paths"
+	"godl/internal/player"
 	"godl/internal/webdav"
 )
 
@@ -151,6 +152,19 @@ func startWebDAVDownloads(connName, outputDir string, remotePaths []string) tea.
 			started++
 		}
 		return webdavStartedMsg{n: started, output: output, err: firstErr}
+	}
+}
+
+// playWebDAVFile streams remotePath directly via client (already
+// live in memory with credentials from browsing) — no download
+// involved, same as a webdav job's "o" action in the jobs table (see
+// status.go's doPlay), just reached straight from the browser instead
+// of needing to queue+wait for a download job first.
+func playWebDAVFile(client *webdav.Client, remotePath string) tea.Cmd {
+	return func() tea.Msg {
+		target := client.URLFor(remotePath).String()
+		auth := &player.Auth{Username: client.Username, Password: client.Password}
+		return actionDoneMsg{player.Play(target, auth)}
 	}
 }
 
@@ -320,6 +334,19 @@ func (m statusModel) updateWebDAVBrowse(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.webdavBrowse = nil
 		m.statusMsg = "starting..."
 		return m, startWebDAVDownloads(connName, outputDir, []string{target})
+	case "o":
+		// Files only — streaming a directory isn't meaningful. Closes the
+		// overlay same as d/D: it's what lets the resulting actionDoneMsg's
+		// error (e.g. no player installed) actually reach the screen,
+		// since viewWebDAVBrowse doesn't render m.statusMsg while it's
+		// showing.
+		if wb.loading || wb.cursor >= len(visible) || visible[wb.cursor].IsDir {
+			return m, nil
+		}
+		client, target := wb.client, visible[wb.cursor].Path
+		m.webdavBrowse = nil
+		m.statusMsg = "starting player..."
+		return m, playWebDAVFile(client, target)
 	}
 	return m, nil
 }
@@ -405,7 +432,7 @@ func (m statusModel) viewWebDAVBrowse() string {
 	if wb.searching {
 		b.WriteString(helpStyle.Render("type to filter  enter confirm  esc cancel"))
 	} else {
-		b.WriteString(helpStyle.Render("↑/↓ move  enter open folder  space select  / search  d download selected (or current)  D download this whole folder  ←/backspace up  esc cancel"))
+		b.WriteString(helpStyle.Render("↑/↓ move  enter open folder  space select  / search  d download selected (or current)  D download this whole folder  o play/stream  ←/backspace up  esc cancel"))
 	}
 	return b.String()
 }

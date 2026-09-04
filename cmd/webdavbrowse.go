@@ -356,6 +356,29 @@ func (m statusModel) updateWebDAVBrowse(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // shouldn't blow out the terminal.
 const webdavBrowseVisible = 15
 
+// webdavNameMinWidth/webdavSizeColWidth size one entry row: cursor(2) +
+// checkbox(3) + space(1) + name + space(1) + size. Same responsive-
+// width idea as columnsForWidth uses for the jobs table's Path/Source
+// columns — a name column hardcoded to a small fixed width wastes
+// most of a wide terminal and truncates filenames that would
+// otherwise fit just fine.
+const (
+	webdavNameMinWidth = 20
+	webdavSizeColWidth = 10
+)
+
+// webdavNameWidth returns how wide the name column should be for a
+// terminal width chars wide, falling back to webdavNameMinWidth
+// before the first WindowSizeMsg arrives (width == 0) or on a very
+// narrow terminal.
+func webdavNameWidth(width int) int {
+	w := width - 2 - 3 - 1 - 1 - webdavSizeColWidth
+	if w < webdavNameMinWidth {
+		return webdavNameMinWidth
+	}
+	return w
+}
+
 func (m statusModel) viewWebDAVBrowse() string {
 	wb := m.webdavBrowse
 	var b strings.Builder
@@ -405,6 +428,7 @@ func (m statusModel) viewWebDAVBrowse() string {
 			start = wb.cursor - webdavBrowseVisible + 1
 		}
 		end := min(start+webdavBrowseVisible, len(visible))
+		nameW := webdavNameWidth(m.width)
 		for i := start; i < end; i++ {
 			e := visible[i]
 			cursor := "  "
@@ -422,7 +446,7 @@ func (m statusModel) viewWebDAVBrowse() string {
 			} else if e.Size >= 0 {
 				size = humanBytes(e.Size)
 			}
-			b.WriteString(fmt.Sprintf("%s%s %-40s %s\n", cursor, check, truncate(name, 40), size))
+			b.WriteString(fmt.Sprintf("%s%s %-*s %s\n", cursor, check, nameW, truncate(name, nameW), size))
 		}
 		if len(visible) > webdavBrowseVisible {
 			b.WriteString(helpStyle.Render(fmt.Sprintf("(%d-%d of %d)\n", start+1, end, len(visible))))

@@ -559,6 +559,24 @@ func TestShortenHome(t *testing.T) {
 	}
 }
 
+func TestWebDAVNameWidth(t *testing.T) {
+	cases := []struct {
+		width int
+		want  int
+	}{
+		{0, webdavNameMinWidth},  // no WindowSizeMsg yet
+		{30, webdavNameMinWidth}, // narrow terminal, floor applies
+		{40, 40 - 2 - 3 - 1 - 1 - webdavSizeColWidth},
+		{100, 100 - 2 - 3 - 1 - 1 - webdavSizeColWidth},
+		{200, 200 - 2 - 3 - 1 - 1 - webdavSizeColWidth},
+	}
+	for _, c := range cases {
+		if got := webdavNameWidth(c.width); got != c.want {
+			t.Errorf("webdavNameWidth(%d) = %d, want %d", c.width, got, c.want)
+		}
+	}
+}
+
 // TestWebDAVBrowseShowsDownloadDestination verifies the browse overlay
 // displays where files will actually land, resolved once when
 // connecting (not recomputed per keypress) and shown regardless of

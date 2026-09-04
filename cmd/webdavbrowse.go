@@ -139,7 +139,7 @@ func startWebDAVDownloads(connName, outputDir string, remotePaths []string) tea.
 		for _, p := range remotePaths {
 			_, err := daemon.Call(daemon.Request{
 				Cmd:    daemon.CmdAddWebDAV,
-				Source: connName + ":" + p,
+				Source: daemon.JoinWebDAVSource(connName, p),
 				Output: output,
 			})
 			if err != nil {

@@ -44,7 +44,7 @@ recursively, preserving its directory structure under -o.`,
 		}
 		resp, err := daemon.Call(daemon.Request{
 			Cmd:       daemon.CmdAddWebDAV,
-			Source:    connName + ":" + remotePath,
+			Source:    daemon.JoinWebDAVSource(connName, remotePath),
 			Output:    output,
 			LimitRate: limitRate,
 		})

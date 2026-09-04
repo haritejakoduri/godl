@@ -8,6 +8,7 @@ package webdav
 import (
 	"context"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/xml"
 	"fmt"
 	"io"
@@ -88,6 +89,28 @@ func (c *Client) setAuth(req *http.Request) {
 	if c.Username != "" || c.Password != "" {
 		req.SetBasicAuth(c.Username, c.Password)
 	}
+}
+
+// URLFor exposes resolve for callers outside this package that need the
+// literal URL for a remote path without issuing a request against it —
+// e.g. handing it straight to an external player to stream directly,
+// rather than downloading through this Client first.
+func (c *Client) URLFor(remotePath string) *url.URL {
+	return c.resolve(remotePath)
+}
+
+// AuthHeader returns this Client's credentials as an HTTP Basic
+// Authorization header value ("Basic <base64>"), or "" if none are
+// set — for a caller (like URLFor's) that needs to authenticate a
+// request itself instead of going through Client.Download, without
+// embedding the password in a URL where it'd be more widely exposed
+// (e.g. in another process's argv).
+func (c *Client) AuthHeader() string {
+	if c.Username == "" && c.Password == "" {
+		return ""
+	}
+	token := c.Username + ":" + c.Password
+	return "Basic " + base64.StdEncoding.EncodeToString([]byte(token))
 }
 
 // relativePath turns a (possibly percent-encoded, possibly absolute-URL)

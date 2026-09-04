@@ -3,8 +3,10 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/progress"
 	"github.com/charmbracelet/bubbles/table"
@@ -16,10 +18,11 @@ import (
 
 	"godl/internal/connections"
 	"godl/internal/daemon"
-	"godl/internal/mpv"
 	"godl/internal/paths"
+	"godl/internal/player"
 	"godl/internal/store"
 	"godl/internal/webdav"
+	"godl/internal/ytdlp"
 )
 
 var statusCmd = &cobra.Command{
@@ -333,8 +336,11 @@ func doBulkJobAction(apiCmd string, jobIDs []string) tea.Cmd {
 func doPlay(j *daemon.JobView) tea.Cmd {
 	return func() tea.Msg {
 		switch j.Type {
-		case store.JobURL, store.JobSocial:
-			return actionDoneMsg{mpv.Play(j.Source, nil)}
+		case store.JobURL:
+			return actionDoneMsg{player.Play(j.Source, nil)}
+
+		case store.JobSocial:
+			return actionDoneMsg{playSocial(j.Source)}
 
 		case store.JobWebDAV:
 			connName, remotePath, ok := daemon.SplitWebDAVSource(j.Source)
@@ -350,11 +356,8 @@ func doPlay(j *daemon.JobView) tea.Cmd {
 				return actionDoneMsg{err}
 			}
 			target := client.URLFor(remotePath).String()
-			var headers map[string]string
-			if auth := client.AuthHeader(); auth != "" {
-				headers = map[string]string{"Authorization": auth}
-			}
-			return actionDoneMsg{mpv.Play(target, headers)}
+			auth := &player.Auth{Username: conn.Username, Password: conn.Password}
+			return actionDoneMsg{player.Play(target, auth)}
 
 		case store.JobTorrent:
 			if j.Status != store.StatusCompleted {
@@ -364,12 +367,46 @@ func doPlay(j *daemon.JobView) tea.Cmd {
 			if len(j.ResolvedPaths) > 0 {
 				target = j.ResolvedPaths[0]
 			}
-			return actionDoneMsg{mpv.Play(target, nil)}
+			return actionDoneMsg{player.Play(target, nil)}
 
 		default:
 			return actionDoneMsg{fmt.Errorf("streaming isn't supported for %s jobs", j.Type)}
 		}
 	}
+}
+
+// playSocial plays a Social job's link with whichever player is
+// available. mpv can resolve a yt-dlp-supported URL itself (a bundled
+// hook), so it's handed the link directly; VLC has no equivalent, so
+// godl resolves one direct, pre-merged stream URL via yt-dlp itself
+// first (-f best specifically — yt-dlp's default often returns
+// separate video+audio URLs for adaptive streams, and a bare "hand
+// VLC two URLs" wouldn't mux them together the way mpv's own hook
+// does) and hands VLC that instead.
+func playSocial(link string) error {
+	name, _, err := player.Find()
+	if err != nil {
+		return err
+	}
+	if name == "mpv" {
+		return player.PlayWith(name, link, nil)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	ytDlpPath, err := ytdlp.Ensure(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("resolving stream URL via yt-dlp: %w", err)
+	}
+	out, err := exec.CommandContext(ctx, ytDlpPath, "-g", "-f", "best", link).Output()
+	if err != nil {
+		return fmt.Errorf("resolving stream URL via yt-dlp: %w", err)
+	}
+	resolved := strings.TrimSpace(strings.SplitN(string(out), "\n", 2)[0])
+	if resolved == "" {
+		return fmt.Errorf("resolving stream URL via yt-dlp: no URL returned")
+	}
+	return player.PlayWith(name, resolved, nil)
 }
 
 func doBulkRemove(jobIDs []string, purge bool) tea.Cmd {

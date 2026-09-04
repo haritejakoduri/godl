@@ -15,6 +15,7 @@ import (
 	"godl/internal/connections"
 	"godl/internal/daemon"
 	"godl/internal/paths"
+	"godl/internal/player"
 	"godl/internal/webdav"
 )
 
@@ -151,6 +152,19 @@ func startWebDAVDownloads(connName, outputDir string, remotePaths []string) tea.
 			started++
 		}
 		return webdavStartedMsg{n: started, output: output, err: firstErr}
+	}
+}
+
+// playWebDAVFile streams remotePath directly via client (already
+// live in memory with credentials from browsing) — no download
+// involved, same as a webdav job's "o" action in the jobs table (see
+// status.go's doPlay), just reached straight from the browser instead
+// of needing to queue+wait for a download job first.
+func playWebDAVFile(client *webdav.Client, remotePath string) tea.Cmd {
+	return func() tea.Msg {
+		target := client.URLFor(remotePath).String()
+		auth := &player.Auth{Username: client.Username, Password: client.Password}
+		return actionDoneMsg{player.Play(target, auth)}
 	}
 }
 
@@ -320,6 +334,19 @@ func (m statusModel) updateWebDAVBrowse(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.webdavBrowse = nil
 		m.statusMsg = "starting..."
 		return m, startWebDAVDownloads(connName, outputDir, []string{target})
+	case "o":
+		// Files only — streaming a directory isn't meaningful. Closes the
+		// overlay same as d/D: it's what lets the resulting actionDoneMsg's
+		// error (e.g. no player installed) actually reach the screen,
+		// since viewWebDAVBrowse doesn't render m.statusMsg while it's
+		// showing.
+		if wb.loading || wb.cursor >= len(visible) || visible[wb.cursor].IsDir {
+			return m, nil
+		}
+		client, target := wb.client, visible[wb.cursor].Path
+		m.webdavBrowse = nil
+		m.statusMsg = "starting player..."
+		return m, playWebDAVFile(client, target)
 	}
 	return m, nil
 }
@@ -328,6 +355,29 @@ func (m statusModel) updateWebDAVBrowse(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // to keep the cursor in view — a folder with hundreds of files
 // shouldn't blow out the terminal.
 const webdavBrowseVisible = 15
+
+// webdavNameMinWidth/webdavSizeColWidth size one entry row: cursor(2) +
+// checkbox(3) + space(1) + name + space(1) + size. Same responsive-
+// width idea as columnsForWidth uses for the jobs table's Path/Source
+// columns — a name column hardcoded to a small fixed width wastes
+// most of a wide terminal and truncates filenames that would
+// otherwise fit just fine.
+const (
+	webdavNameMinWidth = 20
+	webdavSizeColWidth = 10
+)
+
+// webdavNameWidth returns how wide the name column should be for a
+// terminal width chars wide, falling back to webdavNameMinWidth
+// before the first WindowSizeMsg arrives (width == 0) or on a very
+// narrow terminal.
+func webdavNameWidth(width int) int {
+	w := width - 2 - 3 - 1 - 1 - webdavSizeColWidth
+	if w < webdavNameMinWidth {
+		return webdavNameMinWidth
+	}
+	return w
+}
 
 func (m statusModel) viewWebDAVBrowse() string {
 	wb := m.webdavBrowse
@@ -378,6 +428,7 @@ func (m statusModel) viewWebDAVBrowse() string {
 			start = wb.cursor - webdavBrowseVisible + 1
 		}
 		end := min(start+webdavBrowseVisible, len(visible))
+		nameW := webdavNameWidth(m.width)
 		for i := start; i < end; i++ {
 			e := visible[i]
 			cursor := "  "
@@ -395,7 +446,7 @@ func (m statusModel) viewWebDAVBrowse() string {
 			} else if e.Size >= 0 {
 				size = humanBytes(e.Size)
 			}
-			b.WriteString(fmt.Sprintf("%s%s %-40s %s\n", cursor, check, truncate(name, 40), size))
+			b.WriteString(fmt.Sprintf("%s%s %-*s %s\n", cursor, check, nameW, truncate(name, nameW), size))
 		}
 		if len(visible) > webdavBrowseVisible {
 			b.WriteString(helpStyle.Render(fmt.Sprintf("(%d-%d of %d)\n", start+1, end, len(visible))))
@@ -405,7 +456,7 @@ func (m statusModel) viewWebDAVBrowse() string {
 	if wb.searching {
 		b.WriteString(helpStyle.Render("type to filter  enter confirm  esc cancel"))
 	} else {
-		b.WriteString(helpStyle.Render("↑/↓ move  enter open folder  space select  / search  d download selected (or current)  D download this whole folder  ←/backspace up  esc cancel"))
+		b.WriteString(helpStyle.Render("↑/↓ move  enter open folder  space select  / search  d download selected (or current)  D download this whole folder  o play/stream  ←/backspace up  esc cancel"))
 	}
 	return b.String()
 }

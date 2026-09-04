@@ -11,4 +11,4 @@ package version
 // via `godl --version` to decide whether a run is a fresh install or an
 // upgrade; dpkg/apt compare it directly against Debian package Version
 // fields.
-var Version = "0.4.0"
+var Version = "0.5.0"

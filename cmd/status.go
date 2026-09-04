@@ -16,8 +16,10 @@ import (
 
 	"godl/internal/connections"
 	"godl/internal/daemon"
+	"godl/internal/mpv"
 	"godl/internal/paths"
 	"godl/internal/store"
+	"godl/internal/webdav"
 )
 
 var statusCmd = &cobra.Command{
@@ -315,6 +317,58 @@ func doBulkJobAction(apiCmd string, jobIDs []string) tea.Cmd {
 			}
 		}
 		return bulkActionDoneMsg{n: len(jobIDs), ok: ok, failed: failed, err: firstErr}
+	}
+}
+
+// doPlay streams or plays j with mpv. url/social jobs hand mpv the
+// original source URL directly — true streaming, no local download
+// needed, since mpv's own network stack (plus its bundled yt-dlp hook
+// for social links) handles it. webdav jobs resolve the saved
+// connection and stream the remote file directly the same way,
+// authenticated via an HTTP header rather than a URL-embedded
+// password. torrent jobs only support playing the already-downloaded
+// local file, and only once the job has completed — true
+// streaming-while-downloading needs piece-sequencing anacrolix/torrent
+// doesn't do here.
+func doPlay(j *daemon.JobView) tea.Cmd {
+	return func() tea.Msg {
+		switch j.Type {
+		case store.JobURL, store.JobSocial:
+			return actionDoneMsg{mpv.Play(j.Source, nil)}
+
+		case store.JobWebDAV:
+			connName, remotePath, ok := daemon.SplitWebDAVSource(j.Source)
+			if !ok {
+				return actionDoneMsg{fmt.Errorf("invalid webdav job source %q", j.Source)}
+			}
+			conn, err := connections.Get(connName)
+			if err != nil {
+				return actionDoneMsg{err}
+			}
+			client, err := webdav.New(conn.URL, conn.Username, conn.Password, conn.Insecure)
+			if err != nil {
+				return actionDoneMsg{err}
+			}
+			target := client.URLFor(remotePath).String()
+			var headers map[string]string
+			if auth := client.AuthHeader(); auth != "" {
+				headers = map[string]string{"Authorization": auth}
+			}
+			return actionDoneMsg{mpv.Play(target, headers)}
+
+		case store.JobTorrent:
+			if j.Status != store.StatusCompleted {
+				return actionDoneMsg{fmt.Errorf("streaming isn't available for torrents until the job completes (playback order isn't sequential mid-download)")}
+			}
+			target := j.Output
+			if len(j.ResolvedPaths) > 0 {
+				target = j.ResolvedPaths[0]
+			}
+			return actionDoneMsg{mpv.Play(target, nil)}
+
+		default:
+			return actionDoneMsg{fmt.Errorf("streaming isn't supported for %s jobs", j.Type)}
+		}
 	}
 }
 
@@ -631,6 +685,14 @@ func (m statusModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.statusMsg = fmt.Sprintf("Remove %d jobs from the list (keeps files)? [y/N]", len(ids))
 			}
 			return m, nil
+		case "o":
+			idx := m.table.Cursor()
+			if idx < 0 || idx >= len(m.jobs) {
+				return m, nil
+			}
+			j := m.jobs[idx]
+			m.statusMsg = "starting mpv..."
+			return m, doPlay(j)
 		}
 	}
 
@@ -859,7 +921,7 @@ func (m statusModel) View() string {
 		b.WriteString(errStyle.Render(m.selectedJobError()))
 		b.WriteString("\n")
 	}
-	b.WriteString(helpStyle.Render("space select  p pause  r resume  x cancel  R retry  d remove  D remove+delete file  n new download  w browse webdav  s settings  ↑/↓ navigate  q quit"))
+	b.WriteString(helpStyle.Render("space select  p pause  r resume  x cancel  R retry  d remove  D remove+delete file  o play/stream  n new download  w browse webdav  s settings  ↑/↓ navigate  q quit"))
 	return b.String()
 }
 

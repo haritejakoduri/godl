@@ -25,9 +25,9 @@ import (
 // each file's round-trip and transfer serially.
 const webdavDownloadConcurrency = 4
 
-// splitWebDAVSource parses the "<connection-name>:<remote-path>" form
-// createWebDAVSource builds — see cmd/webdav.go.
-func splitWebDAVSource(source string) (connName, remotePath string, ok bool) {
+// SplitWebDAVSource parses the "<connection-name>:<remote-path>" form
+// JoinWebDAVSource builds.
+func SplitWebDAVSource(source string) (connName, remotePath string, ok bool) {
 	i := strings.Index(source, ":")
 	if i < 0 {
 		return "", "", false
@@ -40,6 +40,14 @@ func splitWebDAVSource(source string) (connName, remotePath string, ok bool) {
 		remotePath = "/" + remotePath
 	}
 	return connName, remotePath, true
+}
+
+// JoinWebDAVSource builds a store.Job Source string for a WebDAV job —
+// the encoding SplitWebDAVSource parses back apart. Used by cmd/webdav.go
+// and cmd/webdavbrowse.go so both CLI/TUI entry points construct it the
+// same way instead of each hand-rolling connName+":"+remotePath.
+func JoinWebDAVSource(connName, remotePath string) string {
+	return connName + ":" + remotePath
 }
 
 func (d *Daemon) startWebDAV(j *store.Job) {
@@ -61,7 +69,7 @@ func (d *Daemon) startWebDAV(j *store.Job) {
 		defer close(rt.done)
 		defer d.clearRuntime(j.ID)
 
-		connName, remotePath, ok := splitWebDAVSource(j.Source)
+		connName, remotePath, ok := SplitWebDAVSource(j.Source)
 		if !ok {
 			d.finishJob(j.ID, j.BytesDone, false, fmt.Errorf("invalid webdav job source %q", j.Source))
 			return

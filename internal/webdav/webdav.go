@@ -141,6 +141,82 @@ const propfindBody = `<?xml version="1.0" encoding="utf-8" ?>
   </D:prop>
 </D:propfind>`
 
+// retry429Max bounds how many times a request that comes back 429 (Too
+// Many Requests) is retried before giving up. Some WebDAV backends —
+// cloud-storage-proxying services like TorBox in particular — rate-limit
+// aggressively enough that even a single PROPFIND against the root can
+// get 429'd, especially right after a burst of activity (Walk fanning
+// out across a folder tree, a previous browse session, ...); without a
+// retry, that looks exactly like a broken connection instead of the
+// transient "back off a moment" it actually is.
+const retry429Max = 5
+
+// maxRetryDelay caps how long a single wait is, whether it comes from
+// the server's own Retry-After header or godl's own exponential
+// fallback — a server advertising a very long Retry-After shouldn't
+// hang a download that long; better to retry sooner and let
+// retry429Max end things if the server really is unavailable.
+const maxRetryDelay = 30 * time.Second
+
+// retryBackoffUnit is the base of the exponential fallback used when a
+// 429 carries no Retry-After header: 1x, 2x, 4x, 8x, 16x this value. A
+// var (not a const), purely so a test can shrink it to a few
+// milliseconds instead of a test actually sleeping through real
+// backoff delays.
+var retryBackoffUnit = time.Second
+
+// doRetrying429 runs do (one HTTP round trip) and, on a 429 response,
+// waits and retries — honoring the server's Retry-After header
+// (seconds form; that's the only form real rate-limiting backends send
+// in practice) when present, otherwise backing off exponentially (1s,
+// 2s, 4s, ...) — up to retry429Max attempts total. Any other status or
+// a transport error is returned as-is on the first try. do is called
+// again on each retry (not just its response re-read), so a caller
+// building a fresh *http.Request inside it — required anyway, since a
+// request's body reader can't be replayed — gets one naturally.
+func doRetrying429(ctx context.Context, do func() (*http.Response, error)) (*http.Response, error) {
+	var resp *http.Response
+	var err error
+	for attempt := 0; attempt < retry429Max; attempt++ {
+		resp, err = do()
+		if err != nil || resp.StatusCode != http.StatusTooManyRequests {
+			return resp, err
+		}
+		delay, ok := retryAfterDelay(resp.Header.Get("Retry-After"))
+		resp.Body.Close()
+		if !ok {
+			delay = time.Duration(1<<attempt) * retryBackoffUnit
+		}
+		if delay > maxRetryDelay {
+			delay = maxRetryDelay
+		}
+		select {
+		case <-time.After(delay):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	return resp, err
+}
+
+// retryAfterDelay parses a Retry-After header's seconds form into a
+// duration. ok is false — meaning "fall back to exponential backoff
+// instead" — only when the header is missing, negative, or in the less
+// common HTTP-date form (not worth the extra parsing given how rarely
+// real servers send that form for a rate-limit response); "0" is a
+// legitimate value (retry essentially immediately) and must return
+// (0, true), not be mistaken for "absent".
+func retryAfterDelay(v string) (delay time.Duration, ok bool) {
+	if v == "" {
+		return 0, false
+	}
+	secs, err := strconv.Atoi(v)
+	if err != nil || secs < 0 {
+		return 0, false
+	}
+	return time.Duration(secs) * time.Second, true
+}
+
 // WebDAV multistatus response shapes. Matching is by {namespace, local
 // name} regardless of the namespace prefix a given server chooses
 // ("D:", "d:", ...), since they all declare xmlns:*="DAV:".
@@ -170,15 +246,16 @@ type resourceType struct {
 
 func (c *Client) propfind(ctx context.Context, remotePath, depth string) (*multistatus, error) {
 	target := c.resolve(remotePath)
-	req, err := http.NewRequestWithContext(ctx, "PROPFIND", target.String(), strings.NewReader(propfindBody))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Depth", depth)
-	req.Header.Set("Content-Type", "application/xml; charset=utf-8")
-	c.setAuth(req)
-
-	resp, err := c.HTTP.Do(req)
+	resp, err := doRetrying429(ctx, func() (*http.Response, error) {
+		req, err := http.NewRequestWithContext(ctx, "PROPFIND", target.String(), strings.NewReader(propfindBody))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Depth", depth)
+		req.Header.Set("Content-Type", "application/xml; charset=utf-8")
+		c.setAuth(req)
+		return c.HTTP.Do(req)
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -366,16 +443,17 @@ func (c *Client) Download(ctx context.Context, remotePath, localPath string, lim
 	}
 	defer f.Close()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.resolve(remotePath).String(), nil)
-	if err != nil {
-		return 0, err
-	}
-	c.setAuth(req)
-	if start > 0 {
-		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", start))
-	}
-
-	resp, err := c.HTTP.Do(req)
+	resp, err := doRetrying429(ctx, func() (*http.Response, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.resolve(remotePath).String(), nil)
+		if err != nil {
+			return nil, err
+		}
+		c.setAuth(req)
+		if start > 0 {
+			req.Header.Set("Range", fmt.Sprintf("bytes=%d-", start))
+		}
+		return c.HTTP.Do(req)
+	})
 	if err != nil {
 		return start, err
 	}

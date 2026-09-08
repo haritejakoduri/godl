@@ -295,13 +295,30 @@ destination path instead of it staying hard-truncated.
 Keybinds: `space` toggles a job for multi-select (its checkbox shows
 `[x]`, and the title bar shows the running count), `p` pause, `r`
 resume, `x` cancel, `R` retry, `d` remove, `D` remove + delete
-downloaded file (both ask for confirmation), `n` start a new
-url/social/torrent download, `w` browse a saved WebDAV connection,
-`↑`/`↓` navigate, `q` quit (jobs keep running in the background). With
-one or more jobs checked, `p`/`r`/`x`/`R`/`d`/`D` act on all of them at
-once instead of just whatever the cursor happens to be on — the same
-"selected, or current" rule the WebDAV browser's own `d` (below)
-already uses.
+downloaded file (both ask for confirmation), `o` play/stream a job (see
+below), `n` start a new url/social/torrent download, `w` browse a
+saved WebDAV connection, `↑`/`↓` navigate, `q` quit (jobs keep running
+in the background). With one or more jobs checked, `p`/`r`/`x`/`R`/`d`/`D`
+act on all of them at once instead of just whatever the cursor happens
+to be on — the same "selected, or current" rule the WebDAV browser's
+own `d` (below) already uses; `o` always acts on just the row under
+the cursor.
+
+`o` opens a job in [mpv](https://mpv.io) or, if that's not found,
+[VLC](https://www.videolan.org/vlc/) — one of the two must already be
+installed (checked on `PATH`, plus VLC's standard Windows install
+locations, since its installer doesn't reliably add itself to `PATH`
+there); godl doesn't manage/bundle either player the way it does
+yt-dlp/ffmpeg, since playback is an optional convenience nothing else
+depends on. A **completed** job always plays the file already on disk;
+an in-progress `url`/`social`/`webdav` job instead streams straight
+from its source (mpv's own network stack, no local download needed —
+useful as a live preview while something's still downloading), which
+needs mpv specifically for `webdav` (VLC has no equivalent to mpv's
+custom-HTTP-header flag, needed there for authentication) — `torrent`
+jobs only ever support the local file, and only once complete, since
+true streaming-while-downloading would need piece-sequencing
+anacrolix/torrent doesn't do.
 
 `w` opens a file browser for one of your saved `godl connection`s:
 `↑`/`↓` moves, `enter` opens a folder, `space` toggles a file or folder

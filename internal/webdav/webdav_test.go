@@ -418,6 +418,99 @@ func TestPropfindGivesUpAfterMaxAttempts(t *testing.T) {
 	}
 }
 
+// TestPropfindGivesUpOnAWedgedConnection is the regression test for a
+// multi-level folder's Walk hanging forever: a connection that accepts
+// the PROPFIND request but never responds at all (no 429, no
+// anything) previously had nothing bounding it — neither the job's own
+// context nor http.Client enforce a timeout on their own — so it would
+// hang indefinitely. propfindTimeout must catch this instead.
+func TestPropfindGivesUpOnAWedgedConnection(t *testing.T) {
+	orig := propfindTimeout
+	propfindTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { propfindTimeout = orig })
+
+	block := make(chan struct{})
+	mux := http.NewServeMux()
+	mux.HandleFunc("/dav/", func(w http.ResponseWriter, r *http.Request) {
+		<-block // never responds within the test's lifetime
+	})
+	srv := httptest.NewServer(mux)
+	// defers run LIFO: block must be closed (unblocking the handler)
+	// before srv.Close() is called, since Close blocks until every
+	// outstanding handler has returned — reversing this order deadlocks
+	// the test itself instead of exercising the timeout.
+	defer srv.Close()
+	defer close(block)
+
+	c, err := New(srv.URL+"/dav/", "", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := c.Stat(context.Background(), "/")
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("Stat against a connection that never responds succeeded, want an error")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Stat against a wedged connection hung well past propfindTimeout — nothing is bounding it")
+	}
+}
+
+// TestDownloadGivesUpOnIdleStall confirms a connection that stops
+// sending data mid-transfer (and never closes or errors on its own)
+// eventually fails with a clear message instead of hanging forever —
+// unlike propfindTimeout, this must not cap the overall transfer time,
+// since a large file can legitimately take far longer than a single
+// idle window to finish; only silence should trip it.
+func TestDownloadGivesUpOnIdleStall(t *testing.T) {
+	orig := downloadIdleTimeout
+	downloadIdleTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { downloadIdleTimeout = orig })
+
+	block := make(chan struct{})
+	mux := http.NewServeMux()
+	mux.HandleFunc("/dav/file.txt", func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("partial-"))
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		<-block // then goes silent forever, never closing the connection
+	})
+	srv := httptest.NewServer(mux)
+	// See the matching comment in TestPropfindGivesUpOnAWedgedConnection:
+	// block must close before srv.Close() runs, or Close deadlocks
+	// waiting for this handler to return.
+	defer srv.Close()
+	defer close(block)
+
+	c, err := New(srv.URL+"/dav/", "", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	local := filepath.Join(t.TempDir(), "file.txt")
+	done := make(chan error, 1)
+	go func() {
+		_, err := c.Download(context.Background(), "/file.txt", local, nil, nil, nil)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("Download from a connection that stalls mid-transfer succeeded, want an error")
+		}
+		if !strings.Contains(err.Error(), "no data received") {
+			t.Errorf("error %q doesn't explain the stall, want it to mention no data being received", err.Error())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Download against a stalled connection hung well past downloadIdleTimeout — nothing is bounding it")
+	}
+}
+
 // TestDownloadRetriesOn429ThenSucceeds confirms the retry applies to
 // Download's GET request too, not just PROPFIND.
 func TestDownloadRetriesOn429ThenSucceeds(t *testing.T) {

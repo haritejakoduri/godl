@@ -106,7 +106,14 @@ type webdavStartedMsg struct {
 // than something Update calls inline.
 func listWebDAVDir(client *webdav.Client, dir string) tea.Cmd {
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		// Longer than internal/webdav's own propfindTimeout (3 minutes):
+		// that's what actually bounds a single PROPFIND round-trip,
+		// including any 429 retries on a rate-limiting backend like
+		// TorBox — a shorter timeout here would just cut it off
+		// mid-retry, undoing that protection. This one only exists as a
+		// backstop so browsing can't hang forever if something upstream
+		// changes.
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute+10*time.Second)
 		defer cancel()
 		entries, err := client.List(ctx, dir)
 		if err != nil {

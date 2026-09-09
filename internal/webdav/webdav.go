@@ -20,6 +20,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/time/rate"
@@ -244,7 +245,25 @@ type resourceType struct {
 	Collection *struct{} `xml:"DAV: collection"`
 }
 
+// propfindTimeout bounds one propfind() call end to end, including
+// whatever 429 retries doRetrying429 performs inside it (worst case
+// retry429Max * maxRetryDelay ≈ 150s) plus margin for the response
+// itself. Without this, a connection that never gets a response at
+// all — not a 429, just silence — hangs forever: neither the job's own
+// context nor http.Client enforce any timeout on their own. That
+// mattered little for a single PROPFIND, but Walk fans out up to
+// walkConcurrency requests at once for a deep or wide folder tree, so
+// the more there is to walk, the higher the odds of hitting one
+// wedged connection — and since Walk waits on every request it
+// started, one wedge stalls the whole recursive walk. A var (not a
+// const), purely so a test can shrink it instead of actually waiting
+// out the timeout.
+var propfindTimeout = 3 * time.Minute
+
 func (c *Client) propfind(ctx context.Context, remotePath, depth string) (*multistatus, error) {
+	ctx, cancel := context.WithTimeout(ctx, propfindTimeout)
+	defer cancel()
+
 	target := c.resolve(remotePath)
 	resp, err := doRetrying429(ctx, func() (*http.Response, error) {
 		req, err := http.NewRequestWithContext(ctx, "PROPFIND", target.String(), strings.NewReader(propfindBody))
@@ -416,6 +435,19 @@ func (c *Client) Walk(ctx context.Context, root string) ([]Entry, error) {
 	return files, nil
 }
 
+// downloadIdleTimeout bounds how long Download will wait without
+// receiving any new response data before giving up — distinct from the
+// overall transfer time, which is intentionally unbounded (a large
+// file can legitimately take far longer than this to finish, so a flat
+// cap on the whole download would be wrong). What this catches is a
+// connection that goes silent mid-transfer and never recovers — cloud-
+// storage-proxying backends like TorBox can do this under load — which
+// would otherwise hang the download forever, since neither the job's
+// own context nor http.Client enforce any timeout of their own. A var
+// (not a const), purely so a test can shrink it instead of actually
+// waiting out the timeout.
+var downloadIdleTimeout = 90 * time.Second
+
 // Download fetches remotePath to localPath, resuming from localPath's
 // existing size via a Range request if it's already partially present.
 // Returns the total bytes now on disk (not just bytes newly written).
@@ -443,8 +475,23 @@ func (c *Client) Download(ctx context.Context, remotePath, localPath string, lim
 	}
 	defer f.Close()
 
-	resp, err := doRetrying429(ctx, func() (*http.Response, error) {
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.resolve(remotePath).String(), nil)
+	// dlCtx (derived from ctx, not ctx itself) is what the request and
+	// its body reads run under, so the idle watchdog below can abort a
+	// stalled transfer without touching the caller's own ctx — a
+	// distinction the error handling after both doRetrying429 and the
+	// read loop relies on to tell "genuinely canceled" (ctx.Err() set)
+	// apart from "our own idle timer fired" (idleFired set).
+	dlCtx, dlCancel := context.WithCancel(ctx)
+	defer dlCancel()
+	var idleFired atomic.Bool
+	idle := time.AfterFunc(downloadIdleTimeout, func() {
+		idleFired.Store(true)
+		dlCancel()
+	})
+	defer idle.Stop()
+
+	resp, err := doRetrying429(dlCtx, func() (*http.Response, error) {
+		req, err := http.NewRequestWithContext(dlCtx, http.MethodGet, c.resolve(remotePath).String(), nil)
 		if err != nil {
 			return nil, err
 		}
@@ -455,9 +502,13 @@ func (c *Client) Download(ctx context.Context, remotePath, localPath string, lim
 		return c.HTTP.Do(req)
 	})
 	if err != nil {
+		if idleFired.Load() {
+			return start, fmt.Errorf("downloading %s: no data received for %s, giving up", remotePath, downloadIdleTimeout)
+		}
 		return start, err
 	}
 	defer resp.Body.Close()
+	idle.Reset(downloadIdleTimeout) // headers arrived; give the body its own full window rather than sharing the one used to wait for them
 
 	switch resp.StatusCode {
 	case http.StatusOK:
@@ -491,6 +542,7 @@ func (c *Client) Download(ctx context.Context, remotePath, localPath string, lim
 	for {
 		n, rerr := resp.Body.Read(buf)
 		if n > 0 {
+			idle.Reset(downloadIdleTimeout)
 			if werr := ratelimit.WaitAll(ctx, n, limiter, globalLimiter); werr != nil {
 				return written, werr
 			}
@@ -509,6 +561,9 @@ func (c *Client) Download(ctx context.Context, remotePath, localPath string, lim
 					progress(written, total)
 				}
 				return written, nil
+			}
+			if idleFired.Load() {
+				return written, fmt.Errorf("downloading %s: no data received for %s, giving up", remotePath, downloadIdleTimeout)
 			}
 			if ctx.Err() != nil {
 				return written, ctx.Err()

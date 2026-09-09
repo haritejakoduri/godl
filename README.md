@@ -221,6 +221,18 @@ aggressively enough that even a single request against the root can
 get 429'd, especially right after browsing around, and that's worth
 retrying rather than immediately failing the job.
 
+Both kinds of request are also bounded so a connection that just goes
+silent — accepts the request but never answers, or stops sending data
+partway through a file — fails clearly instead of hanging forever: a
+folder listing gives up after 3 minutes (well past the worst case of
+the 429 retries above), and a download gives up after 90 seconds with
+no new data, though a large file's overall transfer time is otherwise
+unbounded. This matters most for a deep/multi-level folder, since
+walking it fires off several listing requests at once — the more of
+them there are, the higher the odds that one connection wedges, and
+before this, that alone was enough to stall the whole folder's
+download.
+
 Connections are the first of what's meant to be a general "remote
 storage" mechanism — Google Drive, OneDrive, and other cloud storage
 providers are expected to become additional connection types the same

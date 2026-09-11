@@ -331,10 +331,31 @@ func (m statusModel) updateWebDAVBrowse(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// webdavBrowseVisibleFallback is used before the first WindowSizeMsg
+// arrives (m.height still zero) — a reasonable guess rather than
+// showing nothing.
+const webdavBrowseVisibleFallback = 15
+
 // webdavBrowseVisible caps how many entries are shown at once, scrolled
 // to keep the cursor in view — a folder with hundreds of files
-// shouldn't blow out the terminal.
-const webdavBrowseVisible = 15
+// shouldn't blow out the terminal. Sized off the actual terminal
+// height (this view now fills the whole screen — see View()'s doc
+// comment) rather than a fixed constant, so a large listing actually
+// uses the space that's now available to it instead of being capped at
+// a small fixed window regardless of how tall the terminal is.
+func (m statusModel) webdavBrowseVisible() int {
+	if m.height <= 0 {
+		return webdavBrowseVisibleFallback
+	}
+	// Chrome around the list: title, "downloading to ~/...", an
+	// optional search/filter line, the "(x-y of z)" footer line below
+	// the list, and the view's own help line at the very bottom.
+	const chrome = 5
+	if v := m.height - chrome; v >= 5 {
+		return v
+	}
+	return 5
+}
 
 func (m statusModel) viewWebDAVBrowse() string {
 	wb := m.webdavBrowse
@@ -380,11 +401,12 @@ func (m statusModel) viewWebDAVBrowse() string {
 	case len(visible) == 0:
 		b.WriteString("(empty folder)\n")
 	default:
+		visibleRows := m.webdavBrowseVisible()
 		start := 0
-		if wb.cursor >= webdavBrowseVisible {
-			start = wb.cursor - webdavBrowseVisible + 1
+		if wb.cursor >= visibleRows {
+			start = wb.cursor - visibleRows + 1
 		}
-		end := min(start+webdavBrowseVisible, len(visible))
+		end := min(start+visibleRows, len(visible))
 		for i := start; i < end; i++ {
 			e := visible[i]
 			cursor := "  "
@@ -404,7 +426,7 @@ func (m statusModel) viewWebDAVBrowse() string {
 			}
 			b.WriteString(fmt.Sprintf("%s%s %-40s %s\n", cursor, check, truncate(name, 40), size))
 		}
-		if len(visible) > webdavBrowseVisible {
+		if len(visible) > visibleRows {
 			b.WriteString(helpStyle.Render(fmt.Sprintf("(%d-%d of %d)\n", start+1, end, len(visible))))
 		}
 	}

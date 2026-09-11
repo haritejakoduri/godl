@@ -108,6 +108,12 @@ type Daemon struct {
 	globalLimiter      *rate.Limiter
 	globalRateLimitBps int64
 
+	// tryMu guards tryStartQueued's re-entrancy flags — see its own doc
+	// comment for why it can be re-entered at all.
+	tryMu      sync.Mutex
+	tryRunning bool
+	tryAgain   bool
+
 	// retryMu guards retryTimers, the pending auto-retry backoff timers
 	// keyed by job ID (see scheduleAutoRetry/finishJob) — tracked so
 	// Close can stop them, rather than letting one fire after the store
@@ -513,9 +519,13 @@ func (d *Daemon) createJob(ctx context.Context, typ store.JobType, source, outpu
 // job simply stays in the store as StatusQueued (every caller sets that
 // before calling start, same as a brand new job already does) and
 // tryStartQueued picks it up once a slot frees.
-func (d *Daemon) start(j *store.Job) {
+// start launches j if a concurrency slot is free. It reports whether the
+// slot was taken — tryStartQueued relies on that to stop, since a job
+// that can't start stays queued in the store and would otherwise be
+// handed back on the very next pass, forever.
+func (d *Daemon) start(j *store.Job) bool {
 	if !d.acquireSlot(j.ID) {
-		return
+		return false
 	}
 	defer func() {
 		if r := recover(); r != nil {
@@ -539,6 +549,7 @@ func (d *Daemon) start(j *store.Job) {
 		// released, permanently shrinking capacity by one.
 		d.clearRuntime(j.ID)
 	}
+	return true
 }
 
 // acquireSlot reserves a concurrency slot for job id, if the daemon's
@@ -561,6 +572,25 @@ func (d *Daemon) acquireSlot(id string) bool {
 		return false
 	}
 	d.runtimes[id] = &runtime{done: make(chan struct{})}
+	return true
+}
+
+// markActive flips a job to StatusActive once its runtime is registered,
+// and reports whether that stuck. On failure the caller must not launch
+// the worker: the row would stay "queued" while a runtime existed for
+// it, which is both a lie to every "godl status" reader and the state
+// that used to make tryStartQueued spin — it kept being offered as
+// startable, and start kept refusing it because the slot was taken.
+//
+// The error was previously discarded at all four call sites, so a store
+// that had started failing (disk full, say) produced exactly that.
+func (d *Daemon) markActive(j *store.Job) bool {
+	if err := d.st.UpdateStatus(context.Background(), j.ID, store.StatusActive, ""); err != nil {
+		log.Printf("job %s: recording it as active failed: %v", j.ID, err)
+		d.clearRuntime(j.ID)
+		d.finishJob(j.ID, j.BytesDone, false, fmt.Errorf("recording job as active: %w", err))
+		return false
+	}
 	return true
 }
 
@@ -590,7 +620,39 @@ func (d *Daemon) clearRuntime(id string) {
 // something queued that could be running. A no-op when unlimited or
 // nothing's queued.
 func (d *Daemon) tryStartQueued() {
+	// Re-entrancy guard. start -> startX -> (store write fails) ->
+	// finishJob -> clearRuntime lands back here, so without this a
+	// persistently failing store would recurse instead of looping. A
+	// nested call just marks "go round again" and returns; the outermost
+	// call picks that up.
+	d.tryMu.Lock()
+	if d.tryRunning {
+		d.tryAgain = true
+		d.tryMu.Unlock()
+		return
+	}
+	d.tryRunning = true
+	d.tryMu.Unlock()
+
+	defer func() {
+		d.tryMu.Lock()
+		d.tryRunning = false
+		again := d.tryAgain
+		d.tryAgain = false
+		d.tryMu.Unlock()
+		if again {
+			d.tryStartQueued()
+		}
+	}()
+
 	ctx := context.Background()
+	// Every job this pass has already picked up. A job whose "now
+	// active" write fails stays queued in the store with no runtime, so
+	// it would otherwise be handed straight back here and retried at
+	// full speed for as long as the store keeps failing. One attempt per
+	// job per pass bounds that to something finite no matter what the
+	// store does.
+	attempted := map[string]bool{}
 	for {
 		max := d.cachedSettings().MaxConcurrent
 		d.mu.Lock()
@@ -599,24 +661,37 @@ func (d *Daemon) tryStartQueued() {
 		if full {
 			return
 		}
-		j, err := d.nextQueuedJob(ctx)
+		j, err := d.nextQueuedJob(ctx, attempted)
 		if err != nil || j == nil {
 			return
 		}
-		d.start(j)
+		attempted[j.ID] = true
+		// A queued job that won't start is a job this pass can't make
+		// progress on — carrying on would just fetch the same row again.
+		// (nextQueuedJob already skips jobs holding a runtime, so this
+		// is the capacity race, not the stale-status case.)
+		if !d.start(j) {
+			return
+		}
 	}
 }
 
-// nextQueuedJob returns the oldest StatusQueued job, or nil if there is
-// none. ListJobs already orders oldest-created-first, so the first
-// match is it.
-func (d *Daemon) nextQueuedJob(ctx context.Context) (*store.Job, error) {
-	jobs, err := d.st.ListJobs(ctx)
+// nextQueuedJob returns the oldest job that is both StatusQueued and not
+// already running, or nil if there is none.
+//
+// The runtime check is what keeps tryStartQueued terminating. A job can
+// legitimately hold a runtime while its row still reads "queued" — the
+// status write happens just after the runtime is registered (see
+// startURL and friends), and it can also simply fail. Without this
+// filter such a row is returned on every pass forever, and since start
+// refuses it each time, the loop spins on the store at full speed.
+func (d *Daemon) nextQueuedJob(ctx context.Context, skip map[string]bool) (*store.Job, error) {
+	jobs, err := d.st.ListQueuedJobs(ctx)
 	if err != nil {
 		return nil, err
 	}
 	for _, j := range jobs {
-		if j.Status == store.StatusQueued {
+		if !skip[j.ID] && d.getRuntime(j.ID) == nil {
 			return j, nil
 		}
 	}
@@ -627,7 +702,10 @@ func (d *Daemon) startURL(j *store.Job) {
 	ctx, cancel := context.WithCancel(context.Background())
 	rt := &runtime{cancel: cancel, done: make(chan struct{}), lastTime: time.Now(), bytesDone: j.BytesDone, bytesTotal: j.BytesTotal}
 	d.setRuntime(j.ID, rt)
-	d.st.UpdateStatus(context.Background(), j.ID, store.StatusActive, "")
+	if !d.markActive(j) {
+		cancel()
+		return
+	}
 
 	// Single-stream downloads (concurrency<=1) checkpoint their resume
 	// offset on every progress tick, not just at pause/completion, so an
@@ -663,7 +741,10 @@ func (d *Daemon) startTorrent(j *store.Job) {
 	ctx, cancel := context.WithCancel(context.Background())
 	rt := &runtime{cancel: cancel, done: make(chan struct{}), lastTime: time.Now(), bytesDone: j.BytesDone, bytesTotal: j.BytesTotal}
 	d.setRuntime(j.ID, rt)
-	d.st.UpdateStatus(context.Background(), j.ID, store.StatusActive, "")
+	if !d.markActive(j) {
+		cancel()
+		return
+	}
 
 	// anacrolix/torrent's rate limiter is shared by its whole Client, not
 	// per-torrent (see torrentmgr's doc comment) — setting it here means
@@ -737,7 +818,10 @@ func (d *Daemon) startSocial(j *store.Job) {
 	ctx, cancel := context.WithCancel(context.Background())
 	rt := &runtime{cancel: cancel, done: make(chan struct{}), lastTime: time.Now()}
 	d.setRuntime(j.ID, rt)
-	d.st.UpdateStatus(context.Background(), j.ID, store.StatusActive, "")
+	if !d.markActive(j) {
+		cancel()
+		return
+	}
 
 	go func() {
 		defer close(rt.done)

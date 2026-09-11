@@ -10,6 +10,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -98,6 +99,20 @@ func Run(ctx context.Context, opt Options) (Result, error) {
 	var res Result
 	if opt.Concurrency > 1 && supportsRange && total > 0 {
 		res, err = runChunked(ctx, client, opt, total)
+		if errors.Is(err, errRangeIgnored) {
+			// probe() said this server supports ranges (it advertised
+			// Accept-Ranges on HEAD), but it ignored the Range header on
+			// the actual GET — so chunking can't work here. Whatever the
+			// chunk goroutines managed to write is garbage and can't be
+			// resumed from, so drop the sidecar and start over as a
+			// single stream (which truncates the file itself). Falling
+			// back rather than failing keeps such servers working at all,
+			// just without the concurrency.
+			os.Remove(sidecarPath(opt.OutputPath))
+			single := opt
+			single.StartOffset = 0
+			res, err = runSingle(ctx, client, single, false, total)
+		}
 	} else {
 		res, err = runSingle(ctx, client, opt, supportsRange, total)
 	}
@@ -267,6 +282,14 @@ func runSingle(ctx context.Context, client *http.Client, opt Options, supportsRa
 	}
 }
 
+// errRangeIgnored means the server answered a ranged chunk request with
+// 200 (the whole file) instead of 206 (just the requested window). Every
+// chunk goroutine would then be handed a full copy of the file and write
+// it at its own offset, overwriting its neighbours — so chunking has to
+// be abandoned entirely rather than retried. Run catches this and starts
+// over as a single stream.
+var errRangeIgnored = errors.New("server ignored the Range header")
+
 type chunkState struct {
 	Start, End, Done int64
 }
@@ -324,11 +347,23 @@ func runChunked(ctx context.Context, client *http.Client, opt Options, total int
 	defer f.Close()
 
 	var mu sync.Mutex
+	// Written via temp-file + rename (same pattern as
+	// internal/connections) because this runs every 250ms for the whole
+	// life of the download: a crash during a plain in-place write leaves
+	// truncated JSON, which the resume path above discards outright —
+	// throwing away every byte of a multi-GB download that was otherwise
+	// perfectly resumable.
 	saveSidecar := func() {
 		mu.Lock()
 		data, _ := json.Marshal(sc)
 		mu.Unlock()
-		os.WriteFile(scPath, data, 0o644)
+		tmp := scPath + ".tmp"
+		if err := os.WriteFile(tmp, data, 0o644); err != nil {
+			return
+		}
+		if err := os.Rename(tmp, scPath); err != nil {
+			os.Remove(tmp)
+		}
 	}
 
 	var doneCounter atomic.Int64
@@ -357,6 +392,14 @@ func runChunked(ctx context.Context, client *http.Client, opt Options, total int
 		}
 	}()
 
+	// cctx cancels the sibling chunk goroutines the moment one of them
+	// discovers the server is ignoring Range headers — there's no point
+	// letting the rest keep streaming whole-file copies that are about to
+	// be thrown away.
+	cctx, cancelChunks := context.WithCancel(ctx)
+	defer cancelChunks()
+	var rangeIgnored atomic.Bool
+
 	var wg sync.WaitGroup
 	for i := range sc.Chunks {
 		c := &sc.Chunks[i]
@@ -367,7 +410,7 @@ func runChunked(ctx context.Context, client *http.Client, opt Options, total int
 		go func(c *chunkState) {
 			defer wg.Done()
 			rangeStart := c.Start + c.Done
-			req, err := http.NewRequestWithContext(ctx, http.MethodGet, opt.URL, nil)
+			req, err := http.NewRequestWithContext(cctx, http.MethodGet, opt.URL, nil)
 			if err != nil {
 				errCh <- err
 				return
@@ -375,13 +418,20 @@ func runChunked(ctx context.Context, client *http.Client, opt Options, total int
 			req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", rangeStart, c.End-1))
 			resp, err := client.Do(req)
 			if err != nil {
-				if ctx.Err() == nil {
+				if cctx.Err() == nil {
 					errCh <- err
 				}
 				return
 			}
 			defer resp.Body.Close()
-			if resp.StatusCode != http.StatusPartialContent && resp.StatusCode != http.StatusOK {
+			if resp.StatusCode == http.StatusOK {
+				// Not 206: the server is sending the whole file, not the
+				// window we asked for. See errRangeIgnored.
+				rangeIgnored.Store(true)
+				cancelChunks()
+				return
+			}
+			if resp.StatusCode != http.StatusPartialContent {
 				errCh <- fmt.Errorf("chunk [%d,%d): unexpected status %s", c.Start, c.End, resp.Status)
 				return
 			}
@@ -391,25 +441,40 @@ func runChunked(ctx context.Context, client *http.Client, opt Options, total int
 			for {
 				n, rerr := resp.Body.Read(buf)
 				if n > 0 {
-					if werr := waitLimiters(ctx, opt, n); werr != nil {
-						errCh <- werr
-						return
+					// Never write outside this chunk's own [Start,End)
+					// window, whatever the server sends. A 206 carrying
+					// more bytes than were asked for would otherwise
+					// overwrite the next chunk's region — and since
+					// c.Done is derived from pos, it would also push the
+					// completion check below past its own chunk length
+					// and report a corrupt file as finished.
+					if over := pos + int64(n) - c.End; over > 0 {
+						n -= int(over)
 					}
-					if _, werr := f.WriteAt(buf[:n], pos); werr != nil {
-						errCh <- werr
-						return
+					if n > 0 {
+						if werr := waitLimiters(cctx, opt, n); werr != nil {
+							errCh <- werr
+							return
+						}
+						if _, werr := f.WriteAt(buf[:n], pos); werr != nil {
+							errCh <- werr
+							return
+						}
+						pos += int64(n)
+						mu.Lock()
+						c.Done = pos - c.Start
+						mu.Unlock()
+						doneCounter.Add(int64(n))
 					}
-					pos += int64(n)
-					mu.Lock()
-					c.Done = pos - c.Start
-					mu.Unlock()
-					doneCounter.Add(int64(n))
+					if pos >= c.End {
+						return // this chunk is satisfied; ignore any trailing bytes
+					}
 				}
 				if rerr != nil {
 					if rerr == io.EOF {
 						return
 					}
-					if ctx.Err() != nil {
+					if cctx.Err() != nil {
 						return
 					}
 					errCh <- rerr
@@ -421,6 +486,15 @@ func runChunked(ctx context.Context, client *http.Client, opt Options, total int
 	wg.Wait()
 	close(stopTicker)
 	tickWG.Wait()
+
+	// Checked before saving the sidecar and before the error/cancellation
+	// paths below: cancelChunks above makes cctx (and any sibling's
+	// error) report cancellation, which would otherwise mask the real
+	// reason. The partial file is unusable, so its resume state must not
+	// be persisted either.
+	if rangeIgnored.Load() {
+		return Result{}, errRangeIgnored
+	}
 	saveSidecar()
 
 	select {

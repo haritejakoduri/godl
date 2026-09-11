@@ -175,11 +175,30 @@ var retryBackoffUnit = time.Second
 // again on each retry (not just its response re-read), so a caller
 // building a fresh *http.Request inside it — required anyway, since a
 // request's body reader can't be replayed — gets one naturally.
-func doRetrying429(ctx context.Context, do func() (*http.Response, error)) (*http.Response, error) {
+func (c *Client) doRetrying429(ctx context.Context, do func() (*http.Response, error)) (*http.Response, error) {
+	gate := gateFor(c.base.Host)
 	var resp *http.Response
 	var err error
 	for attempt := 0; attempt < retry429Max; attempt++ {
+		// Every request to this host — PROPFIND and GET, across every
+		// Client and every job in the process — passes through here, so
+		// the host's ceiling holds however much work is queued. See
+		// hostgate.go.
+		//
+		// The slot covers issuing the request and getting its response
+		// headers back, not streaming the body: do returns as soon as
+		// the headers land, and Download then reads the body outside the
+		// gate. That's deliberate — what draws 429s is the rate of new
+		// requests (a Walk's PROPFIND fan-out above all), not bytes in
+		// flight, and holding a slot for the whole of a multi-minute
+		// file transfer would let one download starve every PROPFIND
+		// queued behind it.
+		release, aerr := gate.acquire(ctx)
+		if aerr != nil {
+			return nil, aerr
+		}
 		resp, err = do()
+		release()
 		if err != nil || resp.StatusCode != http.StatusTooManyRequests {
 			return resp, err
 		}
@@ -191,8 +210,11 @@ func doRetrying429(ctx context.Context, do func() (*http.Response, error)) (*htt
 		if delay > maxRetryDelay {
 			delay = maxRetryDelay
 		}
+		// Tell the gate before sleeping, so requests that haven't been
+		// sent yet also hold off instead of walking into the same limit.
+		gate.throttled(delay)
 		select {
-		case <-time.After(delay):
+		case <-time.After(jitter(delay)):
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		}
@@ -265,7 +287,7 @@ func (c *Client) propfind(ctx context.Context, remotePath, depth string) (*multi
 	defer cancel()
 
 	target := c.resolve(remotePath)
-	resp, err := doRetrying429(ctx, func() (*http.Response, error) {
+	resp, err := c.doRetrying429(ctx, func() (*http.Response, error) {
 		req, err := http.NewRequestWithContext(ctx, "PROPFIND", target.String(), strings.NewReader(propfindBody))
 		if err != nil {
 			return nil, err
@@ -359,71 +381,104 @@ func normalizeDirPath(p string) string {
 	return trimmed
 }
 
-// walkConcurrency bounds how many PROPFIND requests Walk has in flight
-// at once. The tree can fan out arbitrarily wide (spawning a goroutine
-// per subdirectory found costs only a few KB of stack each, so that
-// part is unbounded), but actual network requests are capped here —
-// matching godl url's default chunk concurrency, and staying polite to
-// WebDAV servers that may not expect a flood of concurrent requests.
-const walkConcurrency = 8
+// walkConcurrency bounds how many directories Walk has goroutines for at
+// once. It matches hostGateDefaultLimit because the gate in hostgate.go
+// is what actually caps requests to the server: a second, looser bound
+// here would only queue goroutines up behind it. Note this is a bound on
+// goroutines, not just on requests — see Walk.
+const walkConcurrency = hostGateDefaultLimit
 
 // Walk recursively lists every file (not directory) under root, using
 // Depth:1 PROPFIND at each level rather than Depth:infinity — many
 // WebDAV servers reject or cap infinite-depth requests on large trees.
-// Sibling and cross-level directories are listed concurrently (up to
-// walkConcurrency at once) rather than one at a time, so a deep or wide
-// tree doesn't pay for its PROPFIND round-trips serially.
+// Sibling and cross-level directories are listed concurrently rather
+// than one at a time, so a deep or wide tree doesn't pay for its
+// PROPFIND round-trips serially.
+//
+// Structured as a fixed pool of workers draining a shared queue, rather
+// than a goroutine per directory. On a large share the latter parks tens
+// of thousands of goroutines — one per directory found, each holding its
+// parent's children alive — for no gain, since the host gate caps the
+// requests anyway. A pool keeps the goroutine count flat no matter how
+// big the tree is, and can't deadlock the way recursive spawning against
+// a semaphore can when a parent holds the slot its child needs.
 func (c *Client) Walk(ctx context.Context, root string) ([]Entry, error) {
-	sem := make(chan struct{}, walkConcurrency)
+	// Cancelable so the first failure stops PROPFINDs already in flight
+	// (and unblocks parents waiting for a slot) instead of letting the
+	// whole tree finish walking just to throw the result away.
+	wctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	var (
 		mu       sync.Mutex
+		cond     = sync.NewCond(&mu)
+		queue    = []string{root} // directories found but not yet listed
+		active   int              // workers currently inside a PROPFIND
 		files    []Entry
 		firstErr error
-		wg       sync.WaitGroup
 	)
 
-	var walk func(p string)
-	walk = func(p string) {
-		defer wg.Done()
-
+	// Cond can't wait on a context, so cancellation wakes the workers
+	// explicitly. Without this, a canceled walk would sit blocked in
+	// cond.Wait until some other worker happened to broadcast.
+	go func() {
+		<-wctx.Done()
 		mu.Lock()
-		stop := firstErr != nil
+		cond.Broadcast()
 		mu.Unlock()
-		if stop || ctx.Err() != nil {
-			return
-		}
+	}()
 
-		sem <- struct{}{}
-		children, err := c.List(ctx, p)
-		<-sem
-		if err != nil {
-			mu.Lock()
-			if firstErr == nil {
-				firstErr = err
+	var wg sync.WaitGroup
+	for i := 0; i < walkConcurrency; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				mu.Lock()
+				// Nothing to take, but a peer is still listing and may
+				// yet queue more: wait rather than exit. Once the queue
+				// is empty and nobody is active, the tree is exhausted.
+				for len(queue) == 0 && active > 0 && firstErr == nil && wctx.Err() == nil {
+					cond.Wait()
+				}
+				if len(queue) == 0 || firstErr != nil || wctx.Err() != nil {
+					mu.Unlock()
+					cond.Broadcast() // let the other workers reach the same conclusion
+					return
+				}
+				p := queue[len(queue)-1]
+				queue = queue[:len(queue)-1]
+				active++
+				mu.Unlock()
+
+				children, err := c.List(wctx, p)
+
+				mu.Lock()
+				active--
+				if err != nil {
+					// A cancellation here is a consequence of some other
+					// worker's failure, not a failure of its own —
+					// recording it would mask the real error.
+					if wctx.Err() == nil && firstErr == nil {
+						firstErr = err
+					}
+					mu.Unlock()
+					cancel()
+					cond.Broadcast()
+					return
+				}
+				for _, e := range children {
+					if e.IsDir {
+						queue = append(queue, e.Path)
+					} else {
+						files = append(files, e)
+					}
+				}
+				mu.Unlock()
+				cond.Broadcast()
 			}
-			mu.Unlock()
-			return
-		}
-
-		var dirs []string
-		mu.Lock()
-		for _, e := range children {
-			if e.IsDir {
-				dirs = append(dirs, e.Path)
-			} else {
-				files = append(files, e)
-			}
-		}
-		mu.Unlock()
-
-		for _, d := range dirs {
-			wg.Add(1)
-			go walk(d)
-		}
+		}()
 	}
-
-	wg.Add(1)
-	go walk(root)
 	wg.Wait()
 
 	if firstErr != nil {
@@ -447,6 +502,12 @@ func (c *Client) Walk(ctx context.Context, root string) ([]Entry, error) {
 // (not a const), purely so a test can shrink it instead of actually
 // waiting out the timeout.
 var downloadIdleTimeout = 90 * time.Second
+
+// idleCheckInterval is how often the watchdog above re-checks. It only
+// bounds how late a stall is noticed (up to this much past
+// downloadIdleTimeout), so it's coarse on purpose. A var for the same
+// test reason as downloadIdleTimeout.
+var idleCheckInterval = 10 * time.Second
 
 // Download fetches remotePath to localPath, resuming from localPath's
 // existing size via a Range request if it's already partially present.
@@ -483,14 +544,56 @@ func (c *Client) Download(ctx context.Context, remotePath, localPath string, lim
 	// apart from "our own idle timer fired" (idleFired set).
 	dlCtx, dlCancel := context.WithCancel(ctx)
 	defer dlCancel()
-	var idleFired atomic.Bool
-	idle := time.AfterFunc(downloadIdleTimeout, func() {
-		idleFired.Store(true)
-		dlCancel()
-	})
-	defer idle.Stop()
+	// The watchdog measures time since the connection last produced data,
+	// but deliberately does not count time spent waiting on the rate
+	// limiter: that wait is godl's own doing, and under a low --limit-rate
+	// (or a global cap shared across many concurrent files) a single
+	// 256KiB read can legitimately be held longer than downloadIdleTimeout,
+	// which would kill a perfectly healthy download. inLimiter marks those
+	// stretches so the watchdog skips them.
+	//
+	// A ticker rather than a time.AfterFunc reset on each read: resetting
+	// a timer per 256KiB chunk is pure timer-heap churn at any real
+	// transfer rate, and the reset-before-vs-after-the-limiter ordering
+	// is exactly what made this subtle in the first place.
+	// Both knobs are read once, here, and handed to the goroutine as
+	// values: they're package vars so tests can shrink them, and a
+	// goroutine reading them directly would still be doing so after
+	// Download returns (it can be scheduled late), racing the next test's
+	// assignment. Capturing them also means an in-flight download keeps
+	// the settings it started with.
+	idleTimeout := downloadIdleTimeout
+	checkEvery := idleCheckInterval
 
-	resp, err := doRetrying429(dlCtx, func() (*http.Response, error) {
+	var idleFired atomic.Bool
+	var inLimiter atomic.Bool
+	lastData := &atomic.Int64{}
+	lastData.Store(time.Now().UnixNano())
+	watchdogDone := make(chan struct{})
+	defer close(watchdogDone)
+	go func() {
+		t := time.NewTicker(checkEvery)
+		defer t.Stop()
+		for {
+			select {
+			case <-watchdogDone:
+				return
+			case <-dlCtx.Done():
+				return
+			case now := <-t.C:
+				if inLimiter.Load() {
+					continue
+				}
+				if now.Sub(time.Unix(0, lastData.Load())) > idleTimeout {
+					idleFired.Store(true)
+					dlCancel()
+					return
+				}
+			}
+		}
+	}()
+
+	resp, err := c.doRetrying429(dlCtx, func() (*http.Response, error) {
 		req, err := http.NewRequestWithContext(dlCtx, http.MethodGet, c.resolve(remotePath).String(), nil)
 		if err != nil {
 			return nil, err
@@ -503,12 +606,12 @@ func (c *Client) Download(ctx context.Context, remotePath, localPath string, lim
 	})
 	if err != nil {
 		if idleFired.Load() {
-			return start, fmt.Errorf("downloading %s: no data received for %s, giving up", remotePath, downloadIdleTimeout)
+			return start, fmt.Errorf("downloading %s: no data received for %s, giving up", remotePath, idleTimeout)
 		}
 		return start, err
 	}
 	defer resp.Body.Close()
-	idle.Reset(downloadIdleTimeout) // headers arrived; give the body its own full window rather than sharing the one used to wait for them
+	lastData.Store(time.Now().UnixNano()) // headers arrived; give the body its own full window rather than sharing the one used to wait for them
 
 	switch resp.StatusCode {
 	case http.StatusOK:
@@ -542,8 +645,14 @@ func (c *Client) Download(ctx context.Context, remotePath, localPath string, lim
 	for {
 		n, rerr := resp.Body.Read(buf)
 		if n > 0 {
-			idle.Reset(downloadIdleTimeout)
-			if werr := ratelimit.WaitAll(ctx, n, limiter, globalLimiter); werr != nil {
+			lastData.Store(time.Now().UnixNano())
+			inLimiter.Store(true)
+			werr := ratelimit.WaitAll(ctx, n, limiter, globalLimiter)
+			inLimiter.Store(false)
+			// Count the wait as progress too: the bytes did arrive, godl
+			// just chose to hold them.
+			lastData.Store(time.Now().UnixNano())
+			if werr != nil {
 				return written, werr
 			}
 			if _, werr := f.Write(buf[:n]); werr != nil {
@@ -563,7 +672,7 @@ func (c *Client) Download(ctx context.Context, remotePath, localPath string, lim
 				return written, nil
 			}
 			if idleFired.Load() {
-				return written, fmt.Errorf("downloading %s: no data received for %s, giving up", remotePath, downloadIdleTimeout)
+				return written, fmt.Errorf("downloading %s: no data received for %s, giving up", remotePath, idleTimeout)
 			}
 			if ctx.Err() != nil {
 				return written, ctx.Err()

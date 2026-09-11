@@ -181,6 +181,24 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	// WAL defaults to synchronous=FULL, which fsyncs on every commit.
+	// An active download commits constantly (progress ticks), so that
+	// default costs an fsync several times a second per job for data
+	// that's re-derivable: the worst a crash can lose here is a little
+	// progress, and the download resumes from the file on disk anyway.
+	// NORMAL is the standard pairing with WAL and keeps crash safety —
+	// only a power loss can lose the last commits, not an app crash.
+	if _, err := db.Exec(`PRAGMA synchronous=NORMAL;`); err != nil {
+		db.Close()
+		return nil, err
+	}
+	// SetMaxOpenConns(1) already serializes this process, but a second
+	// godl (a stray daemon, or a CLI opening the store directly) would
+	// otherwise get an immediate SQLITE_BUSY instead of waiting.
+	if _, err := db.Exec(`PRAGMA busy_timeout=5000;`); err != nil {
+		db.Close()
+		return nil, err
+	}
 	s := &Store{db: db}
 	if err := s.migrate(); err != nil {
 		db.Close()
@@ -266,6 +284,19 @@ CREATE TABLE IF NOT EXISTS settings (
 	key   TEXT PRIMARY KEY,
 	value TEXT NOT NULL
 );
+`); err != nil {
+		return err
+	}
+
+	// The two orderings every hot query uses: ListJobs sorts the whole
+	// table by created_at (the TUI polls it continuously), and
+	// ListQueuedJobs filters by status then sorts the same way (consulted
+	// on every job completion). Without these, both do a full scan plus a
+	// temp B-tree sort. IF NOT EXISTS keeps this idempotent for databases
+	// created before the indexes existed.
+	if _, err := s.db.Exec(`
+CREATE INDEX IF NOT EXISTS jobs_created_at ON jobs(created_at);
+CREATE INDEX IF NOT EXISTS jobs_status_created_at ON jobs(status, created_at);
 `); err != nil {
 		return err
 	}
@@ -414,6 +445,33 @@ func (s *Store) ListJobs(ctx context.Context) ([]*Job, error) {
 SELECT id, type, source, output, format, concurrency, status,
 	bytes_done, bytes_total, resume_offset, info_hash, resolved_paths, error_msg, limit_rate, sha256, retry_count, created_at, updated_at
 FROM jobs ORDER BY created_at ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var jobs []*Job
+	for rows.Next() {
+		j, err := scanJob(rows)
+		if err != nil {
+			return nil, err
+		}
+		jobs = append(jobs, j)
+	}
+	return jobs, rows.Err()
+}
+
+// ListQueuedJobs returns only the jobs waiting on a free concurrency
+// slot, oldest first. The daemon consults this every time a job finishes
+// (see tryStartQueued), so it's deliberately not ListJobs-plus-a-filter:
+// with a backlog of hundreds of jobs, that scanned and decoded every row
+// — JSON-unmarshalling each one's resolved_paths — just to look at the
+// handful that were queued. The (status, created_at) index added in
+// migrate covers this exactly.
+func (s *Store) ListQueuedJobs(ctx context.Context) ([]*Job, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT id, type, source, output, format, concurrency, status,
+	bytes_done, bytes_total, resume_offset, info_hash, resolved_paths, error_msg, limit_rate, sha256, retry_count, created_at, updated_at
+FROM jobs WHERE status=? ORDER BY created_at ASC`, StatusQueued)
 	if err != nil {
 		return nil, err
 	}

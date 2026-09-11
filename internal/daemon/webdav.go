@@ -54,7 +54,10 @@ func (d *Daemon) startWebDAV(j *store.Job) {
 	ctx, cancel := context.WithCancel(context.Background())
 	rt := &runtime{cancel: cancel, done: make(chan struct{}), lastTime: time.Now(), bytesDone: j.BytesDone, bytesTotal: j.BytesTotal}
 	d.setRuntime(j.ID, rt)
-	d.st.UpdateStatus(context.Background(), j.ID, store.StatusActive, "")
+	if !d.markActive(j) {
+		cancel()
+		return
+	}
 
 	// One limiter instance shared by every file this job downloads
 	// concurrently below (see webdavDownloadConcurrency), so the job's

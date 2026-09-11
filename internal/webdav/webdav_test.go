@@ -9,8 +9,11 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"golang.org/x/time/rate"
 )
 
 // newTestServer serves a small fake WebDAV tree rooted at /dav/:
@@ -470,7 +473,12 @@ func TestPropfindGivesUpOnAWedgedConnection(t *testing.T) {
 func TestDownloadGivesUpOnIdleStall(t *testing.T) {
 	orig := downloadIdleTimeout
 	downloadIdleTimeout = 50 * time.Millisecond
-	t.Cleanup(func() { downloadIdleTimeout = orig })
+	origCheck := idleCheckInterval
+	idleCheckInterval = 10 * time.Millisecond
+	t.Cleanup(func() {
+		downloadIdleTimeout = orig
+		idleCheckInterval = origCheck
+	})
 
 	block := make(chan struct{})
 	mux := http.NewServeMux()
@@ -550,5 +558,132 @@ func TestDownloadRetriesOn429ThenSucceeds(t *testing.T) {
 	}
 	if string(got) != content {
 		t.Fatalf("downloaded content = %q, want %q", got, content)
+	}
+}
+
+// TestDownloadNotKilledByASlowRateLimit is the regression test for the
+// idle watchdog counting godl's own rate-limiter waits as "the server
+// went silent". The limiter below is slow enough that a single 256KiB
+// read is held far longer than downloadIdleTimeout, which used to abort
+// a download that was working perfectly — reachable in practice with a
+// low --limit-rate, or with the Settings tab's global cap divided across
+// many concurrently downloading files.
+func TestDownloadNotKilledByASlowRateLimit(t *testing.T) {
+	orig := downloadIdleTimeout
+	downloadIdleTimeout = 30 * time.Millisecond
+	origCheck := idleCheckInterval
+	idleCheckInterval = 5 * time.Millisecond
+	t.Cleanup(func() {
+		downloadIdleTimeout = orig
+		idleCheckInterval = origCheck
+	})
+
+	// Several times the 256KiB copy buffer, so the transfer is a
+	// sequence of read-then-wait cycles. That matters: the watchdog
+	// aborts by canceling the download's context, which a read notices
+	// but the limiter wait (which runs on the caller's context) does
+	// not — so a file small enough to arrive in a single read would
+	// finish before the cancellation was ever observed, and the bug
+	// would hide.
+	content := strings.Repeat("x", 768*1024)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/dav/file.txt", func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(content))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c, err := New(srv.URL+"/dav/", "", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// ~2.5MiB/s: each 256KiB read is then held ~100ms, several times
+	// downloadIdleTimeout above, without making the test slow. The burst
+	// must cover the largest single read (the 256KiB copy buffer) or
+	// rate.Wait rejects it outright instead of pacing it — the same
+	// reason internal/ratelimit keeps a minBurst floor.
+	limiter := rate.NewLimiter(rate.Limit(2560*1024), 256*1024)
+	local := filepath.Join(t.TempDir(), "file.txt")
+
+	done := make(chan error, 1)
+	go func() {
+		_, derr := c.Download(context.Background(), "/file.txt", local, limiter, nil, nil)
+		done <- derr
+	}()
+	select {
+	case derr := <-done:
+		if derr != nil {
+			t.Fatalf("Download under a slow rate limit failed: %v — the idle watchdog counted limiter waiting as a stalled connection", derr)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("Download under a slow rate limit never finished")
+	}
+	got, err := os.ReadFile(local)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != content {
+		t.Errorf("downloaded %d bytes, want %d", len(got), len(content))
+	}
+}
+
+// TestHostGateBoundsConcurrentRequests is the fix for the reported "too
+// many requests" failure: several folder jobs used to run at once, each
+// with its own Client and its own fan-out, so nothing capped how many
+// requests were aimed at one server at a time. The gate is keyed by host
+// and shared process-wide, so the ceiling has to hold across separate
+// Clients — which is what this asserts.
+func TestHostGateBoundsConcurrentRequests(t *testing.T) {
+	var mu sync.Mutex
+	var inFlight, peak int
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/dav/", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		inFlight++
+		if inFlight > peak {
+			peak = inFlight
+		}
+		mu.Unlock()
+		time.Sleep(15 * time.Millisecond) // hold the slot long enough to overlap
+		mu.Lock()
+		inFlight--
+		mu.Unlock()
+
+		w.Header().Set("Content-Type", "application/xml")
+		w.WriteHeader(http.StatusMultiStatus)
+		w.Write([]byte(`<?xml version="1.0"?><D:multistatus xmlns:D="DAV:">
+  <D:response><D:href>/dav/</D:href><D:propstat><D:prop><D:resourcetype><D:collection/></D:resourcetype></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response>
+</D:multistatus>`))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	// Two separate Clients, as two concurrent jobs against one saved
+	// connection would produce.
+	var wg sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		c, err := New(srv.URL+"/dav/", "", "", false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for j := 0; j < 8; j++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				c.Stat(context.Background(), "/")
+			}()
+		}
+	}
+	wg.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if peak > hostGateDefaultLimit {
+		t.Errorf("peak concurrent requests to one host was %d, want at most %d — the per-host gate isn't shared across Clients", peak, hostGateDefaultLimit)
+	}
+	if peak == 0 {
+		t.Fatal("no requests reached the server")
 	}
 }

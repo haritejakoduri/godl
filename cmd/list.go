@@ -6,6 +6,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"godl/internal/daemon"
+	"godl/internal/format"
 )
 
 var listCmd = &cobra.Command{
@@ -29,12 +30,12 @@ var listCmd = &cobra.Command{
 		for _, j := range resp.Jobs {
 			progress := "-"
 			if j.BytesTotal > 0 {
-				progress = fmt.Sprintf("%.0f%% (%s/%s)", percent(j.BytesDone, j.BytesTotal)*100, humanBytes(j.BytesDone), humanBytes(j.BytesTotal))
+				progress = fmt.Sprintf("%.0f%% (%s/%s)", format.Percent(j.BytesDone, j.BytesTotal)*100, format.Bytes(j.BytesDone), format.Bytes(j.BytesTotal))
 			} else if j.BytesDone > 0 {
-				progress = humanBytes(j.BytesDone)
+				progress = format.Bytes(j.BytesDone)
 			}
 			rows = append(rows, fmt.Sprintf("%s\t%s\t%s\t%s\t%s\t%s",
-				j.ID, j.Type, statusCell(j.Status, j.ErrorMsg), progress, humanSpeed(j.SpeedBps), truncate(j.Source, 50)))
+				j.ID, j.Type, statusCell(j.Status, j.ErrorMsg), progress, format.Speed(j.SpeedBps), format.Truncate(j.Source, 50)))
 		}
 		return printTable("ID\tTYPE\tSTATUS\tPROGRESS\tSPEED\tSOURCE", rows)
 	},

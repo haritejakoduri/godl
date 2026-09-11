@@ -1,9 +1,8 @@
-package cmd
+package tui
 
 import (
 	"context"
 	"fmt"
-	"os"
 	"path"
 	"sort"
 	"strings"
@@ -14,6 +13,7 @@ import (
 
 	"godl/internal/connections"
 	"godl/internal/daemon"
+	"godl/internal/format"
 	"godl/internal/paths"
 	"godl/internal/webdav"
 )
@@ -137,7 +137,7 @@ func startWebDAVDownloads(connName, outputDir string, remotePaths []string) tea.
 		if err := daemon.EnsureRunning(); err != nil {
 			return webdavStartedMsg{err: err}
 		}
-		output, err := resolveOutputPath(outputDir)
+		output, err := paths.ResolveOutput(outputDir)
 		if err != nil {
 			return webdavStartedMsg{err: err}
 		}
@@ -377,7 +377,7 @@ func (m statusModel) viewWebDAVBrowse() string {
 
 	b.WriteString(statStyle.Render(fmt.Sprintf("%s:%s  (%d selected)", wb.connName, wb.path, len(wb.selected))))
 	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("downloading to " + shortenHome(wb.outputDir)))
+	b.WriteString(helpStyle.Render("downloading to " + format.ShortenHome(wb.outputDir)))
 	b.WriteString("\n")
 
 	if wb.searching {
@@ -422,9 +422,9 @@ func (m statusModel) viewWebDAVBrowse() string {
 			if e.IsDir {
 				name += "/"
 			} else if e.Size >= 0 {
-				size = humanBytes(e.Size)
+				size = format.Bytes(e.Size)
 			}
-			b.WriteString(fmt.Sprintf("%s%s %-40s %s\n", cursor, check, truncate(name, 40), size))
+			b.WriteString(fmt.Sprintf("%s%s %-40s %s\n", cursor, check, format.Truncate(name, 40), size))
 		}
 		if len(visible) > visibleRows {
 			b.WriteString(helpStyle.Render(fmt.Sprintf("(%d-%d of %d)\n", start+1, end, len(visible))))
@@ -437,23 +437,4 @@ func (m statusModel) viewWebDAVBrowse() string {
 		b.WriteString(helpStyle.Render("↑/↓ move  enter open folder  space select  / search  d download selected (or current)  D download this whole folder  ←/backspace up  esc cancel"))
 	}
 	return b.String()
-}
-
-// shortenHome renders p with the user's home directory prefix replaced
-// by "~", the way most CLI tools display a path back to the user —
-// "/home/alice/Downloads" reads as noise next to "~/Downloads".
-// Falls back to p unchanged if the home directory can't be determined
-// or isn't actually a prefix of p.
-func shortenHome(p string) string {
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		return p
-	}
-	if p == home {
-		return "~"
-	}
-	if rest, ok := strings.CutPrefix(p, home+string(os.PathSeparator)); ok {
-		return "~" + string(os.PathSeparator) + rest
-	}
-	return p
 }

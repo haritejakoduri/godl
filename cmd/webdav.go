@@ -33,7 +33,7 @@ recursively, preserving its directory structure under -o.`,
 			}
 			output = def
 		}
-		abs, err := resolveOutputPath(output)
+		abs, err := paths.ResolveOutput(output)
 		if err != nil {
 			return err
 		}

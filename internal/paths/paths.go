@@ -136,3 +136,13 @@ func DownloadsDir() (string, error) {
 	}
 	return d, nil
 }
+
+// ResolveOutput turns a user-supplied destination into an absolute path.
+// An empty value passes through unchanged, so callers can still tell
+// "no -o given" from "-o given" after the call.
+func ResolveOutput(output string) (string, error) {
+	if output == "" {
+		return "", nil
+	}
+	return filepath.Abs(output)
+}

@@ -12,43 +12,20 @@ import (
 
 	"godl/internal/daemon"
 	"godl/internal/paths"
+	"godl/internal/social"
 	"godl/internal/ytdlp"
 )
 
-// socialPreset is a named shortcut for a yt-dlp format selector, so
+// social.Preset is a named shortcut for a yt-dlp format selector, so
 // picking a quality doesn't require knowing yt-dlp's selector syntax.
 // Format == "" means "don't pass -f at all" — yt-dlp's own default,
 // which is already the best combined stream.
-type socialPreset struct {
-	Name        string
-	Format      string
-	Description string
-}
-
-var socialPresets = []socialPreset{
-	{"best", "", "Best combined quality (yt-dlp's default)"},
-	{"1080p", "bv*[height<=1080]+ba/b[height<=1080]", "Cap at 1080p, best audio"},
-	{"720p", "bv*[height<=720]+ba/b[height<=720]", "Cap at 720p, best audio"},
-	{"480p", "bv*[height<=480]+ba/b[height<=480]", "Cap at 480p, best audio"},
-	{"worst", "worst", "Lowest quality (quick preview/test)"},
-	{"audio", "bestaudio/best", "Audio only, best available quality"},
-}
-
-func lookupSocialPreset(name string) (socialPreset, bool) {
-	for _, p := range socialPresets {
-		if p.Name == name {
-			return p, true
-		}
-	}
-	return socialPreset{}, false
-}
-
 // printSocialPresets lists the presets without touching yt-dlp or the
 // network — a static, local, always-available complement to
 // --list-formats' live per-link probe.
 func printSocialPresets() error {
-	rows := make([]string, 0, len(socialPresets))
-	for _, p := range socialPresets {
+	rows := make([]string, 0, len(social.Presets))
+	for _, p := range social.Presets {
 		rows = append(rows, fmt.Sprintf("%s\t%s", p.Name, p.Description))
 	}
 	return printTable("PRESET\tDESCRIPTION", rows)
@@ -125,7 +102,7 @@ ffmpeg, needed to merge separately-downloaded video+audio streams.`,
 			if format != "" {
 				return fmt.Errorf("pass either -p/--preset or -f/--format, not both")
 			}
-			p, ok := lookupSocialPreset(preset)
+			p, ok := social.Lookup(preset)
 			if !ok {
 				return fmt.Errorf("unknown preset %q — see \"godl social --list-presets\"", preset)
 			}
@@ -138,7 +115,7 @@ ffmpeg, needed to merge separately-downloaded video+audio streams.`,
 			}
 			output = dir
 		}
-		abs, err := resolveOutputPath(output)
+		abs, err := paths.ResolveOutput(output)
 		if err != nil {
 			return err
 		}

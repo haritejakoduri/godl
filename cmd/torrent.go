@@ -31,7 +31,7 @@ var torrentCmd = &cobra.Command{
 			}
 			output = def
 		}
-		abs, err := resolveOutputPath(output)
+		abs, err := paths.ResolveOutput(output)
 		if err != nil {
 			return err
 		}

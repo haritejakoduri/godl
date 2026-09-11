@@ -1423,14 +1423,43 @@ func (d *Daemon) snapshot() []*JobView {
 	return views
 }
 
+// streamSnapshots pushes the job list to a subscribed client twice a
+// second, but only when it has actually changed.
+//
+// Most of the time it hasn't: a few completed jobs sitting in the list
+// produce byte-identical snapshots forever, and re-sending them made
+// both sides busy for nothing — the daemon marshalling the same payload
+// and the TUI rebuilding and re-rendering every row on receipt. Skipping
+// unchanged payloads means an idle godl status costs nothing beyond one
+// indexed query per tick. While a download is running the bytes change
+// every tick and everything flows as before.
 func (d *Daemon) streamSnapshots(conn net.Conn) {
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
-	if err := writeResp(conn, Response{Type: "snapshot", OK: true, Jobs: d.snapshot()}); err != nil {
+
+	var lastSent []byte
+	send := func() error {
+		payload, err := json.Marshal(Response{Type: "snapshot", OK: true, Jobs: d.snapshot()})
+		if err != nil {
+			return err
+		}
+		payload = append(payload, '\n') // the framing every response uses
+		if bytes.Equal(payload, lastSent) {
+			return nil
+		}
+		lastSent = payload
+		_, err = conn.Write(payload)
+		return err
+	}
+
+	// The first snapshot always goes out, so a client that connects
+	// while nothing is happening still gets the current state instead of
+	// waiting for something to change.
+	if err := send(); err != nil {
 		return
 	}
 	for range ticker.C {
-		if err := writeResp(conn, Response{Type: "snapshot", OK: true, Jobs: d.snapshot()}); err != nil {
+		if err := send(); err != nil {
 			return
 		}
 	}

@@ -205,14 +205,15 @@ func TestChunkWritesAreClampedToTheirRange(t *testing.T) {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		// Overrun: send 512 bytes past the end that was requested.
-		overrun := end + 1 + 512
-		if overrun > int64(len(body)) {
-			overrun = int64(len(body))
-		}
+		// Overrun the requested window by 512 bytes of filler that does
+		// NOT match the real file. Sending the correct trailing bytes
+		// would make an unclamped write harmless by luck — the neighbour
+		// would be overwritten with exactly what belonged there — and the
+		// test would pass with or without the clamp.
 		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, len(body)))
 		w.WriteHeader(http.StatusPartialContent)
-		w.Write(body[start:overrun])
+		w.Write(body[start : end+1])
+		w.Write(bytes.Repeat([]byte{0xFF}, 512))
 	}))
 	defer srv.Close()
 

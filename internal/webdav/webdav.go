@@ -456,6 +456,61 @@ var downloadIdleTimeout = 90 * time.Second
 // noticed, so it's coarse on purpose.
 var idleCheckInterval = 10 * time.Second
 
+// idleWatchdog cancels a download that has gone quiet. It exists as a
+// type mostly so Download stays readable: the bookkeeping is fiddly and
+// none of it is about downloading.
+//
+// The fiddly part is sawData/enterLimiter: time spent waiting on the
+// rate limiter is godl's own doing, and under a low cap one read can be
+// held longer than the timeout — counting that as a stall would kill a
+// perfectly healthy download.
+type idleWatchdog struct {
+	timeout   time.Duration
+	lastData  atomic.Int64 // unix nanos
+	inLimiter atomic.Bool
+	tripped   atomic.Bool
+	done      chan struct{}
+}
+
+// startIdleWatchdog begins watching, and calls cancel if the download
+// goes quiet for longer than downloadIdleTimeout. Timeouts are read once
+// here rather than in the goroutine: it can still be scheduled after
+// Download returns, where reading these package vars would race a test's
+// assignment to them.
+func startIdleWatchdog(ctx context.Context, cancel context.CancelFunc) *idleWatchdog {
+	wd := &idleWatchdog{timeout: downloadIdleTimeout, done: make(chan struct{})}
+	wd.sawData()
+	checkEvery := idleCheckInterval
+	go func() {
+		t := time.NewTicker(checkEvery)
+		defer t.Stop()
+		for {
+			select {
+			case <-wd.done:
+				return
+			case <-ctx.Done():
+				return
+			case now := <-t.C:
+				if wd.inLimiter.Load() {
+					continue
+				}
+				if now.Sub(time.Unix(0, wd.lastData.Load())) > wd.timeout {
+					wd.tripped.Store(true)
+					cancel()
+					return
+				}
+			}
+		}
+	}()
+	return wd
+}
+
+func (w *idleWatchdog) sawData()      { w.lastData.Store(time.Now().UnixNano()) }
+func (w *idleWatchdog) enterLimiter() { w.inLimiter.Store(true) }
+func (w *idleWatchdog) leaveLimiter() { w.inLimiter.Store(false); w.sawData() }
+func (w *idleWatchdog) fired() bool   { return w.tripped.Load() }
+func (w *idleWatchdog) stop()         { close(w.done) }
+
 // Download fetches remotePath to localPath, resuming via Range if it's
 // already partially present, and returns the total bytes now on disk.
 // Both limiters are waited on, and both are shared instances — see
@@ -486,39 +541,8 @@ func (c *Client) Download(ctx context.Context, remotePath, localPath string, lim
 	// can be held longer than downloadIdleTimeout, killing a healthy
 	// download. inLimiter marks those stretches so the watchdog skips
 	// them.
-	// Read once and passed by value: the goroutine can be scheduled after
-	// Download returns, and reading these package vars there would race
-	// the next test's assignment.
-	idleTimeout := downloadIdleTimeout
-	checkEvery := idleCheckInterval
-
-	var idleFired atomic.Bool
-	var inLimiter atomic.Bool
-	lastData := &atomic.Int64{}
-	lastData.Store(time.Now().UnixNano())
-	watchdogDone := make(chan struct{})
-	defer close(watchdogDone)
-	go func() {
-		t := time.NewTicker(checkEvery)
-		defer t.Stop()
-		for {
-			select {
-			case <-watchdogDone:
-				return
-			case <-dlCtx.Done():
-				return
-			case now := <-t.C:
-				if inLimiter.Load() {
-					continue
-				}
-				if now.Sub(time.Unix(0, lastData.Load())) > idleTimeout {
-					idleFired.Store(true)
-					dlCancel()
-					return
-				}
-			}
-		}
-	}()
+	wd := startIdleWatchdog(dlCtx, dlCancel)
+	defer wd.stop()
 
 	resp, err := c.doRetrying429(dlCtx, func() (*http.Response, error) {
 		req, err := http.NewRequestWithContext(dlCtx, http.MethodGet, c.resolve(remotePath).String(), nil)
@@ -532,13 +556,13 @@ func (c *Client) Download(ctx context.Context, remotePath, localPath string, lim
 		return c.HTTP.Do(req)
 	})
 	if err != nil {
-		if idleFired.Load() {
-			return start, fmt.Errorf("downloading %s: no data received for %s, giving up", remotePath, idleTimeout)
+		if wd.fired() {
+			return start, fmt.Errorf("downloading %s: no data received for %s, giving up", remotePath, wd.timeout)
 		}
 		return start, err
 	}
 	defer resp.Body.Close()
-	lastData.Store(time.Now().UnixNano()) // headers arrived; give the body its own full window rather than sharing the one used to wait for them
+	wd.sawData() // headers arrived; give the body its own full window rather than sharing the one used to wait for them
 
 	switch resp.StatusCode {
 	case http.StatusOK:
@@ -572,13 +596,10 @@ func (c *Client) Download(ctx context.Context, remotePath, localPath string, lim
 	for {
 		n, rerr := resp.Body.Read(buf)
 		if n > 0 {
-			lastData.Store(time.Now().UnixNano())
-			inLimiter.Store(true)
+			wd.sawData()
+			wd.enterLimiter()
 			werr := ratelimit.WaitAll(ctx, n, limiter, globalLimiter)
-			inLimiter.Store(false)
-			// Count the wait as progress too: the bytes did arrive, godl
-			// just chose to hold them.
-			lastData.Store(time.Now().UnixNano())
+			wd.leaveLimiter()
 			if werr != nil {
 				return written, werr
 			}
@@ -598,8 +619,8 @@ func (c *Client) Download(ctx context.Context, remotePath, localPath string, lim
 				}
 				return written, nil
 			}
-			if idleFired.Load() {
-				return written, fmt.Errorf("downloading %s: no data received for %s, giving up", remotePath, idleTimeout)
+			if wd.fired() {
+				return written, fmt.Errorf("downloading %s: no data received for %s, giving up", remotePath, wd.timeout)
 			}
 			if ctx.Err() != nil {
 				return written, ctx.Err()

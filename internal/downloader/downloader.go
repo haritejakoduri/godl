@@ -285,6 +285,78 @@ type sidecar struct {
 	Chunks []chunkState
 }
 
+// fetchChunk downloads one chunk's remaining bytes straight into its
+// final offset in f. It returns nil when the chunk is satisfied, when
+// the context is canceled, or when the server turned out to be ignoring
+// Range headers — in that last case it sets rangeIgnored and cancels the
+// siblings, since every one of them is about to write a full copy of the
+// file at its own offset.
+func fetchChunk(ctx context.Context, client *http.Client, opt Options, f *os.File, c *chunkState,
+	mu *sync.Mutex, doneCounter *atomic.Int64, rangeIgnored *atomic.Bool, cancelSiblings func()) error {
+	rangeStart := c.Start + c.Done
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, opt.URL, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", rangeStart, c.End-1))
+	resp, err := client.Do(req)
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil
+		}
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusOK {
+		// Not 206: the server is sending the whole file, not the window
+		// we asked for. See errRangeIgnored.
+		rangeIgnored.Store(true)
+		cancelSiblings()
+		return nil
+	}
+	if resp.StatusCode != http.StatusPartialContent {
+		return fmt.Errorf("chunk [%d,%d): unexpected status %s", c.Start, c.End, resp.Status)
+	}
+
+	buf := make([]byte, copyBufSize)
+	pos := rangeStart
+	for {
+		n, rerr := resp.Body.Read(buf)
+		if n > 0 {
+			// Never write outside this chunk's own [Start,End) window,
+			// whatever the server sends. Extra bytes would overwrite the
+			// next chunk's region, and since c.Done is derived from pos
+			// they would also push the completion check past this chunk's
+			// length and report a corrupt file as finished.
+			if over := pos + int64(n) - c.End; over > 0 {
+				n -= int(over)
+			}
+			if n > 0 {
+				if werr := waitLimiters(ctx, opt, n); werr != nil {
+					return werr
+				}
+				if _, werr := f.WriteAt(buf[:n], pos); werr != nil {
+					return werr
+				}
+				pos += int64(n)
+				mu.Lock()
+				c.Done = pos - c.Start
+				mu.Unlock()
+				doneCounter.Add(int64(n))
+			}
+			if pos >= c.End {
+				return nil // satisfied; ignore any trailing bytes
+			}
+		}
+		if rerr != nil {
+			if rerr == io.EOF || ctx.Err() != nil {
+				return nil
+			}
+			return rerr
+		}
+	}
+}
+
 // runChunked splits the remaining bytes into opt.Concurrency ranged
 // requests written directly into their final offsets via WriteAt, so no
 // merge step is needed. Progress per chunk is checkpointed to a JSON
@@ -391,77 +463,8 @@ func runChunked(ctx context.Context, client *http.Client, opt Options, total int
 		wg.Add(1)
 		go func(c *chunkState) {
 			defer wg.Done()
-			rangeStart := c.Start + c.Done
-			req, err := http.NewRequestWithContext(cctx, http.MethodGet, opt.URL, nil)
-			if err != nil {
+			if err := fetchChunk(cctx, client, opt, f, c, &mu, &doneCounter, &rangeIgnored, cancelChunks); err != nil {
 				errCh <- err
-				return
-			}
-			req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", rangeStart, c.End-1))
-			resp, err := client.Do(req)
-			if err != nil {
-				if cctx.Err() == nil {
-					errCh <- err
-				}
-				return
-			}
-			defer resp.Body.Close()
-			if resp.StatusCode == http.StatusOK {
-				// Not 206: the server is sending the whole file, not the
-				// window we asked for. See errRangeIgnored.
-				rangeIgnored.Store(true)
-				cancelChunks()
-				return
-			}
-			if resp.StatusCode != http.StatusPartialContent {
-				errCh <- fmt.Errorf("chunk [%d,%d): unexpected status %s", c.Start, c.End, resp.Status)
-				return
-			}
-
-			buf := make([]byte, copyBufSize)
-			pos := rangeStart
-			for {
-				n, rerr := resp.Body.Read(buf)
-				if n > 0 {
-					// Never write outside this chunk's own [Start,End)
-					// window, whatever the server sends. A 206 carrying
-					// more bytes than were asked for would otherwise
-					// overwrite the next chunk's region — and since
-					// c.Done is derived from pos, it would also push the
-					// completion check below past its own chunk length
-					// and report a corrupt file as finished.
-					if over := pos + int64(n) - c.End; over > 0 {
-						n -= int(over)
-					}
-					if n > 0 {
-						if werr := waitLimiters(cctx, opt, n); werr != nil {
-							errCh <- werr
-							return
-						}
-						if _, werr := f.WriteAt(buf[:n], pos); werr != nil {
-							errCh <- werr
-							return
-						}
-						pos += int64(n)
-						mu.Lock()
-						c.Done = pos - c.Start
-						mu.Unlock()
-						doneCounter.Add(int64(n))
-					}
-					if pos >= c.End {
-						return // this chunk is satisfied; ignore any trailing bytes
-					}
-				}
-				if rerr != nil {
-					if rerr == io.EOF {
-						return
-					}
-					if cctx.Err() != nil {
-						return
-					}
-					errCh <- rerr
-					return
-				}
 			}
 		}(c)
 	}

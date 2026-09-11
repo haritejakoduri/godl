@@ -602,109 +602,120 @@ func (m statusModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
-		if m.newJob != nil {
-			return m.updateNewJob(msg)
-		}
-		if m.webdavBrowse != nil {
-			return m.updateWebDAVBrowse(msg)
-		}
-		if m.settings != nil {
-			return m.updateSettings(msg)
-		}
-		if m.confirmRemove != nil {
-			pending := *m.confirmRemove
-			m.confirmRemove = nil
-			switch msg.String() {
-			case "y", "Y":
-				m.statusMsg = ""
-				m.selected = map[string]bool{}
-				return m, doBulkRemove(pending.jobIDs, pending.purge)
-			default:
-				m.statusMsg = "remove canceled"
-				return m, nil
-			}
-		}
+		return m.handleKey(msg)
+	}
+
+	var cmd tea.Cmd
+	m.table, cmd = m.table.Update(msg)
+	return m, cmd
+}
+
+// handleKey routes a keypress: to whichever overlay is open, to a
+// pending confirmation, or to the dashboard's own bindings. Keys it
+// doesn't claim drive the table's cursor.
+func (m statusModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.newJob != nil {
+		return m.updateNewJob(msg)
+	}
+	if m.webdavBrowse != nil {
+		return m.updateWebDAVBrowse(msg)
+	}
+	if m.settings != nil {
+		return m.updateSettings(msg)
+	}
+	if m.confirmRemove != nil {
+		pending := *m.confirmRemove
+		m.confirmRemove = nil
 		switch msg.String() {
-		case "q", "ctrl+c":
-			m.cancel()
-			return m, tea.Quit
-		case "n":
-			ti := textinput.New()
-			ti.Placeholder = "paste a link..."
-			ti.Focus()
-			ti.CharLimit = 2048
-			ti.Width = 60
-			m.newJob = &newJobState{step: newJobPickType, input: ti}
-			return m, nil
-		case "w":
-			conns, err := connections.List()
-			if err != nil {
-				m.statusMsg = "error: " + err.Error()
-				return m, nil
-			}
-			if len(conns) == 0 {
-				m.statusMsg = `No saved connections. Run "godl connection add <name> --url ..." first.`
-				return m, nil
-			}
-			m.webdavBrowse = &webdavBrowseState{step: webdavPickConn, conns: conns}
-			return m, nil
-		case "s":
-			m.settings = &settingsState{loading: true}
-			return m, loadSettings()
-		case " ":
-			idx := m.table.Cursor()
-			if idx < 0 || idx >= len(m.jobs) {
-				return m, nil
-			}
-			id := m.jobs[idx].ID
-			if m.selected[id] {
-				delete(m.selected, id)
-			} else {
-				m.selected[id] = true
-			}
-			m.rebuildRows(idx)
-			return m, nil
-		case "p", "r", "x", "R":
-			ids := m.actionTargets()
-			if len(ids) == 0 {
-				return m, nil
-			}
-			apiCmd := map[string]string{
-				"p": daemon.CmdPause,
-				"r": daemon.CmdResume,
-				"x": daemon.CmdCancel,
-				"R": daemon.CmdRetry,
-			}[msg.String()]
+		case "y", "Y":
+			m.statusMsg = ""
 			m.selected = map[string]bool{}
-			m.rebuildRows(m.table.Cursor())
-			return m, doBulkJobAction(apiCmd, ids)
-		case "d", "D":
-			ids := m.actionTargets()
-			if len(ids) == 0 {
-				return m, nil
-			}
-			purge := msg.String() == "D"
-			m.confirmRemove = &pendingRemove{jobIDs: ids, purge: purge}
-			switch {
-			case len(ids) == 1 && purge:
-				m.statusMsg = fmt.Sprintf("Remove %s AND DELETE its downloaded file(s)? [y/N]", ids[0])
-			case len(ids) == 1:
-				m.statusMsg = fmt.Sprintf("Remove %s from the list (keeps files)? [y/N]", ids[0])
-			case purge:
-				m.statusMsg = fmt.Sprintf("Remove %d jobs AND DELETE their downloaded file(s)? [y/N]", len(ids))
-			default:
-				m.statusMsg = fmt.Sprintf("Remove %d jobs from the list (keeps files)? [y/N]", len(ids))
-			}
+			return m, doBulkRemove(pending.jobIDs, pending.purge)
+		default:
+			m.statusMsg = "remove canceled"
 			return m, nil
-		case "o":
-			idx := m.table.Cursor()
-			if idx < 0 || idx >= len(m.jobs) {
-				return m, nil
-			}
-			j := m.jobs[idx]
-			m.statusMsg = "starting mpv..."
-			return m, doPlay(j)
 		}
+	}
+	switch msg.String() {
+	case "q", "ctrl+c":
+		m.cancel()
+		return m, tea.Quit
+	case "n":
+		ti := textinput.New()
+		ti.Placeholder = "paste a link..."
+		ti.Focus()
+		ti.CharLimit = 2048
+		ti.Width = 60
+		m.newJob = &newJobState{step: newJobPickType, input: ti}
+		return m, nil
+	case "w":
+		conns, err := connections.List()
+		if err != nil {
+			m.statusMsg = "error: " + err.Error()
+			return m, nil
+		}
+		if len(conns) == 0 {
+			m.statusMsg = `No saved connections. Run "godl connection add <name> --url ..." first.`
+			return m, nil
+		}
+		m.webdavBrowse = &webdavBrowseState{step: webdavPickConn, conns: conns}
+		return m, nil
+	case "s":
+		m.settings = &settingsState{loading: true}
+		return m, loadSettings()
+	case " ":
+		idx := m.table.Cursor()
+		if idx < 0 || idx >= len(m.jobs) {
+			return m, nil
+		}
+		id := m.jobs[idx].ID
+		if m.selected[id] {
+			delete(m.selected, id)
+		} else {
+			m.selected[id] = true
+		}
+		m.rebuildRows(idx)
+		return m, nil
+	case "p", "r", "x", "R":
+		ids := m.actionTargets()
+		if len(ids) == 0 {
+			return m, nil
+		}
+		apiCmd := map[string]string{
+			"p": daemon.CmdPause,
+			"r": daemon.CmdResume,
+			"x": daemon.CmdCancel,
+			"R": daemon.CmdRetry,
+		}[msg.String()]
+		m.selected = map[string]bool{}
+		m.rebuildRows(m.table.Cursor())
+		return m, doBulkJobAction(apiCmd, ids)
+	case "d", "D":
+		ids := m.actionTargets()
+		if len(ids) == 0 {
+			return m, nil
+		}
+		purge := msg.String() == "D"
+		m.confirmRemove = &pendingRemove{jobIDs: ids, purge: purge}
+		switch {
+		case len(ids) == 1 && purge:
+			m.statusMsg = fmt.Sprintf("Remove %s AND DELETE its downloaded file(s)? [y/N]", ids[0])
+		case len(ids) == 1:
+			m.statusMsg = fmt.Sprintf("Remove %s from the list (keeps files)? [y/N]", ids[0])
+		case purge:
+			m.statusMsg = fmt.Sprintf("Remove %d jobs AND DELETE their downloaded file(s)? [y/N]", len(ids))
+		default:
+			m.statusMsg = fmt.Sprintf("Remove %d jobs from the list (keeps files)? [y/N]", len(ids))
+		}
+		return m, nil
+	case "o":
+		idx := m.table.Cursor()
+		if idx < 0 || idx >= len(m.jobs) {
+			return m, nil
+		}
+		j := m.jobs[idx]
+		m.statusMsg = "starting mpv..."
+		return m, doPlay(j)
 	}
 
 	var cmd tea.Cmd

@@ -10,7 +10,6 @@ package ytdlp
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -107,7 +106,7 @@ func Ensure(ctx context.Context, progress func(string)) (string, error) {
 
 	url := releaseBase + asset
 	report(progress, "yt-dlp not found; downloading a standalone copy from "+url)
-	if err := download(ctx, url, localPath, wantHex); err != nil {
+	if err := ghrelease.DownloadVerified(ctx, httpClient, url, localPath, ".part", wantHex); err != nil {
 		return "", fmt.Errorf("downloading yt-dlp: %w", err)
 	}
 	os.WriteFile(checkedFile(binDir), nil, 0o644)
@@ -147,7 +146,7 @@ func checkAndUpdate(ctx context.Context, localPath string, progress func(string)
 	}
 
 	report(progress, "installing the latest yt-dlp release...")
-	if err := download(ctx, releaseBase+asset, localPath, latestHex); err != nil {
+	if err := ghrelease.DownloadVerified(ctx, httpClient, releaseBase+asset, localPath, ".part", latestHex); err != nil {
 		return false, fmt.Errorf("updating yt-dlp: %w", err)
 	}
 	report(progress, "yt-dlp updated to the latest release")
@@ -176,47 +175,4 @@ func report(progress func(string), msg string) {
 	if progress != nil {
 		progress(msg)
 	}
-}
-
-// download fetches url to dest, verifying the downloaded bytes' sha256
-// against wantHex before the file is renamed into place — a checksum
-// mismatch (or any error) leaves no file at dest.
-func download(ctx context.Context, url, dest, wantHex string) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return err
-	}
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("unexpected status: %s", resp.Status)
-	}
-
-	tmp := dest + ".part"
-	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
-	if err != nil {
-		return err
-	}
-	gotHex, _, err := ghrelease.HashingCopy(f, resp.Body)
-	if err != nil {
-		f.Close()
-		os.Remove(tmp)
-		return err
-	}
-	if err := f.Close(); err != nil {
-		os.Remove(tmp)
-		return err
-	}
-	if err := ghrelease.Verify(gotHex, wantHex); err != nil {
-		os.Remove(tmp)
-		return err
-	}
-	if err := os.Chmod(tmp, 0o755); err != nil {
-		os.Remove(tmp)
-		return err
-	}
-	return os.Rename(tmp, dest)
 }

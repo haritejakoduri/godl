@@ -19,7 +19,6 @@ package selfupdate
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -137,7 +136,7 @@ func ForceUpdate(ctx context.Context, progress func(string)) (result Result, lat
 	}
 
 	report(progress, "downloading godl "+latestVersion+"...")
-	if err := download(ctx, releaseBase(latestTag)+asset, exePath, wantHex); err != nil {
+	if err := ghrelease.DownloadVerified(ctx, httpClient, releaseBase(latestTag)+asset, exePath, ".new", wantHex); err != nil {
 		return Unsupported, latestVersion, fmt.Errorf("updating godl: %w", err)
 	}
 	report(progress, "godl updated to "+latestVersion+" — already-running commands (godl status, godl serve, ...) keep using the old binary until restarted")
@@ -148,51 +147,4 @@ func report(progress func(string), msg string) {
 	if progress != nil {
 		progress(msg)
 	}
-}
-
-// download fetches url to dest, verifying the downloaded bytes' sha256
-// against wantHex before the file is renamed into place — a checksum
-// mismatch (or any error) leaves the existing binary at dest untouched.
-// dest is the running executable itself: the temp file is created
-// alongside it (same directory, so the final rename is on the same
-// filesystem, and reliably atomic rather than a cross-device copy) and
-// only swapped in once fully verified and made executable.
-func download(ctx context.Context, url, dest, wantHex string) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return err
-	}
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("unexpected status: %s", resp.Status)
-	}
-
-	tmp := dest + ".new"
-	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
-	if err != nil {
-		return err
-	}
-	gotHex, _, err := ghrelease.HashingCopy(f, resp.Body)
-	if err != nil {
-		f.Close()
-		os.Remove(tmp)
-		return err
-	}
-	if err := f.Close(); err != nil {
-		os.Remove(tmp)
-		return err
-	}
-	if err := ghrelease.Verify(gotHex, wantHex); err != nil {
-		os.Remove(tmp)
-		return err
-	}
-	if err := os.Chmod(tmp, 0o755); err != nil {
-		os.Remove(tmp)
-		return err
-	}
-	return os.Rename(tmp, dest)
 }

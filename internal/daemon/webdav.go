@@ -10,7 +10,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"godl/internal/connections"
 	"godl/internal/ratelimit"
@@ -51,27 +50,14 @@ func JoinWebDAVSource(connName, remotePath string) string {
 }
 
 func (d *Daemon) startWebDAV(j *store.Job) {
-	ctx, cancel := context.WithCancel(context.Background())
-	rt := &runtime{cancel: cancel, done: make(chan struct{}), lastTime: time.Now(), bytesDone: j.BytesDone, bytesTotal: j.BytesTotal}
-	d.setRuntime(j.ID, rt)
-	if !d.markActive(j) {
-		cancel()
-		return
-	}
-
 	// One limiter instance shared by every file this job downloads
-	// concurrently below (see webdavDownloadConcurrency), so the job's
-	// own cap isn't multiplied by how many files happen to be in
-	// flight at once. globalLimiter is the Settings tab's shared
-	// bandwidth cap, the same instance every url/webdav job across the
-	// whole daemon draws from — see Daemon.globalLimiter's doc comment.
+	// concurrently, so the job's own cap isn't multiplied by how many
+	// files are in flight. globalLimiter is the Settings tab's shared
+	// cap — see Daemon.globalLimiter.
 	limiter := ratelimit.NewLimiter(j.LimitRate)
 	globalLimiter := d.cachedGlobalLimiter()
 
-	go func() {
-		defer close(rt.done)
-		defer d.clearRuntime(j.ID)
-
+	d.launch(j, func(ctx context.Context, rt *runtime) {
 		connName, remotePath, ok := SplitWebDAVSource(j.Source)
 		if !ok {
 			d.finishJob(j.ID, j.BytesDone, false, fmt.Errorf("invalid webdav job source %q", j.Source))
@@ -180,7 +166,7 @@ func (d *Daemon) startWebDAV(j *store.Job) {
 					mu.Lock()
 					if firstErr == nil {
 						firstErr = fmt.Errorf("downloading %s: %w", f.Path, derr)
-						cancel() // stop the rest of this job's in-flight downloads too
+						rt.cancel() // stop this job's other in-flight downloads too
 					}
 					mu.Unlock()
 					return
@@ -204,7 +190,7 @@ func (d *Daemon) startWebDAV(j *store.Job) {
 		default:
 			d.finishJob(j.ID, final, true, nil)
 		}
-	}()
+	})
 }
 
 // webdavLocalPath maps a remote file (found under root, itself relative

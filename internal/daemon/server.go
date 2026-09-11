@@ -383,36 +383,30 @@ func writeResp(w io.Writer, r Response) error {
 
 func (d *Daemon) dispatch(conn net.Conn, req Request) {
 	ctx := context.Background()
+
+	// Takes createJob's two results directly, so each add_* case below
+	// is a single line and the three that are identical look it.
+	startAndReport := func(j *store.Job, err error) {
+		if err != nil {
+			writeResp(conn, errResp(err))
+			return
+		}
+		d.start(j)
+		writeResp(conn, Response{Type: "result", OK: true, Job: d.view(j.ID)})
+	}
+
 	switch req.Cmd {
 	case CmdPing:
 		writeResp(conn, Response{Type: "result", OK: true})
 
 	case CmdAddURL:
-		j, err := d.createJob(ctx, store.JobURL, req.Source, req.Output, "", req.Concurrency, req.LimitRate, req.Sha256)
-		if err != nil {
-			writeResp(conn, errResp(err))
-			return
-		}
-		d.start(j)
-		writeResp(conn, Response{Type: "result", OK: true, Job: d.view(j.ID)})
+		startAndReport(d.createJob(ctx, store.JobURL, req.Source, req.Output, "", req.Concurrency, req.LimitRate, req.Sha256))
 
 	case CmdAddTorrent:
-		j, err := d.createJob(ctx, store.JobTorrent, req.Source, req.Output, "", 0, req.LimitRate, "")
-		if err != nil {
-			writeResp(conn, errResp(err))
-			return
-		}
-		d.start(j)
-		writeResp(conn, Response{Type: "result", OK: true, Job: d.view(j.ID)})
+		startAndReport(d.createJob(ctx, store.JobTorrent, req.Source, req.Output, "", 0, req.LimitRate, ""))
 
 	case CmdAddWebDAV:
-		j, err := d.createJob(ctx, store.JobWebDAV, req.Source, req.Output, "", 0, req.LimitRate, "")
-		if err != nil {
-			writeResp(conn, errResp(err))
-			return
-		}
-		d.start(j)
-		writeResp(conn, Response{Type: "result", OK: true, Job: d.view(j.ID)})
+		startAndReport(d.createJob(ctx, store.JobWebDAV, req.Source, req.Output, "", 0, req.LimitRate, ""))
 
 	case CmdAddSocial:
 		j, err := d.createJob(ctx, store.JobSocial, req.Source, req.Output, req.Format, 0, req.LimitRate, "")
@@ -420,10 +414,9 @@ func (d *Daemon) dispatch(conn net.Conn, req Request) {
 			writeResp(conn, errResp(err))
 			return
 		}
-		// Subscribe before starting the job, not after: startSocial can
-		// publish log lines (e.g. "downloading yt-dlp...") almost
-		// immediately, and a subscribe-after-start ordering could lose
-		// them in the gap before this connection registers itself.
+		// Subscribe before starting, not after: startSocial can publish
+		// log lines almost immediately, and subscribing afterwards would
+		// lose the ones sent before this connection registers.
 		logCh := d.subscribeLogs()
 		d.start(j)
 		writeResp(conn, Response{Type: "result", OK: true, Job: d.view(j.ID)})
@@ -727,7 +720,14 @@ func (d *Daemon) nextQueuedJob(ctx context.Context, skip map[string]bool) (*stor
 	return nil, nil
 }
 
-func (d *Daemon) startURL(j *store.Job) {
+// launch registers a runtime for j, marks it active, and runs work on a
+// background goroutine. Every job type starts this way; work does only
+// the part that differs, and reports the outcome through finishJob.
+//
+// Doing the teardown here (rather than in each starter) is what keeps
+// rt.done and clearRuntime paired: they must fire exactly once, on every
+// exit path, or pause/cancel — which block on rt.done — hang.
+func (d *Daemon) launch(j *store.Job, work func(ctx context.Context, rt *runtime)) {
 	ctx, cancel := context.WithCancel(context.Background())
 	rt := &runtime{cancel: cancel, done: make(chan struct{}), lastTime: time.Now(), bytesDone: j.BytesDone, bytesTotal: j.BytesTotal}
 	d.setRuntime(j.ID, rt)
@@ -735,18 +735,31 @@ func (d *Daemon) startURL(j *store.Job) {
 		cancel()
 		return
 	}
-
-	// Single-stream downloads (concurrency<=1) checkpoint their resume
-	// offset on every progress tick, not just at pause/completion, so an
-	// ungraceful daemon death loses at most one tick of progress.
-	// Concurrent chunked downloads checkpoint via their own sidecar file
-	// instead (see internal/downloader) and don't use ResumeOffset at all.
-	single := j.Concurrency <= 1
-
 	go func() {
+		// LIFO: recover runs first, so the job is marked failed before
+		// its runtime is cleared and rt.done closed — the same order the
+		// normal path takes. start() recovers panics raised before this
+		// goroutine exists; this covers the rest, which previously had
+		// no protection at all and would have taken the daemon down.
 		defer close(rt.done)
 		defer d.clearRuntime(j.ID)
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("recovered from panic running job %s (%s): %v", j.ID, j.Type, r)
+				d.finishJob(j.ID, j.BytesDone, false, fmt.Errorf("internal error: %v", r))
+			}
+		}()
+		work(ctx, rt)
+	}()
+}
 
+func (d *Daemon) startURL(j *store.Job) {
+	// Single-stream downloads (concurrency<=1) checkpoint their resume
+	// offset on every progress tick. Chunked ones use a sidecar file
+	// instead (see internal/downloader) and ignore ResumeOffset.
+	single := j.Concurrency <= 1
+
+	d.launch(j, func(ctx context.Context, rt *runtime) {
 		res, err := downloader.Run(ctx, downloader.Options{
 			URL:           j.Source,
 			OutputPath:    j.Output,
@@ -766,42 +779,26 @@ func (d *Daemon) startURL(j *store.Job) {
 			},
 		})
 		d.finishJob(j.ID, res.BytesDone, res.Completed, err)
-	}()
+	})
 }
 
 func (d *Daemon) startTorrent(j *store.Job) {
-	ctx, cancel := context.WithCancel(context.Background())
-	rt := &runtime{cancel: cancel, done: make(chan struct{}), lastTime: time.Now(), bytesDone: j.BytesDone, bytesTotal: j.BytesTotal}
-	d.setRuntime(j.ID, rt)
-	if !d.markActive(j) {
-		cancel()
-		return
-	}
+	d.launch(j, func(ctx context.Context, rt *runtime) {
+		// anacrolix/torrent takes one client-wide limiter, not a
+		// per-torrent one, so the most recently started torrent job's
+		// limit wins for all of them. For the same reason the global cap
+		// can't share url/webdav's real bucket (see
+		// Daemon.globalRateLimitBps) and is applied as an upper clamp:
+		// whichever of this job's rate and the global cap is lower.
+		if effective := minPositiveRate(j.LimitRate, d.cachedGlobalRateLimitBps()); effective > 0 {
+			d.tm.SetDownloadLimit(effective)
+		}
 
-	// anacrolix/torrent's rate limiter is shared by its whole Client, not
-	// per-torrent (see torrentmgr's doc comment) — setting it here means
-	// the most recently started torrent job's limit wins for all
-	// concurrently active ones, not just this one. The global cap (see
-	// Daemon.globalRateLimitBps's doc comment) can't share url/webdav's
-	// real single bucket for the same reason — anacrolix only accepts
-	// one client-wide limiter of its own — so it's applied here as an
-	// upper clamp instead: whichever of this job's own rate and the
-	// global cap is more restrictive wins.
-	if effective := minPositiveRate(j.LimitRate, d.cachedGlobalRateLimitBps()); effective > 0 {
-		d.tm.SetDownloadLimit(effective)
-	}
-
-	t, err := d.tm.Add(j.ID, j.Source, j.Output)
-	if err != nil {
-		close(rt.done)
-		d.clearRuntime(j.ID)
-		d.finishJob(j.ID, j.BytesDone, false, err)
-		return
-	}
-
-	go func() {
-		defer close(rt.done)
-		defer d.clearRuntime(j.ID)
+		t, err := d.tm.Add(j.ID, j.Source, j.Output)
+		if err != nil {
+			d.finishJob(j.ID, j.BytesDone, false, err)
+			return
+		}
 
 		select {
 		case <-t.GotInfo():
@@ -843,22 +840,11 @@ func (d *Daemon) startTorrent(j *store.Job) {
 				}
 			}
 		}
-	}()
+	})
 }
 
 func (d *Daemon) startSocial(j *store.Job) {
-	ctx, cancel := context.WithCancel(context.Background())
-	rt := &runtime{cancel: cancel, done: make(chan struct{}), lastTime: time.Now()}
-	d.setRuntime(j.ID, rt)
-	if !d.markActive(j) {
-		cancel()
-		return
-	}
-
-	go func() {
-		defer close(rt.done)
-		defer d.clearRuntime(j.ID)
-
+	d.launch(j, func(ctx context.Context, rt *runtime) {
 		ytDlpPath, err := ytdlp.Ensure(ctx, func(msg string) { d.publishLog(j.ID, msg, false) })
 		if err != nil {
 			d.publishLog(j.ID, "error: "+err.Error(), true)
@@ -954,7 +940,7 @@ func (d *Daemon) startSocial(j *store.Job) {
 		}
 		d.publishLog(j.ID, "", true)
 		d.finishJob(j.ID, finalBytes, true, nil)
-	}()
+	})
 }
 
 // godlProgressPrefix tags the machine-readable progress lines produced

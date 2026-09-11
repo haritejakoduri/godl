@@ -433,59 +433,45 @@ func (s *Store) DeleteJob(ctx context.Context, id string) error {
 	return err
 }
 
+// jobColumns is scanJob's expected column order; every job query selects
+// exactly this, so the two stay in step by construction.
+const jobColumns = `id, type, source, output, format, concurrency, status,
+	bytes_done, bytes_total, resume_offset, info_hash, resolved_paths,
+	error_msg, limit_rate, sha256, retry_count, created_at, updated_at`
+
 func (s *Store) GetJob(ctx context.Context, id string) (*Job, error) {
-	row := s.db.QueryRowContext(ctx, `
-SELECT id, type, source, output, format, concurrency, status,
-	bytes_done, bytes_total, resume_offset, info_hash, resolved_paths, error_msg, limit_rate, sha256, retry_count, created_at, updated_at
-FROM jobs WHERE id=?`, id)
-	return scanJob(row)
+	return scanJob(s.db.QueryRowContext(ctx, `SELECT `+jobColumns+` FROM jobs WHERE id=?`, id))
+}
+
+// queryJobs runs a job query whose WHERE/ORDER clause is `rest`.
+func (s *Store) queryJobs(ctx context.Context, rest string, args ...any) ([]*Job, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+jobColumns+` FROM jobs `+rest, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var jobs []*Job
+	for rows.Next() {
+		j, err := scanJob(rows)
+		if err != nil {
+			return nil, err
+		}
+		jobs = append(jobs, j)
+	}
+	return jobs, rows.Err()
 }
 
 func (s *Store) ListJobs(ctx context.Context) ([]*Job, error) {
-	rows, err := s.db.QueryContext(ctx, `
-SELECT id, type, source, output, format, concurrency, status,
-	bytes_done, bytes_total, resume_offset, info_hash, resolved_paths, error_msg, limit_rate, sha256, retry_count, created_at, updated_at
-FROM jobs ORDER BY created_at ASC`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var jobs []*Job
-	for rows.Next() {
-		j, err := scanJob(rows)
-		if err != nil {
-			return nil, err
-		}
-		jobs = append(jobs, j)
-	}
-	return jobs, rows.Err()
+	return s.queryJobs(ctx, `ORDER BY created_at ASC`)
 }
 
 // ListQueuedJobs returns only the jobs waiting on a free concurrency
-// slot, oldest first. The daemon consults this every time a job finishes
-// (see tryStartQueued), so it's deliberately not ListJobs-plus-a-filter:
-// with a backlog of hundreds of jobs, that scanned and decoded every row
-// — JSON-unmarshalling each one's resolved_paths — just to look at the
-// handful that were queued. The (status, created_at) index added in
-// migrate covers this exactly.
+// slot, oldest first. Deliberately not ListJobs-plus-a-filter: the daemon
+// runs this on every job completion, and with a backlog of hundreds that
+// would scan and JSON-decode every row to find the few that are queued.
+// The (status, created_at) index covers this exactly.
 func (s *Store) ListQueuedJobs(ctx context.Context) ([]*Job, error) {
-	rows, err := s.db.QueryContext(ctx, `
-SELECT id, type, source, output, format, concurrency, status,
-	bytes_done, bytes_total, resume_offset, info_hash, resolved_paths, error_msg, limit_rate, sha256, retry_count, created_at, updated_at
-FROM jobs WHERE status=? ORDER BY created_at ASC`, StatusQueued)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var jobs []*Job
-	for rows.Next() {
-		j, err := scanJob(rows)
-		if err != nil {
-			return nil, err
-		}
-		jobs = append(jobs, j)
-	}
-	return jobs, rows.Err()
+	return s.queryJobs(ctx, `WHERE status=? ORDER BY created_at ASC`, StatusQueued)
 }
 
 type scanner interface {

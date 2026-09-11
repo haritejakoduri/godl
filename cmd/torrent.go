@@ -1,15 +1,12 @@
 package cmd
 
 import (
-	"fmt"
 	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
 
 	"godl/internal/daemon"
-	"godl/internal/paths"
-	"godl/internal/store"
 )
 
 var torrentCmd = &cobra.Command{
@@ -24,18 +21,10 @@ var torrentCmd = &cobra.Command{
 			return err
 		}
 
-		if output == "" {
-			def, err := paths.DownloadsDir()
-			if err != nil {
-				return err
-			}
-			output = def
-		}
-		abs, err := paths.ResolveOutput(output)
+		output, err = outputPath(output, "")
 		if err != nil {
 			return err
 		}
-		output = abs
 
 		if !strings.HasPrefix(source, "magnet:") {
 			absSrc, err := filepath.Abs(source)
@@ -45,19 +34,7 @@ var torrentCmd = &cobra.Command{
 			source = absSrc
 		}
 
-		if err := daemon.EnsureRunning(); err != nil {
-			return err
-		}
-		resp, err := daemon.Call(daemon.Request{Cmd: daemon.CmdAddTorrent, Source: source, Output: output, LimitRate: limitRate})
-		if err != nil {
-			return err
-		}
-		if resp.Job.Status == store.StatusFailed {
-			return fmt.Errorf("job %s failed immediately: %s", resp.Job.ID, resp.Job.ErrorMsg)
-		}
-		fmt.Printf("Started job %s -> %s\n", resp.Job.ID, output)
-		fmt.Println(`Track it with "godl status" or "godl list".`)
-		return nil
+		return startJob(daemon.Request{Cmd: daemon.CmdAddTorrent, Source: source, Output: output, LimitRate: limitRate})
 	},
 }
 

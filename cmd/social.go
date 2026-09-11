@@ -11,7 +11,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"godl/internal/daemon"
-	"godl/internal/paths"
 	"godl/internal/social"
 	"godl/internal/ytdlp"
 )
@@ -108,18 +107,10 @@ ffmpeg, needed to merge separately-downloaded video+audio streams.`,
 			}
 			format = p.Format
 		}
-		if output == "" {
-			dir, err := paths.DownloadsDir()
-			if err != nil {
-				return err
-			}
-			output = dir
-		}
-		abs, err := paths.ResolveOutput(output)
+		output, err = outputPath(output, "")
 		if err != nil {
 			return err
 		}
-		output = abs
 		if err := os.MkdirAll(output, 0o755); err != nil {
 			return err
 		}
@@ -135,8 +126,7 @@ ffmpeg, needed to merge separately-downloaded video+audio streams.`,
 			if err != nil {
 				return err
 			}
-			fmt.Printf("Started job %s -> %s\n", resp.Job.ID, output)
-			fmt.Println(`Track it with "godl status" or "godl list".`)
+			announceJob(resp.Job.ID, output)
 			return nil
 		}
 

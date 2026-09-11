@@ -1,13 +1,9 @@
 package cmd
 
 import (
-	"fmt"
-
 	"github.com/spf13/cobra"
 
 	"godl/internal/daemon"
-	"godl/internal/paths"
-	"godl/internal/store"
 )
 
 var webdavCmd = &cobra.Command{
@@ -26,37 +22,16 @@ recursively, preserving its directory structure under -o.`,
 			return err
 		}
 
-		if output == "" {
-			def, err := paths.DownloadsDir()
-			if err != nil {
-				return err
-			}
-			output = def
-		}
-		abs, err := paths.ResolveOutput(output)
+		output, err = outputPath(output, "")
 		if err != nil {
 			return err
 		}
-		output = abs
-
-		if err := daemon.EnsureRunning(); err != nil {
-			return err
-		}
-		resp, err := daemon.Call(daemon.Request{
+		return startJob(daemon.Request{
 			Cmd:       daemon.CmdAddWebDAV,
 			Source:    daemon.JoinWebDAVSource(connName, remotePath),
 			Output:    output,
 			LimitRate: limitRate,
 		})
-		if err != nil {
-			return err
-		}
-		if resp.Job.Status == store.StatusFailed {
-			return fmt.Errorf("job %s failed immediately: %s", resp.Job.ID, resp.Job.ErrorMsg)
-		}
-		fmt.Printf("Started job %s -> %s\n", resp.Job.ID, output)
-		fmt.Println(`Track it with "godl status" or "godl list".`)
-		return nil
 	},
 }
 

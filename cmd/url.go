@@ -2,15 +2,12 @@ package cmd
 
 import (
 	"fmt"
-	"path/filepath"
 	"regexp"
 	"strings"
 
 	"github.com/spf13/cobra"
 
 	"godl/internal/daemon"
-	"godl/internal/paths"
-	"godl/internal/store"
 	"godl/internal/urlname"
 )
 
@@ -36,23 +33,11 @@ var urlCmd = &cobra.Command{
 			return err
 		}
 
-		if output == "" {
-			dir, err := paths.DownloadsDir()
-			if err != nil {
-				return err
-			}
-			output = filepath.Join(dir, urlname.FromURL(link))
-		}
-		abs, err := paths.ResolveOutput(output)
+		output, err = outputPath(output, urlname.FromURL(link))
 		if err != nil {
 			return err
 		}
-		output = abs
-
-		if err := daemon.EnsureRunning(); err != nil {
-			return err
-		}
-		resp, err := daemon.Call(daemon.Request{
+		return startJob(daemon.Request{
 			Cmd:         daemon.CmdAddURL,
 			Source:      link,
 			Output:      output,
@@ -60,15 +45,6 @@ var urlCmd = &cobra.Command{
 			LimitRate:   limitRate,
 			Sha256:      strings.ToLower(sha256Sum),
 		})
-		if err != nil {
-			return err
-		}
-		if resp.Job.Status == store.StatusFailed {
-			return fmt.Errorf("job %s failed immediately: %s", resp.Job.ID, resp.Job.ErrorMsg)
-		}
-		fmt.Printf("Started job %s -> %s\n", resp.Job.ID, output)
-		fmt.Println(`Track it with "godl status" or "godl list".`)
-		return nil
 	},
 }
 

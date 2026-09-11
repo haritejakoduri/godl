@@ -783,6 +783,66 @@ func (d *Daemon) startTorrent(j *store.Job) {
 	})
 }
 
+// ytdlpArgs builds the yt-dlp command line for j, minus the source URL:
+// progress reporting, format selection, rate limiting and ffmpeg
+// discovery. Progress and resolved-path lines come back over stdout for
+// lineWriter to parse — see godlProgressPrefix.
+func (d *Daemon) ytdlpArgs(ctx context.Context, j *store.Job) []string {
+	args := []string{
+		"--newline", "-P", j.Output,
+		// Machine-readable progress on its own line, so we can feed
+		// it into the same byte-count/speed tracking url and
+		// torrent jobs use instead of scraping the human-readable
+		// "[download] 54.1% of 180MiB at 12MiB/s" text. Filtered
+		// out of the human-visible log by godlProgressPrefix below.
+		"--progress-template", "download:" + godlProgressPrefix + "%(progress.status)s|%(progress.downloaded_bytes)s|%(progress.total_bytes)s|%(progress.total_bytes_estimate)s",
+		// Fires during/after postprocessing (merging separate
+		// video+audio, embedding thumbnails, renaming, ...) with the
+		// true final path — unlike the progress hook above, which
+		// for a merged download reports the intermediate video/
+		// audio files that get deleted right after merging. Lets
+		// "godl remove --purge" know exactly what to delete later.
+		// Also filtered out of the human-visible log.
+		//
+		// This used to be `--print "after_move:..."`, which is the
+		// more semantically-precise hook for "give me the final
+		// path once" — but combining --print with --progress-template
+		// silently kills the download-progress hook entirely (empirically
+		// confirmed against yt-dlp 2026.07.04: 0 progress lines with
+		// --print present vs. the expected 11 without it, regardless
+		// of flag order). A second --progress-template of type
+		// postprocess sidesteps the conflict by staying within the
+		// one feature, and empirically never reports the
+		// soon-to-be-deleted intermediate files either — it can fire
+		// more than once for the same final path (once per
+		// postprocessor stage), which AppendResolvedPath already
+		// no-ops on if the path repeats.
+		"--progress-template", "postprocess:" + godlFilePrefix + "%(info.filepath)s",
+	}
+	if j.Format != "" {
+		args = append(args, "-f", j.Format)
+	}
+	// yt-dlp has its own native rate limiter — no need to
+	// reimplement one for a subprocess we don't read the bytes of
+	// ourselves. Same clamp-not-share treatment as torrent's global
+	// cap: whichever of this job's own rate and the global cap is
+	// more restrictive is what yt-dlp actually gets told.
+	if effective := minPositiveRate(j.LimitRate, d.cachedGlobalRateLimitBps()); effective > 0 {
+		args = append(args, "--limit-rate", strconv.FormatInt(effective, 10))
+	}
+	// ffmpeg is needed to merge separately-downloaded video+audio
+	// streams (common with -f "bv*+ba" style selectors). Its
+	// absence isn't fatal to the job — yt-dlp just leaves the
+	// streams unmerged and warns — so a failure here is logged, not
+	// treated as a job error.
+	if ffmpegDir, err := ffmpeg.Ensure(ctx, func(msg string) { d.publishLog(j.ID, msg, false) }); err == nil {
+		args = append(args, "--ffmpeg-location", ffmpegDir)
+	} else {
+		d.publishLog(j.ID, "warning: "+err.Error()+" — separately downloaded video/audio streams won't be merged", false)
+	}
+	return args
+}
+
 func (d *Daemon) startSocial(j *store.Job) {
 	d.launch(j, func(ctx context.Context, rt *runtime) {
 		ytDlpPath, err := ytdlp.Ensure(ctx, func(msg string) { d.publishLog(j.ID, msg, false) })
@@ -792,59 +852,7 @@ func (d *Daemon) startSocial(j *store.Job) {
 			return
 		}
 
-		args := []string{
-			"--newline", "-P", j.Output,
-			// Machine-readable progress on its own line, so we can feed
-			// it into the same byte-count/speed tracking url and
-			// torrent jobs use instead of scraping the human-readable
-			// "[download] 54.1% of 180MiB at 12MiB/s" text. Filtered
-			// out of the human-visible log by godlProgressPrefix below.
-			"--progress-template", "download:" + godlProgressPrefix + "%(progress.status)s|%(progress.downloaded_bytes)s|%(progress.total_bytes)s|%(progress.total_bytes_estimate)s",
-			// Fires during/after postprocessing (merging separate
-			// video+audio, embedding thumbnails, renaming, ...) with the
-			// true final path — unlike the progress hook above, which
-			// for a merged download reports the intermediate video/
-			// audio files that get deleted right after merging. Lets
-			// "godl remove --purge" know exactly what to delete later.
-			// Also filtered out of the human-visible log.
-			//
-			// This used to be `--print "after_move:..."`, which is the
-			// more semantically-precise hook for "give me the final
-			// path once" — but combining --print with --progress-template
-			// silently kills the download-progress hook entirely (empirically
-			// confirmed against yt-dlp 2026.07.04: 0 progress lines with
-			// --print present vs. the expected 11 without it, regardless
-			// of flag order). A second --progress-template of type
-			// postprocess sidesteps the conflict by staying within the
-			// one feature, and empirically never reports the
-			// soon-to-be-deleted intermediate files either — it can fire
-			// more than once for the same final path (once per
-			// postprocessor stage), which AppendResolvedPath already
-			// no-ops on if the path repeats.
-			"--progress-template", "postprocess:" + godlFilePrefix + "%(info.filepath)s",
-		}
-		if j.Format != "" {
-			args = append(args, "-f", j.Format)
-		}
-		// yt-dlp has its own native rate limiter — no need to
-		// reimplement one for a subprocess we don't read the bytes of
-		// ourselves. Same clamp-not-share treatment as torrent's global
-		// cap: whichever of this job's own rate and the global cap is
-		// more restrictive is what yt-dlp actually gets told.
-		if effective := minPositiveRate(j.LimitRate, d.cachedGlobalRateLimitBps()); effective > 0 {
-			args = append(args, "--limit-rate", strconv.FormatInt(effective, 10))
-		}
-		// ffmpeg is needed to merge separately-downloaded video+audio
-		// streams (common with -f "bv*+ba" style selectors). Its
-		// absence isn't fatal to the job — yt-dlp just leaves the
-		// streams unmerged and warns — so a failure here is logged, not
-		// treated as a job error.
-		if ffmpegDir, err := ffmpeg.Ensure(ctx, func(msg string) { d.publishLog(j.ID, msg, false) }); err == nil {
-			args = append(args, "--ffmpeg-location", ffmpegDir)
-		} else {
-			d.publishLog(j.ID, "warning: "+err.Error()+" — separately downloaded video/audio streams won't be merged", false)
-		}
-		args = append(args, j.Source)
+		args := append(d.ytdlpArgs(ctx, j), j.Source)
 
 		cmd := exec.CommandContext(ctx, ytDlpPath, args...)
 		lw := &lineWriter{onLine: func(line string) {

@@ -11,6 +11,8 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"golang.org/x/time/rate"
+
 	"godl/internal/connections"
 	"godl/internal/ratelimit"
 	"godl/internal/store"
@@ -105,79 +107,20 @@ func (d *Daemon) startWebDAV(j *store.Job) {
 			total = -1
 		}
 
-		alreadyDone := map[string]bool{}
-		for _, p := range j.ResolvedPaths {
-			alreadyDone[p] = true
-		}
-
-		// cumulative is updated concurrently (each in-flight file's own
-		// progress callback adds its delta), so every read/write of it
-		// past this point goes through the atomic.
 		var cumulative atomic.Int64
-
-		// Skipping already-downloaded files is cheap (a stat, not a
-		// request) and doesn't need to compete for the download
-		// semaphore below, so it's done up front, sequentially.
-		pending := make([]webdav.Entry, 0, len(files))
-		for _, f := range files {
-			localPath := webdavLocalPath(j.Output, remotePath, f.Path, root.IsDir)
-			if alreadyDone[localPath] {
-				if fi, serr := os.Stat(localPath); serr == nil {
-					cumulative.Add(fi.Size())
-					continue
-				}
-				// Recorded as already downloaded, but the local file is
-				// gone (deleted by the user, or by something else,
-				// between pause and resume) — fall through and download
-				// it again rather than silently treating a missing file
-				// as done.
-			}
-			pending = append(pending, f)
-		}
+		pending := d.pendingWebDAVFiles(j, files, remotePath, root.IsDir, &cumulative)
 		d.reportProgress(j.ID, cumulative.Load(), total, nil)
 
-		// Download up to webdavDownloadConcurrency files at once —
-		// otherwise a folder of many files pays for each one's
-		// round-trip and transfer serially, the same problem godl url's
-		// chunked concurrency solves for a single large file.
-		sem := make(chan struct{}, webdavDownloadConcurrency)
-		var wg sync.WaitGroup
-		var mu sync.Mutex
-		var firstErr error
-
-		for _, f := range pending {
-			if ctx.Err() != nil {
-				break
-			}
-			wg.Add(1)
-			sem <- struct{}{}
-			go func() {
-				defer wg.Done()
-				defer func() { <-sem }()
-
-				localPath := webdavLocalPath(j.Output, remotePath, f.Path, root.IsDir)
-				var lastDone int64
-				written, derr := client.Download(ctx, f.Path, localPath, limiter, globalLimiter, func(done, _ int64) {
-					newCum := cumulative.Add(done - lastDone)
-					lastDone = done
-					d.reportProgress(j.ID, newCum, total, nil)
-				})
-				if derr != nil {
-					mu.Lock()
-					if firstErr == nil {
-						firstErr = fmt.Errorf("downloading %s: %w", f.Path, derr)
-						rt.cancel() // stop this job's other in-flight downloads too
-					}
-					mu.Unlock()
-					return
-				}
-				if delta := written - lastDone; delta != 0 {
-					cumulative.Add(delta)
-				}
-				d.st.AppendResolvedPath(context.Background(), j.ID, localPath)
-			}()
-		}
-		wg.Wait()
+		firstErr := d.downloadWebDAVFiles(ctx, rt, j, webdavDownload{
+			client:        client,
+			files:         pending,
+			remotePath:    remotePath,
+			rootIsDir:     root.IsDir,
+			total:         total,
+			limiter:       limiter,
+			globalLimiter: globalLimiter,
+			cumulative:    &cumulative,
+		})
 
 		final := cumulative.Load()
 		switch {
@@ -191,6 +134,91 @@ func (d *Daemon) startWebDAV(j *store.Job) {
 			d.finishJob(j.ID, final, true, nil)
 		}
 	})
+}
+
+// pendingWebDAVFiles drops the files a previous run already finished,
+// adding their sizes to cumulative so progress doesn't restart at zero.
+// A file recorded as done but missing from disk (deleted between pause
+// and resume) is downloaded again rather than silently counted.
+//
+// Done up front and sequentially: it's a stat per file, not a request,
+// so it shouldn't compete for a download slot.
+func (d *Daemon) pendingWebDAVFiles(j *store.Job, files []webdav.Entry, remotePath string, rootIsDir bool, cumulative *atomic.Int64) []webdav.Entry {
+	alreadyDone := map[string]bool{}
+	for _, p := range j.ResolvedPaths {
+		alreadyDone[p] = true
+	}
+	pending := make([]webdav.Entry, 0, len(files))
+	for _, f := range files {
+		localPath := webdavLocalPath(j.Output, remotePath, f.Path, rootIsDir)
+		if alreadyDone[localPath] {
+			if fi, err := os.Stat(localPath); err == nil {
+				cumulative.Add(fi.Size())
+				continue
+			}
+		}
+		pending = append(pending, f)
+	}
+	return pending
+}
+
+// webdavDownload is downloadWebDAVFiles' parameter list, which is long
+// enough that positional arguments stop being readable.
+type webdavDownload struct {
+	client        *webdav.Client
+	files         []webdav.Entry
+	remotePath    string
+	rootIsDir     bool
+	total         int64
+	limiter       *rate.Limiter
+	globalLimiter *rate.Limiter
+	cumulative    *atomic.Int64
+}
+
+// downloadWebDAVFiles fetches up to webdavDownloadConcurrency files at
+// once — a folder of many files would otherwise pay for each one's
+// round-trip serially — and returns the first error, if any. The first
+// failure cancels the job so its siblings stop too.
+func (d *Daemon) downloadWebDAVFiles(ctx context.Context, rt *runtime, j *store.Job, dl webdavDownload) error {
+	sem := make(chan struct{}, webdavDownloadConcurrency)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var firstErr error
+
+	for _, f := range dl.files {
+		if ctx.Err() != nil {
+			break
+		}
+		wg.Add(1)
+		sem <- struct{}{}
+		go func() {
+			defer wg.Done()
+			defer func() { <-sem }()
+
+			localPath := webdavLocalPath(j.Output, dl.remotePath, f.Path, dl.rootIsDir)
+			var lastDone int64
+			written, derr := dl.client.Download(ctx, f.Path, localPath, dl.limiter, dl.globalLimiter, func(done, _ int64) {
+				newCum := dl.cumulative.Add(done - lastDone)
+				lastDone = done
+				d.reportProgress(j.ID, newCum, dl.total, nil)
+			})
+			if derr != nil {
+				mu.Lock()
+				if firstErr == nil {
+					firstErr = fmt.Errorf("downloading %s: %w", f.Path, derr)
+					rt.cancel() // stop this job's other in-flight downloads too
+				}
+				mu.Unlock()
+				return
+			}
+			if delta := written - lastDone; delta != 0 {
+				dl.cumulative.Add(delta)
+			}
+			d.st.AppendResolvedPath(context.Background(), j.ID, localPath)
+		}()
+	}
+	wg.Wait()
+	return firstErr
 }
 
 // webdavLocalPath maps a remote file (found under root, itself relative

@@ -184,74 +184,89 @@ func (m statusModel) openWebDAVDir(target string) tea.Cmd {
 }
 
 func (m statusModel) updateWebDAVBrowse(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch wb := m.webdavBrowse; {
+	case wb.step == webdavPickConn:
+		return m.webdavPickConnKey(msg)
+	case wb.searching:
+		return m.webdavSearchKey(msg)
+	default:
+		return m.webdavBrowsingKey(msg)
+	}
+}
+
+func (m statusModel) webdavPickConnKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	wb := m.webdavBrowse
-
-	if wb.step == webdavPickConn {
-		switch msg.String() {
-		case "up", "k":
-			if wb.connIndex > 0 {
-				wb.connIndex--
-			}
-		case "down", "j":
-			if wb.connIndex < len(wb.conns)-1 {
-				wb.connIndex++
-			}
-		case "enter":
-			conn := wb.conns[wb.connIndex]
-			client, err := webdav.New(conn.URL, conn.Username, conn.Password, conn.Insecure)
-			if err != nil {
-				m.webdavBrowse = nil
-				m.statusMsg = "error: " + err.Error()
-				return m, nil
-			}
-			outputDir, err := paths.DownloadsDir()
-			if err != nil {
-				m.webdavBrowse = nil
-				m.statusMsg = "error: " + err.Error()
-				return m, nil
-			}
-			wb.connName = conn.Name
-			wb.client = client
-			wb.outputDir = outputDir
-			wb.selected = map[string]bool{}
-			wb.cache = map[string][]webdav.Entry{}
-			wb.step = webdavBrowsing
-			wb.loading = true
-			return m, listWebDAVDir(client, "/")
-		case "esc":
+	switch msg.String() {
+	case "up", "k":
+		if wb.connIndex > 0 {
+			wb.connIndex--
+		}
+	case "down", "j":
+		if wb.connIndex < len(wb.conns)-1 {
+			wb.connIndex++
+		}
+	case "enter":
+		conn := wb.conns[wb.connIndex]
+		client, err := webdav.New(conn.URL, conn.Username, conn.Password, conn.Insecure)
+		if err != nil {
 			m.webdavBrowse = nil
-		}
-		return m, nil
-	}
-
-	// webdavBrowsing, search prompt focused: keystrokes edit the query
-	// live rather than driving navigation/selection.
-	if wb.searching {
-		switch msg.String() {
-		case "esc":
-			// Cancel: back to browsing the unfiltered listing.
-			wb.searching = false
-			wb.query = ""
-			wb.cursor = 0
+			m.statusMsg = "error: " + err.Error()
 			return m, nil
-		case "enter":
-			// Confirm: stop capturing keystrokes but keep the filter
-			// applied, so ↑/↓/space/d immediately act on the narrowed list.
-			wb.searching = false
-			wb.cursor = 0
-			return m, nil
-		default:
-			var cmd tea.Cmd
-			wb.searchInput, cmd = wb.searchInput.Update(msg)
-			wb.query = wb.searchInput.Value()
-			wb.cursor = 0
-			return m, cmd
 		}
+		outputDir, err := paths.DownloadsDir()
+		if err != nil {
+			m.webdavBrowse = nil
+			m.statusMsg = "error: " + err.Error()
+			return m, nil
+		}
+		wb.connName = conn.Name
+		wb.client = client
+		wb.outputDir = outputDir
+		wb.selected = map[string]bool{}
+		wb.cache = map[string][]webdav.Entry{}
+		wb.step = webdavBrowsing
+		wb.loading = true
+		return m, listWebDAVDir(client, "/")
+	case "esc":
+		m.webdavBrowse = nil
 	}
+	return m, nil
+}
 
+// webdavSearchKey handles keystrokes while the search prompt is focused:
+// they edit the query live rather than driving navigation/selection.
+func (m statusModel) webdavSearchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	wb := m.webdavBrowse
+	wb.cursor = 0
+	switch msg.String() {
+	case "esc":
+		// Cancel: back to browsing the unfiltered listing.
+		wb.searching = false
+		wb.query = ""
+	case "enter":
+		// Confirm: stop capturing keystrokes but keep the filter applied,
+		// so up/down/space/d immediately act on the narrowed list.
+		wb.searching = false
+	default:
+		var cmd tea.Cmd
+		wb.searchInput, cmd = wb.searchInput.Update(msg)
+		wb.query = wb.searchInput.Value()
+		return m, cmd
+	}
+	return m, nil
+}
+
+func (m statusModel) webdavBrowsingKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	wb := m.webdavBrowse
 	visible := wb.visibleEntries()
+	// Entry under the cursor, if the listing is settled and non-empty.
+	current := func() (webdav.Entry, bool) {
+		if wb.loading || wb.cursor >= len(visible) {
+			return webdav.Entry{}, false
+		}
+		return visible[wb.cursor], true
+	}
 
-	// webdavBrowsing
 	switch msg.String() {
 	case "esc":
 		m.webdavBrowse = nil
@@ -281,18 +296,15 @@ func (m statusModel) updateWebDAVBrowse(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, m.openWebDAVDir(path.Dir(strings.TrimSuffix(wb.path, "/")))
 		}
 	case "enter":
-		if !wb.loading && wb.cursor < len(visible) {
-			if e := visible[wb.cursor]; e.IsDir {
-				return m, m.openWebDAVDir(e.Path)
-			}
+		if e, ok := current(); ok && e.IsDir {
+			return m, m.openWebDAVDir(e.Path)
 		}
 	case " ":
-		if !wb.loading && wb.cursor < len(visible) {
-			p := visible[wb.cursor].Path
-			if wb.selected[p] {
-				delete(wb.selected, p)
+		if e, ok := current(); ok {
+			if wb.selected[e.Path] {
+				delete(wb.selected, e.Path)
 			} else {
-				wb.selected[p] = true
+				wb.selected[e.Path] = true
 			}
 		}
 	case "d":
@@ -300,35 +312,36 @@ func (m statusModel) updateWebDAVBrowse(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		for p := range wb.selected {
 			targets = append(targets, p)
 		}
-		if len(targets) == 0 && !wb.loading && wb.cursor < len(visible) {
-			targets = []string{visible[wb.cursor].Path}
+		if len(targets) == 0 {
+			if e, ok := current(); ok {
+				targets = []string{e.Path}
+			}
 		}
 		if len(targets) == 0 {
 			return m, nil
 		}
-		connName, outputDir := wb.connName, wb.outputDir
-		m.webdavBrowse = nil
-		m.statusMsg = "starting..."
-		return m, startWebDAVDownloads(connName, outputDir, targets)
+		return m.startBrowseDownloads(targets)
 	case "D":
 		// Downloads the folder currently being browsed, in full — not
 		// whatever's under the cursor or individually checked with space.
-		// Without this, navigating into a folder to look around and then
-		// pressing "d" only grabs the single entry the cursor happens to
-		// be on (the first one, right after entering) rather than
-		// everything inside, which reads as "it only downloaded the first
-		// item" even though the daemon's folder-job download is and
-		// always was fully recursive — the gap was that there was no way
-		// to target the folder you're standing in, only its children.
+		// Without this there's no way to target the folder you're standing
+		// in, only its children, so "d" right after entering a folder grabs
+		// just the first entry and reads as "it only downloaded one item".
 		if wb.loading {
 			return m, nil
 		}
-		connName, outputDir, target := wb.connName, wb.outputDir, wb.path
-		m.webdavBrowse = nil
-		m.statusMsg = "starting..."
-		return m, startWebDAVDownloads(connName, outputDir, []string{target})
+		return m.startBrowseDownloads([]string{wb.path})
 	}
 	return m, nil
+}
+
+// startBrowseDownloads closes the browser and queues targets for download.
+func (m statusModel) startBrowseDownloads(targets []string) (tea.Model, tea.Cmd) {
+	wb := m.webdavBrowse
+	connName, outputDir := wb.connName, wb.outputDir
+	m.webdavBrowse = nil
+	m.statusMsg = "starting..."
+	return m, startWebDAVDownloads(connName, outputDir, targets)
 }
 
 // webdavBrowseVisibleFallback is used before the first WindowSizeMsg

@@ -468,6 +468,51 @@ func (m statusModel) Init() tea.Cmd {
 	return waitForSnapshot(m.snapCh, m.errCh)
 }
 
+// applyJobs installs a fresh snapshot, keeping the cursor on the job it
+// was already pointing at. A newly started job appears at the very top,
+// ahead of everything already listed, so a cursor kept by row index
+// would silently follow the new arrival instead of the job being
+// watched. The row is resolved before rebuildRows (not after, via
+// m.table.Cursor()) so rebuildRows skips status-coloring the right row
+// the first time it renders post-reorder — see its own doc comment.
+func (m statusModel) applyJobs(msg jobsMsg) statusModel {
+	prevID := m.cursorJobID()
+	m.jobs = newestFirst(msg)
+	m.err = nil
+	m.pruneSelected()
+
+	cursor := 0
+	if prevID != "" {
+		for i, j := range m.jobs {
+			if j.ID == prevID {
+				cursor = i
+				break
+			}
+		}
+	}
+	m.rebuildRows(cursor)
+	m.table.SetCursor(cursor)
+	return m
+}
+
+// settingsResult applies a reply from the daemon to the Settings tab.
+// saved marks the "saved" confirmation, which only a save earns.
+func (m statusModel) settingsResult(s store.Settings, err error, saved bool) (tea.Model, tea.Cmd) {
+	if m.settings == nil {
+		return m, nil // the tab was closed before this reply arrived
+	}
+	m.settings.loading = false
+	m.settings.saved = false
+	if err != nil {
+		m.settings.err = err.Error()
+		return m, nil
+	}
+	m.settings.current = s
+	m.settings.err = ""
+	m.settings.saved = saved
+	return m, nil
+}
+
 func (m statusModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -481,30 +526,7 @@ func (m statusModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case jobsMsg:
-		prevID := m.cursorJobID()
-		m.jobs = newestFirst(msg)
-		m.err = nil
-		m.pruneSelected()
-		// A newly started job appears at the very top, ahead of
-		// everything already in the list — without this, the cursor
-		// would silently point at whatever new job just landed on the
-		// same row index instead of staying on the job actually being
-		// looked at. Found before rebuildRows (not after, via
-		// m.table.Cursor()) so rebuildRows skips status-coloring the
-		// right row the very first time it renders post-reorder — see
-		// its own doc comment for why that skip exists at all.
-		newCursor := 0
-		if prevID != "" {
-			for i, j := range m.jobs {
-				if j.ID == prevID {
-					newCursor = i
-					break
-				}
-			}
-		}
-		m.rebuildRows(newCursor)
-		m.table.SetCursor(newCursor)
-		return m, waitForSnapshot(m.snapCh, m.errCh)
+		return m.applyJobs(msg), waitForSnapshot(m.snapCh, m.errCh)
 
 	case subErrMsg:
 		m.err = msg.err
@@ -546,20 +568,16 @@ func (m statusModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case webdavListedMsg:
-		if m.webdavBrowse != nil {
-			m.webdavBrowse.loading = false
-			m.webdavBrowse.err = ""
-			m.webdavBrowse.path = msg.path
-			m.webdavBrowse.entries = msg.entries
-			m.webdavBrowse.cursor = 0
-			m.webdavBrowse.cache[msg.path] = msg.entries
+		if wb := m.webdavBrowse; wb != nil {
+			wb.loading, wb.err = false, ""
+			wb.path, wb.entries, wb.cursor = msg.path, msg.entries, 0
+			wb.cache[msg.path] = msg.entries
 		}
 		return m, nil
 
 	case webdavListErrMsg:
-		if m.webdavBrowse != nil {
-			m.webdavBrowse.loading = false
-			m.webdavBrowse.err = msg.err.Error()
+		if wb := m.webdavBrowse; wb != nil {
+			wb.loading, wb.err = false, msg.err.Error()
 		}
 		return m, nil
 
@@ -575,31 +593,10 @@ func (m statusModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case settingsLoadedMsg:
-		if m.settings == nil {
-			return m, nil // tab was closed before this response arrived
-		}
-		m.settings.loading = false
-		if msg.err != nil {
-			m.settings.err = msg.err.Error()
-			return m, nil
-		}
-		m.settings.current = msg.settings
-		m.settings.err = ""
-		return m, nil
+		return m.settingsResult(msg.settings, msg.err, false)
 
 	case settingsSavedMsg:
-		if m.settings == nil {
-			return m, nil
-		}
-		if msg.err != nil {
-			m.settings.err = msg.err.Error()
-			m.settings.saved = false
-			return m, nil
-		}
-		m.settings.current = msg.settings
-		m.settings.err = ""
-		m.settings.saved = true
-		return m, nil
+		return m.settingsResult(msg.settings, msg.err, true)
 
 	case tea.KeyMsg:
 		return m.handleKey(msg)
@@ -624,17 +621,7 @@ func (m statusModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.updateSettings(msg)
 	}
 	if m.confirmRemove != nil {
-		pending := *m.confirmRemove
-		m.confirmRemove = nil
-		switch msg.String() {
-		case "y", "Y":
-			m.statusMsg = ""
-			m.selected = map[string]bool{}
-			return m, doBulkRemove(pending.jobIDs, pending.purge)
-		default:
-			m.statusMsg = "remove canceled"
-			return m, nil
-		}
+		return m.resolveRemove(msg)
 	}
 	switch msg.String() {
 	case "q", "ctrl+c":
@@ -649,30 +636,19 @@ func (m statusModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.newJob = &newJobState{step: newJobPickType, input: ti}
 		return m, nil
 	case "w":
-		conns, err := connections.List()
-		if err != nil {
-			m.statusMsg = "error: " + err.Error()
-			return m, nil
-		}
-		if len(conns) == 0 {
-			m.statusMsg = `No saved connections. Run "godl connection add <name> --url ..." first.`
-			return m, nil
-		}
-		m.webdavBrowse = &webdavBrowseState{step: webdavPickConn, conns: conns}
-		return m, nil
+		return m.openWebDAVBrowser()
 	case "s":
 		m.settings = &settingsState{loading: true}
 		return m, loadSettings()
 	case " ":
-		idx := m.table.Cursor()
-		if idx < 0 || idx >= len(m.jobs) {
+		j, idx, ok := m.cursorJob()
+		if !ok {
 			return m, nil
 		}
-		id := m.jobs[idx].ID
-		if m.selected[id] {
-			delete(m.selected, id)
+		if m.selected[j.ID] {
+			delete(m.selected, j.ID)
 		} else {
-			m.selected[id] = true
+			m.selected[j.ID] = true
 		}
 		m.rebuildRows(idx)
 		return m, nil
@@ -691,29 +667,12 @@ func (m statusModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.rebuildRows(m.table.Cursor())
 		return m, doBulkJobAction(apiCmd, ids)
 	case "d", "D":
-		ids := m.actionTargets()
-		if len(ids) == 0 {
-			return m, nil
-		}
-		purge := msg.String() == "D"
-		m.confirmRemove = &pendingRemove{jobIDs: ids, purge: purge}
-		switch {
-		case len(ids) == 1 && purge:
-			m.statusMsg = fmt.Sprintf("Remove %s AND DELETE its downloaded file(s)? [y/N]", ids[0])
-		case len(ids) == 1:
-			m.statusMsg = fmt.Sprintf("Remove %s from the list (keeps files)? [y/N]", ids[0])
-		case purge:
-			m.statusMsg = fmt.Sprintf("Remove %d jobs AND DELETE their downloaded file(s)? [y/N]", len(ids))
-		default:
-			m.statusMsg = fmt.Sprintf("Remove %d jobs from the list (keeps files)? [y/N]", len(ids))
-		}
-		return m, nil
+		return m.promptRemove(msg.String() == "D")
 	case "o":
-		idx := m.table.Cursor()
-		if idx < 0 || idx >= len(m.jobs) {
+		j, _, ok := m.cursorJob()
+		if !ok {
 			return m, nil
 		}
-		j := m.jobs[idx]
 		m.statusMsg = "starting mpv..."
 		return m, doPlay(j)
 	}
@@ -721,6 +680,56 @@ func (m statusModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.table, cmd = m.table.Update(msg)
 	return m, cmd
+}
+
+// resolveRemove answers the pending remove confirmation: anything but
+// y/Y cancels it.
+func (m statusModel) resolveRemove(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	pending := *m.confirmRemove
+	m.confirmRemove = nil
+	switch msg.String() {
+	case "y", "Y":
+		m.statusMsg = ""
+		m.selected = map[string]bool{}
+		return m, doBulkRemove(pending.jobIDs, pending.purge)
+	default:
+		m.statusMsg = "remove canceled"
+		return m, nil
+	}
+}
+
+// promptRemove arms the y/N confirmation for the current action targets.
+// purge additionally deletes the downloaded files.
+func (m statusModel) promptRemove(purge bool) (tea.Model, tea.Cmd) {
+	ids := m.actionTargets()
+	if len(ids) == 0 {
+		return m, nil
+	}
+	m.confirmRemove = &pendingRemove{jobIDs: ids, purge: purge}
+
+	what := fmt.Sprintf("%d jobs", len(ids))
+	if len(ids) == 1 {
+		what = ids[0]
+	}
+	if purge {
+		m.statusMsg = fmt.Sprintf("Remove %s AND DELETE the downloaded file(s)? [y/N]", what)
+	} else {
+		m.statusMsg = fmt.Sprintf("Remove %s from the list (keeps files)? [y/N]", what)
+	}
+	return m, nil
+}
+
+func (m statusModel) openWebDAVBrowser() (tea.Model, tea.Cmd) {
+	conns, err := connections.List()
+	switch {
+	case err != nil:
+		m.statusMsg = "error: " + err.Error()
+	case len(conns) == 0:
+		m.statusMsg = `No saved connections. Run "godl connection add <name> --url ..." first.`
+	default:
+		m.webdavBrowse = &webdavBrowseState{step: webdavPickConn, conns: conns}
+	}
+	return m, nil
 }
 
 func (m statusModel) updateNewJob(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -823,12 +832,22 @@ func newestFirst(jobs []*daemon.JobView) []*daemon.JobView {
 // cursorJobID returns the ID of the job currently under the cursor, or
 // "" if there isn't one — used to re-find and re-focus the same job
 // after a snapshot reorders the list (see the jobsMsg handler).
-func (m statusModel) cursorJobID() string {
-	idx := m.table.Cursor()
+// cursorJob returns the job the table cursor is on, and its row index.
+// ok is false when the table is empty or the cursor is out of range.
+func (m statusModel) cursorJob() (job *daemon.JobView, idx int, ok bool) {
+	idx = m.table.Cursor()
 	if idx < 0 || idx >= len(m.jobs) {
+		return nil, -1, false
+	}
+	return m.jobs[idx], idx, true
+}
+
+func (m statusModel) cursorJobID() string {
+	j, _, ok := m.cursorJob()
+	if !ok {
 		return ""
 	}
-	return m.jobs[idx].ID
+	return j.ID
 }
 
 // pruneSelected drops any selected job ID that's no longer in the

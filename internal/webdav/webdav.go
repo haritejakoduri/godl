@@ -511,6 +511,12 @@ func (w *idleWatchdog) leaveLimiter() { w.inLimiter.Store(false); w.sawData() }
 func (w *idleWatchdog) fired() bool   { return w.tripped.Load() }
 func (w *idleWatchdog) stop()         { close(w.done) }
 
+// stallErr describes a transfer the watchdog killed, for the two places
+// that have to tell it apart from an ordinary read error.
+func (w *idleWatchdog) stallErr(remotePath string) error {
+	return fmt.Errorf("downloading %s: no data received for %s, giving up", remotePath, w.timeout)
+}
+
 // Download fetches remotePath to localPath, resuming via Range if it's
 // already partially present, and returns the total bytes now on disk.
 // Both limiters are waited on, and both are shared instances — see
@@ -557,74 +563,109 @@ func (c *Client) Download(ctx context.Context, remotePath, localPath string, lim
 	})
 	if err != nil {
 		if wd.fired() {
-			return start, fmt.Errorf("downloading %s: no data received for %s, giving up", remotePath, wd.timeout)
+			return start, wd.stallErr(remotePath)
 		}
 		return start, err
 	}
 	defer resp.Body.Close()
 	wd.sawData() // headers arrived; give the body its own full window rather than sharing the one used to wait for them
 
-	switch resp.StatusCode {
-	case http.StatusOK:
-		// Either we didn't ask for a range, or the server ignored it —
-		// either way it's sending the whole file, so start over.
-		start = 0
-		if _, err := f.Seek(0, io.SeekStart); err != nil {
-			return 0, err
-		}
-		if err := f.Truncate(0); err != nil {
-			return 0, err
-		}
-	case http.StatusPartialContent:
-		if _, err := f.Seek(start, io.SeekStart); err != nil {
-			return start, err
-		}
-	default:
-		return start, fmt.Errorf("unexpected status downloading %s: %s", remotePath, resp.Status)
+	start, err = seekForStatus(f, resp, start, remotePath)
+	if err != nil {
+		return start, err
 	}
 
 	total := int64(-1)
 	if resp.ContentLength >= 0 {
 		total = start + resp.ContentLength
 	}
+	return bodyCopy{
+		dst:        f,
+		src:        resp.Body,
+		written:    start,
+		total:      total,
+		limiter:    limiter,
+		global:     globalLimiter,
+		wd:         wd,
+		progress:   progress,
+		remotePath: remotePath,
+	}.run(ctx)
+}
 
+// seekForStatus positions f for the body about to arrive and reports the
+// offset that body starts at: a 206 continues from start, while a 200
+// means the server is sending the whole file (either no range was asked
+// for, or it was ignored), so the file is truncated and restarted.
+func seekForStatus(f *os.File, resp *http.Response, start int64, remotePath string) (int64, error) {
+	switch resp.StatusCode {
+	case http.StatusOK:
+		if _, err := f.Seek(0, io.SeekStart); err != nil {
+			return 0, err
+		}
+		return 0, f.Truncate(0)
+	case http.StatusPartialContent:
+		_, err := f.Seek(start, io.SeekStart)
+		return start, err
+	default:
+		return start, fmt.Errorf("unexpected status downloading %s: %s", remotePath, resp.Status)
+	}
+}
+
+// bodyCopy streams a response body to disk under both rate limiters and
+// the idle watchdog, reporting progress as it goes.
+type bodyCopy struct {
+	dst        *os.File
+	src        io.Reader
+	written    int64 // bytes already on disk, i.e. where dst is positioned
+	total      int64 // -1 when the server didn't say
+	limiter    *rate.Limiter
+	global     *rate.Limiter
+	wd         *idleWatchdog
+	progress   func(done, total int64)
+	remotePath string
+}
+
+// run returns the total bytes on disk once the body is exhausted.
+func (cp bodyCopy) run(ctx context.Context) (int64, error) {
 	// 256KiB, not a smaller default: fewer Read/Write syscalls per MB
 	// transferred (see the matching constant in internal/downloader).
 	buf := make([]byte, 256*1024)
-	written := start
+	written := cp.written
 	lastReport := time.Now()
+	report := func() {
+		if cp.progress != nil {
+			cp.progress(written, cp.total)
+		}
+	}
 	for {
-		n, rerr := resp.Body.Read(buf)
+		n, rerr := cp.src.Read(buf)
 		if n > 0 {
-			wd.sawData()
-			wd.enterLimiter()
-			werr := ratelimit.WaitAll(ctx, n, limiter, globalLimiter)
-			wd.leaveLimiter()
+			cp.wd.sawData()
+			cp.wd.enterLimiter()
+			werr := ratelimit.WaitAll(ctx, n, cp.limiter, cp.global)
+			cp.wd.leaveLimiter()
 			if werr != nil {
 				return written, werr
 			}
-			if _, werr := f.Write(buf[:n]); werr != nil {
+			if _, werr := cp.dst.Write(buf[:n]); werr != nil {
 				return written, werr
 			}
 			written += int64(n)
-			if progress != nil && time.Since(lastReport) > 200*time.Millisecond {
-				progress(written, total)
+			if time.Since(lastReport) > 200*time.Millisecond {
+				report()
 				lastReport = time.Now()
 			}
 		}
-		if rerr != nil {
-			if rerr == io.EOF {
-				if progress != nil {
-					progress(written, total)
-				}
-				return written, nil
-			}
-			if wd.fired() {
-				return written, fmt.Errorf("downloading %s: no data received for %s, giving up", remotePath, wd.timeout)
-			}
-			if ctx.Err() != nil {
-				return written, ctx.Err()
-			}
+		switch {
+		case rerr == nil:
+		case rerr == io.EOF:
+			report()
+			return written, nil
+		case cp.wd.fired():
+			return written, cp.wd.stallErr(cp.remotePath)
+		case ctx.Err() != nil:
+			return written, ctx.Err()
+		default:
 			return written, rerr
 		}
 	}

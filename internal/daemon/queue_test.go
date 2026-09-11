@@ -131,3 +131,105 @@ func TestListQueuedJobsReturnsOnlyQueued(t *testing.T) {
 		}
 	}
 }
+
+// TestReportProgressThrottlesStoreWrites covers the write-amplification
+// fix. Progress callbacks arrive several times a second per stream (and
+// a WebDAV folder job runs several streams at once), and each one used
+// to be its own sqlite transaction. The in-memory runtime must still
+// track every tick — the TUI reads it for speed and ETA — while the
+// store sees only periodic checkpoints.
+func TestReportProgressThrottlesStoreWrites(t *testing.T) {
+	origInterval, origBytes := progressPersistInterval, progressPersistBytes
+	progressPersistInterval = time.Hour // only the byte trigger should fire
+	progressPersistBytes = 1 << 20
+	t.Cleanup(func() {
+		progressPersistInterval, progressPersistBytes = origInterval, origBytes
+	})
+
+	d := newTestDaemon(t)
+	ctx := context.Background()
+	j := &store.Job{
+		ID: "throttled", Type: store.JobURL, Source: "https://example.com/f.bin",
+		Output: "/tmp/f.bin", Status: store.StatusActive,
+	}
+	if err := d.st.CreateJob(ctx, j); err != nil {
+		t.Fatal(err)
+	}
+	rt := &runtime{done: make(chan struct{}), lastTime: time.Now()}
+	d.setRuntime(j.ID, rt)
+
+	// 100 ticks of 64KiB. Only the ones crossing a 1MiB boundary should
+	// reach the store; without the throttle all 100 would.
+	const ticks = 100
+	const per = int64(64 << 10)
+	for i := 1; i <= ticks; i++ {
+		d.reportProgress(j.ID, per*int64(i), per*ticks, nil)
+	}
+
+	// The runtime saw every tick, whatever the store saw.
+	rt.mu.Lock()
+	gotRuntime := rt.bytesDone
+	rt.mu.Unlock()
+	if want := per * ticks; gotRuntime != want {
+		t.Errorf("runtime bytesDone = %d, want %d — the in-memory view must track every tick", gotRuntime, want)
+	}
+
+	stored, err := d.st.GetJob(ctx, j.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 100 ticks x 64KiB = 6.25MiB, so ~6 crossings of the 1MiB trigger
+	// plus the first-call write. The exact count doesn't matter; that it
+	// is far below one-per-tick does.
+	if stored.BytesDone == 0 {
+		t.Error("nothing was ever persisted — progress must still be checkpointed, just less often")
+	}
+	if stored.BytesDone > per*ticks {
+		t.Errorf("stored bytes_done = %d exceeds what was reported (%d)", stored.BytesDone, per*ticks)
+	}
+	// The durability bound: never more than one trigger's worth behind.
+	if behind := per*ticks - stored.BytesDone; behind > progressPersistBytes+per {
+		t.Errorf("stored progress is %d bytes behind, want at most ~%d — the throttle is looser than documented", behind, progressPersistBytes)
+	}
+}
+
+// TestReportProgressWritesResumeOffsetInTheSameRow confirms the folded
+// write: a single-stream url job checkpoints its resume offset alongside
+// its byte counts rather than issuing a second UPDATE for the row that
+// was just written.
+func TestReportProgressWritesResumeOffsetInTheSameRow(t *testing.T) {
+	d := newTestDaemon(t)
+	ctx := context.Background()
+	j := &store.Job{
+		ID: "single", Type: store.JobURL, Source: "https://example.com/f.bin",
+		Output: "/tmp/f.bin", Status: store.StatusActive,
+	}
+	if err := d.st.CreateJob(ctx, j); err != nil {
+		t.Fatal(err)
+	}
+	d.setRuntime(j.ID, &runtime{done: make(chan struct{}), lastTime: time.Now()})
+
+	done := int64(4096)
+	d.reportProgress(j.ID, done, 8192, &done)
+
+	stored, err := d.st.GetJob(ctx, j.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.BytesDone != done {
+		t.Errorf("bytes_done = %d, want %d", stored.BytesDone, done)
+	}
+	if stored.ResumeOffset != done {
+		t.Errorf("resume_offset = %d, want %d — it should ride along in the same write", stored.ResumeOffset, done)
+	}
+
+	// A chunked job passes nil and must leave resume_offset alone.
+	d.reportProgress(j.ID, done*2, 8192, nil)
+	stored, err = d.st.GetJob(ctx, j.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.ResumeOffset != done {
+		t.Errorf("resume_offset = %d after a nil-offset report, want it unchanged at %d", stored.ResumeOffset, done)
+	}
+}

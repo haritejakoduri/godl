@@ -33,7 +33,7 @@ $GO_WINRES simply --arch amd64 --out godl_rsrc --manifest cli \
 	--file-description "godl - terminal download manager" \
 	--product-name "godl" --original-filename "godl.exe" \
 	--copyright "MIT License" >/dev/null
-CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o installer/payload/godl.exe .
+CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o installer/payload/godl.exe .
 rm -f ./godl_rsrc_windows_amd64.syso
 
 OUT="dist/godl-setup-${VERSION}.exe"
@@ -47,7 +47,7 @@ mkdir -p dist
 		--product-name "godl" --original-filename "godl-setup.exe" \
 		--copyright "MIT License" >/dev/null
 )
-CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o "$OUT" ./installer
+CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o "$OUT" ./installer
 
 echo
 echo "Built $OUT ($(du -h "$OUT" | cut -f1))"

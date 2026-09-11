@@ -18,8 +18,12 @@ import (
 	"time"
 
 	"godl/internal/ghrelease"
+	"godl/internal/httpx"
 	"godl/internal/paths"
 )
+
+// httpClient fetches the yt-dlp binary and its published checksum.
+var httpClient = httpx.Client(httpx.BinaryFetchTimeout)
 
 const releaseBase = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/"
 const releaseAPI = "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest"
@@ -182,7 +186,7 @@ func download(ctx context.Context, url, dest, wantHex string) error {
 	if err != nil {
 		return err
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return err
 	}

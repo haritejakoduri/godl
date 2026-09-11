@@ -23,6 +23,7 @@ import (
 
 	"golang.org/x/time/rate"
 
+	"godl/internal/httpx"
 	"godl/internal/ratelimit"
 )
 
@@ -90,7 +91,12 @@ func Run(ctx context.Context, opt Options) (Result, error) {
 	if opt.Concurrency < 1 {
 		opt.Concurrency = 1
 	}
-	client := &http.Client{}
+	// Pooled and timeout-bounded, but with no whole-request deadline —
+	// see internal/httpx. The pool matters most here: a chunked download
+	// issues opt.Concurrency ranged requests to one host at once, and
+	// Go's default of two idle connections per host meant most of them
+	// paid for a fresh TCP and TLS handshake on every chunk.
+	client := httpx.TransferClient(false)
 	supportsRange, total, err := probe(ctx, client, opt.URL)
 	if err != nil {
 		return Result{}, err

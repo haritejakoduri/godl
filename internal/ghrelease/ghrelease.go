@@ -22,7 +22,13 @@ import (
 	"net/http"
 	"os"
 	"strings"
+
+	"godl/internal/httpx"
 )
+
+// httpClient bounds these small metadata fetches end to end; see
+// internal/httpx for why transfers use a different shape.
+var httpClient = httpx.Client(httpx.MetadataTimeout)
 
 // AssetDigest fetches the sha256 digest GitHub computed for assetName in
 // the named release. releasesURL is the full GitHub API URL for a single
@@ -33,7 +39,7 @@ func AssetDigest(ctx context.Context, releasesURL, assetName string) (sha256Hex 
 		return "", err
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("fetching release metadata: %w", err)
 	}
@@ -76,7 +82,7 @@ func TagName(ctx context.Context, releasesURL string) (string, error) {
 		return "", err
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("fetching release metadata: %w", err)
 	}

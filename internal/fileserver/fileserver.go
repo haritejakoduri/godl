@@ -328,7 +328,16 @@ func addToZip(zw *zip.Writer, root, abs string, added map[string]bool) error {
 		}
 		defer f.Close()
 
-		zf, err := zw.Create(zipName)
+		// Store, not Deflate. What people bundle from here is video,
+		// audio and images — already-compressed formats that Deflate
+		// cannot shrink, so the default costs a core of CPU per client
+		// to produce a file the same size. Storing streams at disk
+		// speed instead.
+		hdr := &zip.FileHeader{Name: zipName, Method: zip.Store}
+		if fi, serr := f.Stat(); serr == nil {
+			hdr.Modified = fi.ModTime()
+		}
+		zf, err := zw.CreateHeader(hdr)
 		if err != nil {
 			return err
 		}

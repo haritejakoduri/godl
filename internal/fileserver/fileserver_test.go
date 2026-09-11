@@ -307,6 +307,12 @@ func TestZipDownloadPreservesStructure(t *testing.T) {
 
 	got := map[string]string{}
 	for _, f := range zr.File {
+		// Entries are stored, not deflated: this endpoint bundles media,
+		// which Deflate can't shrink, so compressing it burns a core per
+		// client to produce a file the same size.
+		if f.Method != zip.Store {
+			t.Errorf("zip entry %q uses compression method %d, want zip.Store (%d)", f.Name, f.Method, zip.Store)
+		}
 		rc, err := f.Open()
 		if err != nil {
 			t.Fatal(err)

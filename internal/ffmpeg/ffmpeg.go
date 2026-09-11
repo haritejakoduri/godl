@@ -25,8 +25,12 @@ import (
 	"github.com/ulikunitz/xz"
 
 	"godl/internal/ghrelease"
+	"godl/internal/httpx"
 	"godl/internal/paths"
 )
+
+// httpClient fetches the ffmpeg archive, which runs to tens of MB.
+var httpClient = httpx.Client(httpx.BinaryFetchTimeout)
 
 const releaseBase = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/"
 const releaseAPI = "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/latest"
@@ -145,7 +149,7 @@ func installArchive(ctx context.Context, binDir string, a asset, wantHex string,
 	if err != nil {
 		return err
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("downloading ffmpeg: %w", err)
 	}

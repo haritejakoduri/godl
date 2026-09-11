@@ -26,8 +26,13 @@ import (
 	"strings"
 
 	"godl/internal/ghrelease"
+	"godl/internal/httpx"
 	"godl/internal/version"
 )
+
+// httpClient fetches a release binary: generous whole-request cap, so
+// a slow link still completes but a wedged connection does not hang.
+var httpClient = httpx.Client(httpx.BinaryFetchTimeout)
 
 var repo = "haritejakoduri/godl"
 var releaseAPI = "https://api.github.com/repos/" + repo + "/releases/latest"
@@ -157,7 +162,7 @@ func download(ctx context.Context, url, dest, wantHex string) error {
 	if err != nil {
 		return err
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return err
 	}

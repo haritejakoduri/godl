@@ -7,7 +7,6 @@ package webdav
 
 import (
 	"context"
-	"crypto/tls"
 	"encoding/base64"
 	"encoding/xml"
 	"fmt"
@@ -25,6 +24,7 @@ import (
 
 	"golang.org/x/time/rate"
 
+	"godl/internal/httpx"
 	"godl/internal/ratelimit"
 )
 
@@ -57,14 +57,12 @@ func New(baseURL, username, password string, insecureSkipVerify bool) (*Client, 
 	if u.Scheme != "http" && u.Scheme != "https" {
 		return nil, fmt.Errorf("webdav url must be http:// or https://, got %q", baseURL)
 	}
-	// A bespoke Transport (needed for InsecureSkipVerify) doesn't pick
-	// up proxy env vars the way http.DefaultTransport does unless told
-	// to explicitly.
-	tr := &http.Transport{Proxy: http.ProxyFromEnvironment}
-	if insecureSkipVerify {
-		tr.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
-	}
-	return &Client{base: u, Username: username, Password: password, HTTP: &http.Client{Transport: tr}}, nil
+	return &Client{
+		base:     u,
+		Username: username,
+		Password: password,
+		HTTP:     httpx.TransferClient(insecureSkipVerify),
+	}, nil
 }
 
 func (c *Client) resolve(remotePath string) *url.URL {

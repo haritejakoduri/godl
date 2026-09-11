@@ -23,7 +23,7 @@ fi
 
 mkdir -p "$INSTALL_DIR"
 echo "Building godl${NEW_VERSION:+ $NEW_VERSION}..."
-(cd "$REPO_DIR" && CGO_ENABLED=0 go build -ldflags="-s -w" -o "$INSTALL_DIR/godl" .)
+(cd "$REPO_DIR" && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o "$INSTALL_DIR/godl" .)
 chmod +x "$INSTALL_DIR/godl"
 
 if [ -z "$OLD_VERSION" ]; then

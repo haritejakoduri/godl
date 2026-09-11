@@ -32,7 +32,7 @@ mkdir -p dist "$STAGE/DEBIAN" "$STAGE/usr/bin"
 # Built straight into the staging tree, not dist/ — this is a packaging
 # intermediate, not a release artifact someone would download directly
 # (that's dist/godl-<version>-linux-amd64, from build-all.sh).
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o "$STAGE/usr/bin/godl" .
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o "$STAGE/usr/bin/godl" .
 chmod 0755 "$STAGE/usr/bin/godl"
 
 mkdir -p "$STAGE/DEBIAN"

@@ -47,3 +47,14 @@ jobs:
       - name: test
         if: matrix.goos == 'linux'
         run: go test ./...
+
+      # godl is concurrent throughout — a daemon juggling per-job
+      # goroutines, chunked downloads, a shared rate limiter and a
+      # per-host request gate — so the race detector earns its runtime
+      # here. CGO_ENABLED is required for -race specifically; the build
+      # steps above stay at 0 so release binaries remain static.
+      - name: test (race detector)
+        if: matrix.goos == 'linux'
+        env:
+          CGO_ENABLED: 1
+        run: go test -race -count=1 ./...

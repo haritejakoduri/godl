@@ -148,7 +148,7 @@ func (d *Daemon) startWebDAV(j *store.Job) {
 			}
 			pending = append(pending, f)
 		}
-		d.reportProgress(j.ID, cumulative.Load(), total)
+		d.reportProgress(j.ID, cumulative.Load(), total, nil)
 
 		// Download up to webdavDownloadConcurrency files at once —
 		// otherwise a folder of many files pays for each one's
@@ -174,7 +174,7 @@ func (d *Daemon) startWebDAV(j *store.Job) {
 				written, derr := client.Download(ctx, f.Path, localPath, limiter, globalLimiter, func(done, _ int64) {
 					newCum := cumulative.Add(done - lastDone)
 					lastDone = done
-					d.reportProgress(j.ID, newCum, total)
+					d.reportProgress(j.ID, newCum, total, nil)
 				})
 				if derr != nil {
 					mu.Lock()

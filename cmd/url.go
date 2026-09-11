@@ -15,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"godl/internal/daemon"
+	"godl/internal/httpx"
 	"godl/internal/paths"
 	"godl/internal/store"
 )
@@ -121,7 +122,7 @@ func probeFilename(link string) (name, ext string, ok bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	client := &http.Client{}
+	client := httpx.Client(httpx.MetadataTimeout)
 	resp, err := doProbeRequest(ctx, client, http.MethodHead, link)
 	usedGet := false
 	if err != nil || resp.StatusCode >= 400 {

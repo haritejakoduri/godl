@@ -24,11 +24,11 @@ mkdir -p dist
 
 OUT_LINUX="dist/godl-${VERSION}-linux-amd64"
 echo "-> $OUT_LINUX"
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o "$OUT_LINUX" .
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o "$OUT_LINUX" .
 
 OUT_DARWIN="dist/godl-${VERSION}-darwin-arm64"
 echo "-> $OUT_DARWIN"
-CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -ldflags="-s -w" -o "$OUT_DARWIN" .
+CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o "$OUT_DARWIN" .
 
 echo
 "$SCRIPT_DIR/build-windows-installer.sh"

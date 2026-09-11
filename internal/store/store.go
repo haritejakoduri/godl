@@ -372,24 +372,25 @@ WHERE id=?`,
 	return err
 }
 
-// UpdateProgress is a lightweight update for the frequent byte-count ticks
-// that happen during an active download, avoiding a full row rewrite.
-func (s *Store) UpdateProgress(ctx context.Context, id string, bytesDone, bytesTotal int64) error {
+// UpdateProgress is a lightweight update for the byte-count ticks that
+// happen during an active download, avoiding a full row rewrite.
+//
+// resumeOffset, when non-nil, checkpoints the confirmed-contiguous byte
+// offset in the same statement, so an ungraceful daemon death resumes
+// from roughly where it stopped. Only single-stream url jobs set it —
+// concurrent chunked downloads keep their resume state in a sidecar file
+// instead — and folding it in here halves their write count, since it
+// used to be a second UPDATE against the row this one had just written.
+func (s *Store) UpdateProgress(ctx context.Context, id string, bytesDone, bytesTotal int64, resumeOffset *int64) error {
+	if resumeOffset != nil {
+		_, err := s.db.ExecContext(ctx,
+			`UPDATE jobs SET bytes_done=?, bytes_total=?, resume_offset=?, updated_at=? WHERE id=?`,
+			bytesDone, bytesTotal, *resumeOffset, time.Now().Unix(), id)
+		return err
+	}
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE jobs SET bytes_done=?, bytes_total=?, updated_at=? WHERE id=?`,
 		bytesDone, bytesTotal, time.Now().Unix(), id)
-	return err
-}
-
-// UpdateResumeOffset checkpoints the confirmed-contiguous byte offset for
-// a single-stream url job while it's actively downloading, so an
-// ungraceful daemon death (kill, crash, reboot) loses at most the last
-// tick's worth of progress instead of the whole job. Concurrent chunked
-// downloads don't need this: they checkpoint to their own sidecar file.
-func (s *Store) UpdateResumeOffset(ctx context.Context, id string, offset int64) error {
-	_, err := s.db.ExecContext(ctx,
-		`UPDATE jobs SET resume_offset=?, updated_at=? WHERE id=?`,
-		offset, time.Now().Unix(), id)
 	return err
 }
 

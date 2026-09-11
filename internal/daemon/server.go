@@ -44,7 +44,36 @@ type runtime struct {
 	speedBps   float64
 	lastBytes  int64
 	lastTime   time.Time
+	// lastPersist/lastPersistBytes track when this job's progress was
+	// last written to the store, so reportProgress can skip most of
+	// those writes — see progressPersistInterval.
+	lastPersist      time.Time
+	lastPersistBytes int64
 }
+
+// progressPersistInterval and progressPersistBytes bound how stale the
+// stored byte counts may be while a job is running: whichever comes
+// first triggers a write.
+//
+// Progress callbacks fire roughly every 200ms per stream, and a WebDAV
+// folder job runs several files at once, each with its own — so
+// persisting every callback meant tens of sqlite transactions a second
+// for one job, all serialized through the store's single connection and
+// competing with the TUI's own reads. The numbers themselves are
+// re-derived from the file on disk when a download resumes; what the
+// store holds is a checkpoint, not the source of truth.
+//
+// The cost of the throttle is bounded and stated: an ungraceful daemon
+// death (kill -9, power loss) loses at most this much progress, and the
+// byte trigger keeps that small on a fast link even though the interval
+// is coarse. Terminal transitions don't rely on it at all — finishJob
+// and pause write the final counts directly.
+//
+// Vars, not consts, so tests can shrink them.
+var (
+	progressPersistInterval = 2 * time.Second
+	progressPersistBytes    = int64(8 << 20)
+)
 
 func waitForStop(rt *runtime) {
 	if rt == nil {
@@ -727,10 +756,13 @@ func (d *Daemon) startURL(j *store.Job) {
 			GlobalLimiter: d.cachedGlobalLimiter(),
 			Sha256:        j.Sha256,
 			Progress: func(done, total int64) {
-				d.reportProgress(j.ID, done, total)
+				// The resume offset rides along in the same write rather
+				// than being a second UPDATE of the row just written.
+				var resume *int64
 				if single {
-					d.st.UpdateResumeOffset(context.Background(), j.ID, done)
+					resume = &done
 				}
+				d.reportProgress(j.ID, done, total, resume)
 			},
 		})
 		d.finishJob(j.ID, res.BytesDone, res.Completed, err)
@@ -807,7 +839,7 @@ func (d *Daemon) startTorrent(j *store.Job) {
 			case <-ticker.C:
 				done, total, ok := d.tm.Progress(j.ID)
 				if ok {
-					d.reportProgress(j.ID, done, total)
+					d.reportProgress(j.ID, done, total, nil)
 				}
 			}
 		}
@@ -891,7 +923,7 @@ func (d *Daemon) startSocial(j *store.Job) {
 		cmd := exec.CommandContext(ctx, ytDlpPath, args...)
 		lw := &lineWriter{onLine: func(line string) {
 			if done, total, ok := parseGodlProgress(line); ok {
-				d.reportProgress(j.ID, done, total)
+				d.reportProgress(j.ID, done, total, nil)
 				return
 			}
 			if path, ok := parseGodlFile(line); ok {
@@ -1096,9 +1128,19 @@ func (d *Daemon) scheduleAutoRetry(id string, delay time.Duration) {
 	d.retryMu.Unlock()
 }
 
-func (d *Daemon) reportProgress(jobID string, done, total int64) {
+// reportProgress records a job's latest byte counts. The in-memory
+// runtime is updated on every call — that's what the TUI reads for
+// speed and ETA, so throttling it would make the display stutter — but
+// the write to the store is rate-limited (see progressPersistInterval).
+//
+// resumeOffset, when non-nil, is checkpointed in the same write: only
+// single-stream url jobs use that column (chunked ones keep their resume
+// state in a sidecar file), and they used to issue it as a second,
+// separate UPDATE against the row this one had just touched.
+func (d *Daemon) reportProgress(jobID string, done, total int64, resumeOffset *int64) {
 	rt := d.getRuntime(jobID)
 	now := time.Now()
+	persist := true
 	if rt != nil {
 		rt.mu.Lock()
 		if elapsed := now.Sub(rt.lastTime).Seconds(); elapsed > 0 {
@@ -1108,9 +1150,23 @@ func (d *Daemon) reportProgress(jobID string, done, total int64) {
 		rt.lastTime = now
 		rt.bytesDone = done
 		rt.bytesTotal = total
+
+		// First call for this job always writes, so a job that starts
+		// and stalls still shows something durable.
+		persist = rt.lastPersist.IsZero() ||
+			now.Sub(rt.lastPersist) >= progressPersistInterval ||
+			done-rt.lastPersistBytes >= progressPersistBytes
+		if persist {
+			rt.lastPersist = now
+			rt.lastPersistBytes = done
+		}
 		rt.mu.Unlock()
 	}
-	d.st.UpdateProgress(context.Background(), jobID, done, total)
+	// No runtime means no throttling state to consult — write through
+	// rather than silently dropping the update.
+	if persist {
+		d.st.UpdateProgress(context.Background(), jobID, done, total, resumeOffset)
+	}
 }
 
 // pause stops an active job's goroutine and waits for it to fully exit

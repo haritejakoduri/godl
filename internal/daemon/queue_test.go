@@ -19,20 +19,25 @@ import (
 //
 // Here that state is set up directly, since it's the shape that matters,
 // not how the job got into it.
-func TestTryStartQueuedTerminatesOnAStuckJob(t *testing.T) {
-	d := newTestDaemon(t)
-	ctx := context.Background()
-
+// seedJob inserts a plain URL job with the given ID and status —
+// enough for the queue and progress paths, which never look at a job's
+// source or output.
+func seedJob(t *testing.T, d *Daemon, id string, status store.JobStatus) *store.Job {
+	t.Helper()
 	j := &store.Job{
-		ID:     "stuck-job",
-		Type:   store.JobURL,
-		Source: "https://example.com/f.bin",
-		Output: "/tmp/f.bin",
-		Status: store.StatusQueued,
+		ID: id, Type: store.JobURL, Source: "https://example.com/" + id,
+		Output: "/tmp/" + id, Status: status,
 	}
-	if err := d.st.CreateJob(ctx, j); err != nil {
+	if err := d.st.CreateJob(context.Background(), j); err != nil {
 		t.Fatal(err)
 	}
+	return j
+}
+
+func TestTryStartQueuedTerminatesOnAStuckJob(t *testing.T) {
+	d := newTestDaemon(t)
+
+	j := seedJob(t, d, "stuck-job", store.StatusQueued)
 	// Queued in the store, but already holding a runtime.
 	d.setRuntime(j.ID, &runtime{done: make(chan struct{})})
 
@@ -64,12 +69,7 @@ func TestTryStartQueuedAttemptsEachJobOnce(t *testing.T) {
 	d.setRuntime("already-running", &runtime{done: make(chan struct{})})
 
 	for _, id := range []string{"q1", "q2", "q3"} {
-		if err := d.st.CreateJob(ctx, &store.Job{
-			ID: id, Type: store.JobURL, Source: "https://example.com/" + id,
-			Output: "/tmp/" + id, Status: store.StatusQueued,
-		}); err != nil {
-			t.Fatal(err)
-		}
+		seedJob(t, d, id, store.StatusQueued)
 	}
 
 	done := make(chan struct{})
@@ -110,12 +110,7 @@ func TestListQueuedJobsReturnsOnlyQueued(t *testing.T) {
 		{"e", store.StatusFailed},
 	}
 	for _, s := range seed {
-		if err := d.st.CreateJob(ctx, &store.Job{
-			ID: s.id, Type: store.JobURL, Source: "https://example.com/" + s.id,
-			Output: "/tmp/" + s.id, Status: s.status,
-		}); err != nil {
-			t.Fatal(err)
-		}
+		seedJob(t, d, s.id, s.status)
 	}
 
 	jobs, err := d.st.ListQueuedJobs(ctx)
@@ -148,13 +143,7 @@ func TestReportProgressThrottlesStoreWrites(t *testing.T) {
 
 	d := newTestDaemon(t)
 	ctx := context.Background()
-	j := &store.Job{
-		ID: "throttled", Type: store.JobURL, Source: "https://example.com/f.bin",
-		Output: "/tmp/f.bin", Status: store.StatusActive,
-	}
-	if err := d.st.CreateJob(ctx, j); err != nil {
-		t.Fatal(err)
-	}
+	j := seedJob(t, d, "throttled", store.StatusActive)
 	rt := &runtime{done: make(chan struct{}), lastTime: time.Now()}
 	d.setRuntime(j.ID, rt)
 
@@ -200,13 +189,7 @@ func TestReportProgressThrottlesStoreWrites(t *testing.T) {
 func TestReportProgressWritesResumeOffsetInTheSameRow(t *testing.T) {
 	d := newTestDaemon(t)
 	ctx := context.Background()
-	j := &store.Job{
-		ID: "single", Type: store.JobURL, Source: "https://example.com/f.bin",
-		Output: "/tmp/f.bin", Status: store.StatusActive,
-	}
-	if err := d.st.CreateJob(ctx, j); err != nil {
-		t.Fatal(err)
-	}
+	j := seedJob(t, d, "single", store.StatusActive)
 	d.setRuntime(j.ID, &runtime{done: make(chan struct{}), lastTime: time.Now()})
 
 	done := int64(4096)

@@ -118,26 +118,75 @@ func waitForTerminal(t *testing.T, d *Daemon, id string) *store.Job {
 	return nil
 }
 
-func TestStartWebDAVDownloadsFolderRecursively(t *testing.T) {
-	t.Setenv("GODL_DATA_DIR", t.TempDir())
-	srv := newTestWebDAVServer(t)
-	defer srv.Close()
+// webdavFixture is the setup every startWebDAV test needs: an isolated
+// data dir, a throwaway WebDAV server registered as a saved connection,
+// a daemon, and an empty output directory.
+type webdavFixture struct {
+	d      *Daemon
+	output string
+}
 
+// newWebDAVFixture registers newTestWebDAVServer's two-file tree as the
+// connection "myconn".
+func newWebDAVFixture(t *testing.T) webdavFixture {
+	t.Helper()
+	srv := newTestWebDAVServer(t)
+	return newWebDAVFixtureFor(t, "myconn", srv, srv.URL+"/dav/")
+}
+
+// newWebDAVFixtureFor registers root on srv under the saved connection
+// name.
+func newWebDAVFixtureFor(t *testing.T, name string, srv *httptest.Server, root string) webdavFixture {
+	t.Helper()
+	t.Setenv("GODL_DATA_DIR", t.TempDir())
+	t.Cleanup(srv.Close)
 	if err := connections.Add(connections.Connection{
-		Name: "myconn", Type: connections.TypeWebDAV, URL: srv.URL + "/dav/",
+		Name: name, Type: connections.TypeWebDAV, URL: root,
 	}); err != nil {
 		t.Fatal(err)
 	}
+	return webdavFixture{d: newTestDaemon(t), output: t.TempDir()}
+}
 
-	d := newTestDaemon(t)
-	output := t.TempDir()
+// newEmptyWebDAVFixture has no saved connections at all — for the
+// "connection doesn't exist" path.
+func newEmptyWebDAVFixture(t *testing.T) webdavFixture {
+	t.Helper()
+	t.Setenv("GODL_DATA_DIR", t.TempDir())
+	return webdavFixture{d: newTestDaemon(t), output: t.TempDir()}
+}
 
-	j, err := d.createJob(context.Background(), store.JobWebDAV, "myconn:/", output, "", 0, 0, "")
+// run creates a WebDAV job for source and waits for it to settle.
+func (f webdavFixture) run(t *testing.T, source string) *store.Job {
+	t.Helper()
+	j, err := f.d.createJob(context.Background(), store.JobWebDAV, source, f.output, "", 0, 0, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	d.startWebDAV(j)
-	final := waitForTerminal(t, d, j.ID)
+	f.d.startWebDAV(j)
+	return waitForTerminal(t, f.d, j.ID)
+}
+
+// rerun restarts an existing job from its stored state — what "godl
+// resume" does under the hood.
+func (f webdavFixture) rerun(t *testing.T, id string) *store.Job {
+	t.Helper()
+	j, err := f.d.st.GetJob(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.d.startWebDAV(j)
+	return waitForTerminal(t, f.d, id)
+}
+
+// path joins p onto the fixture's output directory.
+func (f webdavFixture) path(p ...string) string {
+	return filepath.Join(append([]string{f.output}, p...)...)
+}
+
+func TestStartWebDAVDownloadsFolderRecursively(t *testing.T) {
+	f := newWebDAVFixture(t)
+	final := f.run(t, "myconn:/")
 
 	if final.Status != store.StatusCompleted {
 		t.Fatalf("job ended as %s: %s", final.Status, final.ErrorMsg)
@@ -149,44 +198,27 @@ func TestStartWebDAVDownloadsFolderRecursively(t *testing.T) {
 		t.Fatalf("ResolvedPaths = %v, want 2 entries", final.ResolvedPaths)
 	}
 
-	a, err := os.ReadFile(filepath.Join(output, "a.txt"))
+	a, err := os.ReadFile(f.path("a.txt"))
 	if err != nil || string(a) != "hello root\n" {
 		t.Errorf("a.txt = %q, %v", a, err)
 	}
-	b, err := os.ReadFile(filepath.Join(output, "sub", "b.txt"))
+	b, err := os.ReadFile(f.path("sub", "b.txt"))
 	if err != nil || string(b) != "hello sub\n" {
 		t.Errorf("sub/b.txt = %q, %v", b, err)
 	}
 }
 
 func TestStartWebDAVDownloadsSingleFile(t *testing.T) {
-	t.Setenv("GODL_DATA_DIR", t.TempDir())
-	srv := newTestWebDAVServer(t)
-	defer srv.Close()
-
-	if err := connections.Add(connections.Connection{
-		Name: "myconn", Type: connections.TypeWebDAV, URL: srv.URL + "/dav/",
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	d := newTestDaemon(t)
-	output := t.TempDir()
-
-	j, err := d.createJob(context.Background(), store.JobWebDAV, "myconn:/a.txt", output, "", 0, 0, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	d.startWebDAV(j)
-	final := waitForTerminal(t, d, j.ID)
+	f := newWebDAVFixture(t)
+	final := f.run(t, "myconn:/a.txt")
 
 	if final.Status != store.StatusCompleted {
 		t.Fatalf("job ended as %s: %s", final.Status, final.ErrorMsg)
 	}
-	if len(final.ResolvedPaths) != 1 || final.ResolvedPaths[0] != filepath.Join(output, "a.txt") {
-		t.Errorf("ResolvedPaths = %v, want [%s]", final.ResolvedPaths, filepath.Join(output, "a.txt"))
+	if len(final.ResolvedPaths) != 1 || final.ResolvedPaths[0] != f.path("a.txt") {
+		t.Errorf("ResolvedPaths = %v, want [%s]", final.ResolvedPaths, f.path("a.txt"))
 	}
-	data, err := os.ReadFile(filepath.Join(output, "a.txt"))
+	data, err := os.ReadFile(f.path("a.txt"))
 	if err != nil || string(data) != "hello root\n" {
 		t.Errorf("a.txt = %q, %v", data, err)
 	}
@@ -203,34 +235,17 @@ func TestStartWebDAVDownloadsSingleFile(t *testing.T) {
 // other's files. The selected folder's own name must be preserved as a
 // top-level directory under output.
 func TestStartWebDAVNamedFolderKeepsItsOwnNameInOutput(t *testing.T) {
-	t.Setenv("GODL_DATA_DIR", t.TempDir())
-	srv := newTestWebDAVServer(t)
-	defer srv.Close()
-
-	if err := connections.Add(connections.Connection{
-		Name: "myconn", Type: connections.TypeWebDAV, URL: srv.URL + "/dav/",
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	d := newTestDaemon(t)
-	output := t.TempDir()
-
+	f := newWebDAVFixture(t)
 	// Trailing slash matches how the TUI always sends a folder's path
 	// (directory hrefs from a real WebDAV server's PROPFIND response are
 	// slash-terminated) — webdavLocalPath must handle it either way, but
 	// this keeps the test aligned with the actual call shape in practice.
-	j, err := d.createJob(context.Background(), store.JobWebDAV, "myconn:/sub/", output, "", 0, 0, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	d.startWebDAV(j)
-	final := waitForTerminal(t, d, j.ID)
+	final := f.run(t, "myconn:/sub/")
 
 	if final.Status != store.StatusCompleted {
 		t.Fatalf("job ended as %s: %s", final.Status, final.ErrorMsg)
 	}
-	want := filepath.Join(output, "sub", "b.txt")
+	want := f.path("sub", "b.txt")
 	if len(final.ResolvedPaths) != 1 || final.ResolvedPaths[0] != want {
 		t.Errorf("ResolvedPaths = %v, want [%s]", final.ResolvedPaths, want)
 	}
@@ -238,7 +253,7 @@ func TestStartWebDAVNamedFolderKeepsItsOwnNameInOutput(t *testing.T) {
 	if err != nil || string(data) != "hello sub\n" {
 		t.Errorf("%s = %q, %v", want, data, err)
 	}
-	if _, err := os.Stat(filepath.Join(output, "b.txt")); err == nil {
+	if _, err := os.Stat(f.path("b.txt")); err == nil {
 		t.Error("b.txt landed directly under output, without its \"sub\" folder name preserved")
 	}
 }
@@ -250,46 +265,23 @@ func TestStartWebDAVNamedFolderKeepsItsOwnNameInOutput(t *testing.T) {
 // looking at whether os.Stat succeeded, so a job could complete
 // "successfully" with data silently missing.
 func TestStartWebDAVResumeRedownloadsMissingResolvedFile(t *testing.T) {
-	t.Setenv("GODL_DATA_DIR", t.TempDir())
-	srv := newTestWebDAVServer(t)
-	defer srv.Close()
-
-	if err := connections.Add(connections.Connection{
-		Name: "myconn", Type: connections.TypeWebDAV, URL: srv.URL + "/dav/",
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	d := newTestDaemon(t)
-	output := t.TempDir()
-
-	j, err := d.createJob(context.Background(), store.JobWebDAV, "myconn:/", output, "", 0, 0, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	d.startWebDAV(j)
-	first := waitForTerminal(t, d, j.ID)
+	f := newWebDAVFixture(t)
+	first := f.run(t, "myconn:/")
 	if first.Status != store.StatusCompleted {
 		t.Fatalf("initial download failed: %s", first.ErrorMsg)
 	}
 
 	// Simulate the user (or anything else) deleting an already-
-	// downloaded file between runs, then re-running the same job
-	// (what "godl resume" does under the hood) without clearing
-	// ResolvedPaths.
-	if err := os.Remove(filepath.Join(output, "a.txt")); err != nil {
+	// downloaded file between runs, then re-running the same job without
+	// clearing ResolvedPaths.
+	if err := os.Remove(f.path("a.txt")); err != nil {
 		t.Fatal(err)
 	}
-	j2, err := d.st.GetJob(context.Background(), j.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	d.startWebDAV(j2)
-	second := waitForTerminal(t, d, j2.ID)
+	second := f.rerun(t, first.ID)
 	if second.Status != store.StatusCompleted {
 		t.Fatalf("resumed job failed: %s", second.ErrorMsg)
 	}
-	if data, err := os.ReadFile(filepath.Join(output, "a.txt")); err != nil || string(data) != "hello root\n" {
+	if data, err := os.ReadFile(f.path("a.txt")); err != nil || string(data) != "hello root\n" {
 		t.Errorf("a.txt was not re-downloaded after being deleted: content=%q err=%v", data, err)
 	}
 }
@@ -341,27 +333,11 @@ func newWideTestWebDAVServer(t *testing.T, n int, fileSize int) *httptest.Server
 // backpressure path too (later downloads queued behind the first
 // batch), not just "a few files that all start at once".
 func TestStartWebDAVConcurrentDownloadsDontLoseFiles(t *testing.T) {
-	t.Setenv("GODL_DATA_DIR", t.TempDir())
 	const n = 12
 	const fileSize = 4096
 	srv := newWideTestWebDAVServer(t, n, fileSize)
-	defer srv.Close()
-
-	if err := connections.Add(connections.Connection{
-		Name: "wideconn", Type: connections.TypeWebDAV, URL: srv.URL + "/wide/",
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	d := newTestDaemon(t)
-	output := t.TempDir()
-
-	j, err := d.createJob(context.Background(), store.JobWebDAV, "wideconn:/", output, "", 0, 0, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	d.startWebDAV(j)
-	final := waitForTerminal(t, d, j.ID)
+	f := newWebDAVFixtureFor(t, "wideconn", srv, srv.URL+"/wide/")
+	final := f.run(t, "wideconn:/")
 
 	if final.Status != store.StatusCompleted {
 		t.Fatalf("job ended as %s: %s", final.Status, final.ErrorMsg)
@@ -374,7 +350,7 @@ func TestStartWebDAVConcurrentDownloadsDontLoseFiles(t *testing.T) {
 		t.Errorf("BytesDone = %d, want %d", final.BytesDone, n*fileSize)
 	}
 	for i := 0; i < n; i++ {
-		p := filepath.Join(output, fmt.Sprintf("file%d.bin", i))
+		p := f.path(fmt.Sprintf("file%d.bin", i))
 		data, err := os.ReadFile(p)
 		if err != nil {
 			t.Errorf("file%d.bin: %v", i, err)
@@ -388,15 +364,8 @@ func TestStartWebDAVConcurrentDownloadsDontLoseFiles(t *testing.T) {
 }
 
 func TestStartWebDAVUnknownConnectionFails(t *testing.T) {
-	t.Setenv("GODL_DATA_DIR", t.TempDir())
-	d := newTestDaemon(t)
-
-	j, err := d.createJob(context.Background(), store.JobWebDAV, "doesnotexist:/a.txt", t.TempDir(), "", 0, 0, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	d.startWebDAV(j)
-	final := waitForTerminal(t, d, j.ID)
+	f := newEmptyWebDAVFixture(t)
+	final := f.run(t, "doesnotexist:/a.txt")
 
 	if final.Status != store.StatusFailed {
 		t.Fatalf("job ended as %s, want failed", final.Status)

@@ -147,6 +147,7 @@ type statusModel struct {
 	err       error
 	statusMsg string
 	width     int // last known terminal width, for responsive column sizing
+	height    int // last known terminal height, for sizing full-screen overlays
 
 	// selected holds job IDs checked with space, for a bulk pause/
 	// resume/cancel/retry/remove — same convention as webdavBrowseState's
@@ -521,6 +522,7 @@ func (m statusModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
+		m.height = msg.Height
 		m.table.SetColumns(columnsForWidth(msg.Width))
 		m.table.SetWidth(msg.Width)
 		if h := msg.Height - 7; h > 3 {
@@ -949,7 +951,27 @@ func (m *statusModel) rebuildRows(cursorIdx int) {
 	m.table.SetRows(rows)
 }
 
+// View renders the job table (the default screen) unless a full-screen
+// overlay — new-job wizard, WebDAV browser, or settings — is active. An
+// overlay replaces the whole screen rather than being appended below
+// the job table and its own footer: the job table's height tracks the
+// terminal's (see the WindowSizeMsg case above) and can run to dozens
+// of rows, which previously left an overlay's own list — the WebDAV
+// browser's especially, with potentially hundreds of remote entries —
+// squeezed into whatever space remained below it, or pushed off-screen
+// entirely with two conflicting footers on screen at once. Each
+// overlay's own view already ends with its own contextual footer, so
+// nothing else needs to be appended for those cases.
 func (m statusModel) View() string {
+	switch {
+	case m.newJob != nil:
+		return m.viewNewJob()
+	case m.webdavBrowse != nil:
+		return m.viewWebDAVBrowse()
+	case m.settings != nil:
+		return m.viewSettings()
+	}
+
 	var b strings.Builder
 	title := fmt.Sprintf("godl status — %d job(s)", len(m.jobs))
 	if len(m.selected) > 0 {
@@ -964,12 +986,6 @@ func (m statusModel) View() string {
 		b.WriteString("\n")
 	}
 	switch {
-	case m.newJob != nil:
-		b.WriteString(m.viewNewJob())
-	case m.webdavBrowse != nil:
-		b.WriteString(m.viewWebDAVBrowse())
-	case m.settings != nil:
-		b.WriteString(m.viewSettings())
 	case m.statusMsg != "":
 		b.WriteString(statStyle.Render(m.statusMsg))
 		b.WriteString("\n")

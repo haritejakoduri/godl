@@ -1,4 +1,4 @@
-package cmd
+package tui
 
 import (
 	"net/http"
@@ -10,6 +10,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"godl/internal/connections"
+	"godl/internal/format"
 	"godl/internal/webdav"
 )
 
@@ -553,8 +554,8 @@ func TestShortenHome(t *testing.T) {
 		{"/home/alice2/Downloads", "/home/alice2/Downloads"}, // not actually under home
 	}
 	for _, c := range cases {
-		if got := shortenHome(c.in); got != c.want {
-			t.Errorf("shortenHome(%q) = %q, want %q", c.in, got, c.want)
+		if got := format.ShortenHome(c.in); got != c.want {
+			t.Errorf("format.ShortenHome(%q) = %q, want %q", c.in, got, c.want)
 		}
 	}
 }

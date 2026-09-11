@@ -423,10 +423,48 @@ works where there's a raw binary to swap in, though:
 `godl update` prints which of these applies rather than silently doing
 nothing.
 
+## How the code is laid out
+
+godl runs as two processes: the `godl` binary you type commands into,
+and a background daemon it starts on first use that owns every job's
+lifetime — so downloads keep running after the terminal closes. They
+talk over a Unix socket (newline-delimited JSON; see
+`internal/daemon/protocol.go`).
+
+```
+main.go            → cmd.Execute()
+cmd/               cobra commands and plain-CLI output only
+tui/               the terminal dashboard (bubbletea)
+internal/
+  daemon/          the background daemon: job lifecycle, scheduling,
+                   settings, and the socket protocol
+  store/           sqlite persistence for jobs and settings
+  downloader/      chunked HTTP(S) transfers, resume, checksums
+  torrentmgr/      BitTorrent, wrapping anacrolix/torrent
+  ytdlp/ ffmpeg/   the yt-dlp and ffmpeg binaries godl manages itself
+  webdav/          WebDAV client: PROPFIND, recursive walk, download
+  fileserver/      `godl serve` — the other direction: serve a local
+                   directory over HTTP(S) and WebDAV
+  connections/     saved WebDAV connection profiles
+  format/ social/  helpers shared by every front end
+  urlname/ paths/
+  httpx/           HTTP clients, with the timeouts and pooling that
+                   transfers and metadata fetches each need
+  ratelimit/ mpv/ notify/ ghrelease/ selfupdate/ version/
+```
+
+The dependency direction is one-way and enforced by a test
+(`tui/boundary_test.go`): **`cmd` → `tui` → `internal/…`**, and nothing
+under `internal/` imports either front end. `tui` exposes exactly one
+function, `tui.Run()`. That's what keeps a second front end — a GUI —
+a matter of adding a sibling package that drives the same daemon client
+and the same `internal/format` helpers, rather than untangling the
+terminal UI from the core first.
+
 ## Building from source
 
 ```sh
-go build -ldflags="-s -w" -o godl .
+go build -trimpath -ldflags="-s -w" -o godl .
 ```
 
 Requires Go 1.25+. To build every release artifact (cross-platform

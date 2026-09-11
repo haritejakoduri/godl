@@ -22,34 +22,47 @@ import (
 	"net/http"
 	"os"
 	"strings"
+
+	"godl/internal/httpx"
 )
+
+// httpClient bounds these small metadata fetches end to end; see
+// internal/httpx for why transfers use a different shape.
+var httpClient = httpx.Client(httpx.MetadataTimeout)
+
+// fetchRelease decodes the release object at releasesURL into out.
+func fetchRelease(ctx context.Context, releasesURL string, out any) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, releasesURL, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("fetching release metadata: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("fetching release metadata: unexpected status: %s", resp.Status)
+	}
+	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+		return fmt.Errorf("parsing release metadata: %w", err)
+	}
+	return nil
+}
 
 // AssetDigest fetches the sha256 digest GitHub computed for assetName in
 // the named release. releasesURL is the full GitHub API URL for a single
 // release object, e.g. "https://api.github.com/repos/OWNER/REPO/releases/latest".
 func AssetDigest(ctx context.Context, releasesURL, assetName string) (sha256Hex string, err error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, releasesURL, nil)
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Accept", "application/vnd.github+json")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("fetching release metadata: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("fetching release metadata: unexpected status: %s", resp.Status)
-	}
-
 	var release struct {
 		Assets []struct {
 			Name   string `json:"name"`
 			Digest string `json:"digest"`
 		} `json:"assets"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
-		return "", fmt.Errorf("parsing release metadata: %w", err)
+	if err := fetchRelease(ctx, releasesURL, &release); err != nil {
+		return "", err
 	}
 
 	for _, a := range release.Assets {
@@ -71,25 +84,11 @@ func AssetDigest(ctx context.Context, releasesURL, assetName string) (sha256Hex 
 // to decide whether a newer godl release exists at all, separately from
 // AssetDigest's per-asset checksum lookup.
 func TagName(ctx context.Context, releasesURL string) (string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, releasesURL, nil)
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Accept", "application/vnd.github+json")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("fetching release metadata: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("fetching release metadata: unexpected status: %s", resp.Status)
-	}
-
 	var release struct {
 		TagName string `json:"tag_name"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
-		return "", fmt.Errorf("parsing release metadata: %w", err)
+	if err := fetchRelease(ctx, releasesURL, &release); err != nil {
+		return "", err
 	}
 	if release.TagName == "" {
 		return "", fmt.Errorf("release metadata has no tag_name")
@@ -112,6 +111,52 @@ func Verify(gotHex, wantHex string) error {
 		return fmt.Errorf("sha256 mismatch: downloaded file doesn't match GitHub's published digest (got %s, want %s) — refusing to use it", gotHex, wantHex)
 	}
 	return nil
+}
+
+// DownloadVerified fetches url to dest as an executable, verifying its
+// sha256 against wantHex before anything appears at dest. Any failure —
+// transport, checksum, permissions — leaves whatever was already at dest
+// untouched.
+//
+// The temp file is created alongside dest rather than in a temp dir, so
+// the final rename stays on one filesystem and is therefore atomic
+// instead of a cross-device copy. That matters most for selfupdate,
+// where dest is the running executable. tmpSuffix only distinguishes
+// concurrent callers; any value works.
+func DownloadVerified(ctx context.Context, client *http.Client, url, dest, tmpSuffix, wantHex string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("unexpected status: %s", resp.Status)
+	}
+
+	tmp := dest + tmpSuffix
+	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
+	if err != nil {
+		return err
+	}
+	gotHex, _, err := HashingCopy(f, resp.Body)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = Verify(gotHex, wantHex)
+	}
+	if err == nil {
+		err = os.Chmod(tmp, 0o755)
+	}
+	if err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	return os.Rename(tmp, dest)
 }
 
 // HashFile computes the sha256 of a local file — used to compare an

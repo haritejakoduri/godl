@@ -23,6 +23,8 @@ import (
 	"strings"
 
 	"golang.org/x/net/webdav"
+
+	"godl/internal/format"
 )
 
 // Config configures a Server built by New.
@@ -249,7 +251,7 @@ func browseHandler(root string) http.HandlerFunc {
 			be := browseEntry{Name: e.Name(), RelPath: relPath, DavPath: "/" + relPath, IsDir: e.IsDir()}
 			if !e.IsDir() {
 				if info, err := e.Info(); err == nil {
-					be.Size = humanSize(info.Size())
+					be.Size = format.Bytes(info.Size())
 				}
 			} else {
 				be.Size = "-"
@@ -328,24 +330,20 @@ func addToZip(zw *zip.Writer, root, abs string, added map[string]bool) error {
 		}
 		defer f.Close()
 
-		zf, err := zw.Create(zipName)
+		// Store, not Deflate. What people bundle from here is video,
+		// audio and images — already-compressed formats that Deflate
+		// cannot shrink, so the default costs a core of CPU per client
+		// to produce a file the same size. Storing streams at disk
+		// speed instead.
+		hdr := &zip.FileHeader{Name: zipName, Method: zip.Store}
+		if fi, serr := f.Stat(); serr == nil {
+			hdr.Modified = fi.ModTime()
+		}
+		zf, err := zw.CreateHeader(hdr)
 		if err != nil {
 			return err
 		}
 		_, err = io.Copy(zf, f)
 		return err
 	})
-}
-
-func humanSize(n int64) string {
-	const unit = 1024
-	if n < unit {
-		return fmt.Sprintf("%d B", n)
-	}
-	div, exp := int64(unit), 0
-	for n/div >= unit {
-		div *= unit
-		exp++
-	}
-	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTPE"[exp])
 }

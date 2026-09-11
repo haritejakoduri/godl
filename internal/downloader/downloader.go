@@ -10,6 +10,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -22,6 +23,7 @@ import (
 
 	"golang.org/x/time/rate"
 
+	"godl/internal/httpx"
 	"godl/internal/ratelimit"
 )
 
@@ -44,13 +46,8 @@ type Options struct {
 	// use), so splitting into more chunks doesn't multiply the cap.
 	// nil means unlimited.
 	Limiter *rate.Limiter
-	// GlobalLimiter, if non-nil, is the Settings tab's shared bandwidth
-	// cap — the same *rate.Limiter instance handed to every url/webdav
-	// job's download loop across the whole daemon (not just this job's
-	// own chunks), so total combined throughput across every such job
-	// stays under one ceiling regardless of how many are running at
-	// once. Waited on in addition to Limiter, not instead of it — see
-	// waitLimiters.
+	// GlobalLimiter is the daemon-wide cap: one instance shared by every
+	// url/webdav job, waited on in addition to Limiter.
 	GlobalLimiter *rate.Limiter
 	// Sha256, if set, is the expected hex digest of the completed file.
 	// Verified once after the download reaches 100% (not per-chunk —
@@ -77,19 +74,16 @@ func waitLimiters(ctx context.Context, opt Options, n int) error {
 	return ratelimit.WaitAll(ctx, n, opt.Limiter, opt.GlobalLimiter)
 }
 
-// copyBufSize is the read/write buffer size for the streaming copy loops
-// below. 256KiB rather than a smaller default (e.g. 32KiB) cuts the
-// number of Read/WriteAt syscalls (and the goroutine wakeups that go
-// with them) per MB transferred by 8x, which matters most on a
-// concurrently chunked download where several goroutines are each
-// doing this in parallel.
+// 256KiB rather than the usual 32KiB: ~8x fewer syscalls per MB, which
+// matters most when several chunk goroutines are copying at once.
 const copyBufSize = 256 * 1024
 
 func Run(ctx context.Context, opt Options) (Result, error) {
 	if opt.Concurrency < 1 {
 		opt.Concurrency = 1
 	}
-	client := &http.Client{}
+	// See internal/httpx: pooled, no whole-request deadline.
+	client := httpx.TransferClient(false)
 	supportsRange, total, err := probe(ctx, client, opt.URL)
 	if err != nil {
 		return Result{}, err
@@ -98,6 +92,20 @@ func Run(ctx context.Context, opt Options) (Result, error) {
 	var res Result
 	if opt.Concurrency > 1 && supportsRange && total > 0 {
 		res, err = runChunked(ctx, client, opt, total)
+		if errors.Is(err, errRangeIgnored) {
+			// probe() said this server supports ranges (it advertised
+			// Accept-Ranges on HEAD), but it ignored the Range header on
+			// the actual GET — so chunking can't work here. Whatever the
+			// chunk goroutines managed to write is garbage and can't be
+			// resumed from, so drop the sidecar and start over as a
+			// single stream (which truncates the file itself). Falling
+			// back rather than failing keeps such servers working at all,
+			// just without the concurrency.
+			os.Remove(sidecarPath(opt.OutputPath))
+			single := opt
+			single.StartOffset = 0
+			res, err = runSingle(ctx, client, single, false, total)
+		}
 	} else {
 		res, err = runSingle(ctx, client, opt, supportsRange, total)
 	}
@@ -112,18 +120,10 @@ func Run(ctx context.Context, opt Options) (Result, error) {
 	return res, nil
 }
 
-// verifyChecksum hashes the completed download at path and compares it
-// (case-insensitively) against wantHex. A mismatch means the source
-// served bytes that don't match what the caller expected — most likely
-// corruption or tampering in transit, not a bug in godl's own transfer
-// path, which is exactly what this check exists to catch. But the
-// digest covers the whole file, so a mismatch can't be narrowed down to
-// which byte range is wrong: the caller removes the file (and any
-// resume sidecar) and the next attempt has no choice but to redownload
-// everything, the same tradeoff every whole-file-checksum tool makes
-// (curl/wget/aria2 included). True partial repair would need the
-// source to publish per-chunk hashes (as BitTorrent does), which plain
-// HTTP downloads generally don't have.
+// verifyChecksum compares the finished file against wantHex. A whole-file
+// digest can't localize the bad range, so a mismatch means the caller
+// deletes and redownloads everything — the same tradeoff curl, wget and
+// aria2 make. Partial repair would need per-chunk hashes.
 func verifyChecksum(path, wantHex string) error {
 	f, err := os.Open(path)
 	if err != nil {
@@ -267,6 +267,14 @@ func runSingle(ctx context.Context, client *http.Client, opt Options, supportsRa
 	}
 }
 
+// errRangeIgnored means the server answered a ranged chunk request with
+// 200 (the whole file) instead of 206 (just the requested window). Every
+// chunk goroutine would then be handed a full copy of the file and write
+// it at its own offset, overwriting its neighbours — so chunking has to
+// be abandoned entirely rather than retried. Run catches this and starts
+// over as a single stream.
+var errRangeIgnored = errors.New("server ignored the Range header")
+
 type chunkState struct {
 	Start, End, Done int64
 }
@@ -277,6 +285,153 @@ type sidecar struct {
 	Chunks []chunkState
 }
 
+// fetchChunk downloads one chunk's remaining bytes straight into its
+// final offset in f. It returns nil when the chunk is satisfied, when
+// the context is canceled, or when the server turned out to be ignoring
+// Range headers — in that last case it sets rangeIgnored and cancels the
+// siblings, since every one of them is about to write a full copy of the
+// file at its own offset.
+func fetchChunk(ctx context.Context, client *http.Client, opt Options, f *os.File, c *chunkState,
+	mu *sync.Mutex, doneCounter *atomic.Int64, rangeIgnored *atomic.Bool, cancelSiblings func()) error {
+	rangeStart := c.Start + c.Done
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, opt.URL, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", rangeStart, c.End-1))
+	resp, err := client.Do(req)
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil
+		}
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusOK {
+		// Not 206: the server is sending the whole file, not the window
+		// we asked for. See errRangeIgnored.
+		rangeIgnored.Store(true)
+		cancelSiblings()
+		return nil
+	}
+	if resp.StatusCode != http.StatusPartialContent {
+		return fmt.Errorf("chunk [%d,%d): unexpected status %s", c.Start, c.End, resp.Status)
+	}
+
+	buf := make([]byte, copyBufSize)
+	pos := rangeStart
+	for {
+		n, rerr := resp.Body.Read(buf)
+		if n > 0 {
+			// Never write outside this chunk's own [Start,End) window,
+			// whatever the server sends. Extra bytes would overwrite the
+			// next chunk's region, and since c.Done is derived from pos
+			// they would also push the completion check past this chunk's
+			// length and report a corrupt file as finished.
+			if over := pos + int64(n) - c.End; over > 0 {
+				n -= int(over)
+			}
+			if n > 0 {
+				if werr := waitLimiters(ctx, opt, n); werr != nil {
+					return werr
+				}
+				if _, werr := f.WriteAt(buf[:n], pos); werr != nil {
+					return werr
+				}
+				pos += int64(n)
+				mu.Lock()
+				c.Done = pos - c.Start
+				mu.Unlock()
+				doneCounter.Add(int64(n))
+			}
+			if pos >= c.End {
+				return nil // satisfied; ignore any trailing bytes
+			}
+		}
+		if rerr != nil {
+			if rerr == io.EOF || ctx.Err() != nil {
+				return nil
+			}
+			return rerr
+		}
+	}
+}
+
+// loadOrInitSidecar returns the resume state for this download: the
+// existing sidecar when it still describes the same URL and size, or a
+// fresh even split of total across opt.Concurrency chunks, with the
+// output file pre-truncated to its final size so every chunk can WriteAt
+// straight into its own window.
+func loadOrInitSidecar(opt Options, scPath string, total int64) (sidecar, error) {
+	var sc sidecar
+	if data, err := os.ReadFile(scPath); err == nil {
+		if json.Unmarshal(data, &sc) != nil || sc.URL != opt.URL || sc.Total != total || len(sc.Chunks) == 0 {
+			sc = sidecar{}
+		}
+	}
+	if len(sc.Chunks) > 0 {
+		return sc, nil
+	}
+
+	n := opt.Concurrency
+	chunkSize := total / int64(n)
+	chunks := make([]chunkState, 0, n)
+	for i, start := 0, int64(0); i < n; i++ {
+		end := start + chunkSize
+		if i == n-1 {
+			end = total
+		}
+		chunks = append(chunks, chunkState{Start: start, End: end})
+		start = end
+	}
+
+	f, err := os.OpenFile(opt.OutputPath, os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return sidecar{}, err
+	}
+	defer f.Close()
+	if err := f.Truncate(total); err != nil {
+		return sidecar{}, err
+	}
+	return sidecar{URL: opt.URL, Total: total, Chunks: chunks}, nil
+}
+
+// writeSidecar persists resume state via temp file + rename: this runs
+// every 250ms for the life of the download, and a crash mid-write leaves
+// truncated JSON that the resume path discards outright — losing a whole
+// multi-GB download.
+func writeSidecar(scPath string, data []byte) {
+	tmp := scPath + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		return
+	}
+	if err := os.Rename(tmp, scPath); err != nil {
+		os.Remove(tmp)
+	}
+}
+
+// startTicker runs tick every 250ms until the returned stop func is
+// called, which also waits for any in-flight tick to finish.
+func startTicker(tick func()) (stop func()) {
+	done := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		t := time.NewTicker(250 * time.Millisecond)
+		defer t.Stop()
+		for {
+			select {
+			case <-t.C:
+				tick()
+			case <-done:
+				return
+			}
+		}
+	}()
+	return func() { close(done); wg.Wait() }
+}
+
 // runChunked splits the remaining bytes into opt.Concurrency ranged
 // requests written directly into their final offsets via WriteAt, so no
 // merge step is needed. Progress per chunk is checkpointed to a JSON
@@ -284,37 +439,9 @@ type sidecar struct {
 // the incomplete parts of each chunk.
 func runChunked(ctx context.Context, client *http.Client, opt Options, total int64) (Result, error) {
 	scPath := sidecarPath(opt.OutputPath)
-	var sc sidecar
-	if data, err := os.ReadFile(scPath); err == nil {
-		if json.Unmarshal(data, &sc) != nil || sc.URL != opt.URL || sc.Total != total || len(sc.Chunks) == 0 {
-			sc = sidecar{}
-		}
-	}
-
-	if len(sc.Chunks) == 0 {
-		n := opt.Concurrency
-		chunkSize := total / int64(n)
-		chunks := make([]chunkState, 0, n)
-		start := int64(0)
-		for i := 0; i < n; i++ {
-			end := start + chunkSize
-			if i == n-1 {
-				end = total
-			}
-			chunks = append(chunks, chunkState{Start: start, End: end})
-			start = end
-		}
-		sc = sidecar{URL: opt.URL, Total: total, Chunks: chunks}
-
-		f, err := os.OpenFile(opt.OutputPath, os.O_CREATE|os.O_WRONLY, 0o644)
-		if err != nil {
-			return Result{}, err
-		}
-		if err := f.Truncate(total); err != nil {
-			f.Close()
-			return Result{}, err
-		}
-		f.Close()
+	sc, err := loadOrInitSidecar(opt, scPath, total)
+	if err != nil {
+		return Result{}, err
 	}
 
 	f, err := os.OpenFile(opt.OutputPath, os.O_WRONLY, 0o644)
@@ -328,7 +455,7 @@ func runChunked(ctx context.Context, client *http.Client, opt Options, total int
 		mu.Lock()
 		data, _ := json.Marshal(sc)
 		mu.Unlock()
-		os.WriteFile(scPath, data, 0o644)
+		writeSidecar(scPath, data)
 	}
 
 	var doneCounter atomic.Int64
@@ -336,27 +463,22 @@ func runChunked(ctx context.Context, client *http.Client, opt Options, total int
 		doneCounter.Add(c.Done)
 	}
 
-	errCh := make(chan error, len(sc.Chunks))
-	stopTicker := make(chan struct{})
-	var tickWG sync.WaitGroup
-	tickWG.Add(1)
-	go func() {
-		defer tickWG.Done()
-		t := time.NewTicker(250 * time.Millisecond)
-		defer t.Stop()
-		for {
-			select {
-			case <-t.C:
-				if opt.Progress != nil {
-					opt.Progress(doneCounter.Load(), total)
-				}
-				saveSidecar()
-			case <-stopTicker:
-				return
-			}
+	stopTicker := startTicker(func() {
+		if opt.Progress != nil {
+			opt.Progress(doneCounter.Load(), total)
 		}
-	}()
+		saveSidecar()
+	})
 
+	// cctx cancels the sibling chunk goroutines the moment one of them
+	// discovers the server is ignoring Range headers — there's no point
+	// letting the rest keep streaming whole-file copies that are about to
+	// be thrown away.
+	cctx, cancelChunks := context.WithCancel(ctx)
+	defer cancelChunks()
+	var rangeIgnored atomic.Bool
+
+	errCh := make(chan error, len(sc.Chunks))
 	var wg sync.WaitGroup
 	for i := range sc.Chunks {
 		c := &sc.Chunks[i]
@@ -364,63 +486,24 @@ func runChunked(ctx context.Context, client *http.Client, opt Options, total int
 			continue
 		}
 		wg.Add(1)
-		go func(c *chunkState) {
+		go func() {
 			defer wg.Done()
-			rangeStart := c.Start + c.Done
-			req, err := http.NewRequestWithContext(ctx, http.MethodGet, opt.URL, nil)
-			if err != nil {
+			if err := fetchChunk(cctx, client, opt, f, c, &mu, &doneCounter, &rangeIgnored, cancelChunks); err != nil {
 				errCh <- err
-				return
 			}
-			req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", rangeStart, c.End-1))
-			resp, err := client.Do(req)
-			if err != nil {
-				if ctx.Err() == nil {
-					errCh <- err
-				}
-				return
-			}
-			defer resp.Body.Close()
-			if resp.StatusCode != http.StatusPartialContent && resp.StatusCode != http.StatusOK {
-				errCh <- fmt.Errorf("chunk [%d,%d): unexpected status %s", c.Start, c.End, resp.Status)
-				return
-			}
-
-			buf := make([]byte, copyBufSize)
-			pos := rangeStart
-			for {
-				n, rerr := resp.Body.Read(buf)
-				if n > 0 {
-					if werr := waitLimiters(ctx, opt, n); werr != nil {
-						errCh <- werr
-						return
-					}
-					if _, werr := f.WriteAt(buf[:n], pos); werr != nil {
-						errCh <- werr
-						return
-					}
-					pos += int64(n)
-					mu.Lock()
-					c.Done = pos - c.Start
-					mu.Unlock()
-					doneCounter.Add(int64(n))
-				}
-				if rerr != nil {
-					if rerr == io.EOF {
-						return
-					}
-					if ctx.Err() != nil {
-						return
-					}
-					errCh <- rerr
-					return
-				}
-			}
-		}(c)
+		}()
 	}
 	wg.Wait()
-	close(stopTicker)
-	tickWG.Wait()
+	stopTicker()
+
+	// Checked before saving the sidecar and before the error/cancellation
+	// paths below: cancelChunks above makes cctx (and any sibling's
+	// error) report cancellation, which would otherwise mask the real
+	// reason. The partial file is unusable, so its resume state must not
+	// be persisted either.
+	if rangeIgnored.Load() {
+		return Result{}, errRangeIgnored
+	}
 	saveSidecar()
 
 	select {
@@ -432,19 +515,14 @@ func runChunked(ctx context.Context, client *http.Client, opt Options, total int
 		return Result{BytesDone: doneCounter.Load()}, ctx.Err()
 	}
 
-	allDone := true
 	for _, c := range sc.Chunks {
 		if c.Done < c.End-c.Start {
-			allDone = false
-			break
+			return Result{BytesDone: doneCounter.Load()}, fmt.Errorf("download did not complete")
 		}
 	}
-	if allDone {
-		os.Remove(scPath)
-		if opt.Progress != nil {
-			opt.Progress(total, total)
-		}
-		return Result{BytesDone: total, Completed: true}, nil
+	os.Remove(scPath)
+	if opt.Progress != nil {
+		opt.Progress(total, total)
 	}
-	return Result{BytesDone: doneCounter.Load()}, fmt.Errorf("download did not complete")
+	return Result{BytesDone: total, Completed: true}, nil
 }

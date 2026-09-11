@@ -7,25 +7,18 @@ package webdav
 
 import (
 	"context"
-	"crypto/tls"
 	"encoding/base64"
 	"encoding/xml"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
-	"os"
 	"path"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
-	"golang.org/x/time/rate"
-
-	"godl/internal/ratelimit"
+	"godl/internal/httpx"
 )
 
 // Entry describes one file or directory found via PROPFIND. Path is
@@ -57,14 +50,12 @@ func New(baseURL, username, password string, insecureSkipVerify bool) (*Client, 
 	if u.Scheme != "http" && u.Scheme != "https" {
 		return nil, fmt.Errorf("webdav url must be http:// or https://, got %q", baseURL)
 	}
-	// A bespoke Transport (needed for InsecureSkipVerify) doesn't pick
-	// up proxy env vars the way http.DefaultTransport does unless told
-	// to explicitly.
-	tr := &http.Transport{Proxy: http.ProxyFromEnvironment}
-	if insecureSkipVerify {
-		tr.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
-	}
-	return &Client{base: u, Username: username, Password: password, HTTP: &http.Client{Transport: tr}}, nil
+	return &Client{
+		base:     u,
+		Username: username,
+		Password: password,
+		HTTP:     httpx.TransferClient(insecureSkipVerify),
+	}, nil
 }
 
 func (c *Client) resolve(remotePath string) *url.URL {
@@ -142,82 +133,6 @@ const propfindBody = `<?xml version="1.0" encoding="utf-8" ?>
   </D:prop>
 </D:propfind>`
 
-// retry429Max bounds how many times a request that comes back 429 (Too
-// Many Requests) is retried before giving up. Some WebDAV backends —
-// cloud-storage-proxying services like TorBox in particular — rate-limit
-// aggressively enough that even a single PROPFIND against the root can
-// get 429'd, especially right after a burst of activity (Walk fanning
-// out across a folder tree, a previous browse session, ...); without a
-// retry, that looks exactly like a broken connection instead of the
-// transient "back off a moment" it actually is.
-const retry429Max = 5
-
-// maxRetryDelay caps how long a single wait is, whether it comes from
-// the server's own Retry-After header or godl's own exponential
-// fallback — a server advertising a very long Retry-After shouldn't
-// hang a download that long; better to retry sooner and let
-// retry429Max end things if the server really is unavailable.
-const maxRetryDelay = 30 * time.Second
-
-// retryBackoffUnit is the base of the exponential fallback used when a
-// 429 carries no Retry-After header: 1x, 2x, 4x, 8x, 16x this value. A
-// var (not a const), purely so a test can shrink it to a few
-// milliseconds instead of a test actually sleeping through real
-// backoff delays.
-var retryBackoffUnit = time.Second
-
-// doRetrying429 runs do (one HTTP round trip) and, on a 429 response,
-// waits and retries — honoring the server's Retry-After header
-// (seconds form; that's the only form real rate-limiting backends send
-// in practice) when present, otherwise backing off exponentially (1s,
-// 2s, 4s, ...) — up to retry429Max attempts total. Any other status or
-// a transport error is returned as-is on the first try. do is called
-// again on each retry (not just its response re-read), so a caller
-// building a fresh *http.Request inside it — required anyway, since a
-// request's body reader can't be replayed — gets one naturally.
-func doRetrying429(ctx context.Context, do func() (*http.Response, error)) (*http.Response, error) {
-	var resp *http.Response
-	var err error
-	for attempt := 0; attempt < retry429Max; attempt++ {
-		resp, err = do()
-		if err != nil || resp.StatusCode != http.StatusTooManyRequests {
-			return resp, err
-		}
-		delay, ok := retryAfterDelay(resp.Header.Get("Retry-After"))
-		resp.Body.Close()
-		if !ok {
-			delay = time.Duration(1<<attempt) * retryBackoffUnit
-		}
-		if delay > maxRetryDelay {
-			delay = maxRetryDelay
-		}
-		select {
-		case <-time.After(delay):
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		}
-	}
-	return resp, err
-}
-
-// retryAfterDelay parses a Retry-After header's seconds form into a
-// duration. ok is false — meaning "fall back to exponential backoff
-// instead" — only when the header is missing, negative, or in the less
-// common HTTP-date form (not worth the extra parsing given how rarely
-// real servers send that form for a rate-limit response); "0" is a
-// legitimate value (retry essentially immediately) and must return
-// (0, true), not be mistaken for "absent".
-func retryAfterDelay(v string) (delay time.Duration, ok bool) {
-	if v == "" {
-		return 0, false
-	}
-	secs, err := strconv.Atoi(v)
-	if err != nil || secs < 0 {
-		return 0, false
-	}
-	return time.Duration(secs) * time.Second, true
-}
-
 // WebDAV multistatus response shapes. Matching is by {namespace, local
 // name} regardless of the namespace prefix a given server chooses
 // ("D:", "d:", ...), since they all declare xmlns:*="DAV:".
@@ -245,19 +160,10 @@ type resourceType struct {
 	Collection *struct{} `xml:"DAV: collection"`
 }
 
-// propfindTimeout bounds one propfind() call end to end, including
-// whatever 429 retries doRetrying429 performs inside it (worst case
-// retry429Max * maxRetryDelay ≈ 150s) plus margin for the response
-// itself. Without this, a connection that never gets a response at
-// all — not a 429, just silence — hangs forever: neither the job's own
-// context nor http.Client enforce any timeout on their own. That
-// mattered little for a single PROPFIND, but Walk fans out up to
-// walkConcurrency requests at once for a deep or wide folder tree, so
-// the more there is to walk, the higher the odds of hitting one
-// wedged connection — and since Walk waits on every request it
-// started, one wedge stalls the whole recursive walk. A var (not a
-// const), purely so a test can shrink it instead of actually waiting
-// out the timeout.
+// propfindTimeout bounds one propfind() call end to end, 429 retries
+// included. Without it a connection that never answers at all — not a
+// 429, just silence — hangs forever, and since Walk waits on every
+// request it started, one wedge stalls the whole walk. Var for tests.
 var propfindTimeout = 3 * time.Minute
 
 func (c *Client) propfind(ctx context.Context, remotePath, depth string) (*multistatus, error) {
@@ -265,7 +171,7 @@ func (c *Client) propfind(ctx context.Context, remotePath, depth string) (*multi
 	defer cancel()
 
 	target := c.resolve(remotePath)
-	resp, err := doRetrying429(ctx, func() (*http.Response, error) {
+	resp, err := c.doRetrying429(ctx, func() (*http.Response, error) {
 		req, err := http.NewRequestWithContext(ctx, "PROPFIND", target.String(), strings.NewReader(propfindBody))
 		if err != nil {
 			return nil, err
@@ -359,71 +265,99 @@ func normalizeDirPath(p string) string {
 	return trimmed
 }
 
-// walkConcurrency bounds how many PROPFIND requests Walk has in flight
-// at once. The tree can fan out arbitrarily wide (spawning a goroutine
-// per subdirectory found costs only a few KB of stack each, so that
-// part is unbounded), but actual network requests are capped here —
-// matching godl url's default chunk concurrency, and staying polite to
-// WebDAV servers that may not expect a flood of concurrent requests.
-const walkConcurrency = 8
+// Matches hostGateDefaultLimit: the gate is what actually caps requests,
+// so a looser bound here would only queue goroutines behind it.
+const walkConcurrency = hostGateDefaultLimit
 
 // Walk recursively lists every file (not directory) under root, using
 // Depth:1 PROPFIND at each level rather than Depth:infinity — many
 // WebDAV servers reject or cap infinite-depth requests on large trees.
-// Sibling and cross-level directories are listed concurrently (up to
-// walkConcurrency at once) rather than one at a time, so a deep or wide
-// tree doesn't pay for its PROPFIND round-trips serially.
+// Sibling and cross-level directories are listed concurrently rather
+// than one at a time, so a deep or wide tree doesn't pay for its
+// PROPFIND round-trips serially.
+//
+// A fixed worker pool draining a shared queue, not a goroutine per
+// directory: the latter parks tens of thousands of goroutines on a large
+// share for no gain (the host gate caps requests anyway), and recursive
+// spawning against a semaphore can deadlock when a parent holds the slot
+// its child needs.
 func (c *Client) Walk(ctx context.Context, root string) ([]Entry, error) {
-	sem := make(chan struct{}, walkConcurrency)
+	// Cancelable so the first failure stops PROPFINDs already in flight
+	// (and unblocks parents waiting for a slot) instead of letting the
+	// whole tree finish walking just to throw the result away.
+	wctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	var (
 		mu       sync.Mutex
+		cond     = sync.NewCond(&mu)
+		queue    = []string{root} // directories found but not yet listed
+		active   int              // workers currently inside a PROPFIND
 		files    []Entry
 		firstErr error
-		wg       sync.WaitGroup
 	)
 
-	var walk func(p string)
-	walk = func(p string) {
-		defer wg.Done()
-
+	// Cond can't wait on a context, so cancellation wakes the workers
+	// explicitly. Without this, a canceled walk would sit blocked in
+	// cond.Wait until some other worker happened to broadcast.
+	go func() {
+		<-wctx.Done()
 		mu.Lock()
-		stop := firstErr != nil
+		cond.Broadcast()
 		mu.Unlock()
-		if stop || ctx.Err() != nil {
-			return
-		}
+	}()
 
-		sem <- struct{}{}
-		children, err := c.List(ctx, p)
-		<-sem
-		if err != nil {
-			mu.Lock()
-			if firstErr == nil {
-				firstErr = err
+	var wg sync.WaitGroup
+	for i := 0; i < walkConcurrency; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				mu.Lock()
+				// Nothing to take, but a peer is still listing and may
+				// yet queue more: wait rather than exit. Once the queue
+				// is empty and nobody is active, the tree is exhausted.
+				for len(queue) == 0 && active > 0 && firstErr == nil && wctx.Err() == nil {
+					cond.Wait()
+				}
+				if len(queue) == 0 || firstErr != nil || wctx.Err() != nil {
+					mu.Unlock()
+					cond.Broadcast() // let the other workers reach the same conclusion
+					return
+				}
+				p := queue[len(queue)-1]
+				queue = queue[:len(queue)-1]
+				active++
+				mu.Unlock()
+
+				children, err := c.List(wctx, p)
+
+				mu.Lock()
+				active--
+				if err != nil {
+					// A cancellation here is a consequence of some other
+					// worker's failure, not a failure of its own —
+					// recording it would mask the real error.
+					if wctx.Err() == nil && firstErr == nil {
+						firstErr = err
+					}
+					mu.Unlock()
+					cancel()
+					cond.Broadcast()
+					return
+				}
+				for _, e := range children {
+					if e.IsDir {
+						queue = append(queue, e.Path)
+					} else {
+						files = append(files, e)
+					}
+				}
+				mu.Unlock()
+				cond.Broadcast()
 			}
-			mu.Unlock()
-			return
-		}
-
-		var dirs []string
-		mu.Lock()
-		for _, e := range children {
-			if e.IsDir {
-				dirs = append(dirs, e.Path)
-			} else {
-				files = append(files, e)
-			}
-		}
-		mu.Unlock()
-
-		for _, d := range dirs {
-			wg.Add(1)
-			go walk(d)
-		}
+		}()
 	}
-
-	wg.Add(1)
-	go walk(root)
 	wg.Wait()
 
 	if firstErr != nil {
@@ -433,142 +367,4 @@ func (c *Client) Walk(ctx context.Context, root string) ([]Entry, error) {
 		return nil, err
 	}
 	return files, nil
-}
-
-// downloadIdleTimeout bounds how long Download will wait without
-// receiving any new response data before giving up — distinct from the
-// overall transfer time, which is intentionally unbounded (a large
-// file can legitimately take far longer than this to finish, so a flat
-// cap on the whole download would be wrong). What this catches is a
-// connection that goes silent mid-transfer and never recovers — cloud-
-// storage-proxying backends like TorBox can do this under load — which
-// would otherwise hang the download forever, since neither the job's
-// own context nor http.Client enforce any timeout of their own. A var
-// (not a const), purely so a test can shrink it instead of actually
-// waiting out the timeout.
-var downloadIdleTimeout = 90 * time.Second
-
-// Download fetches remotePath to localPath, resuming from localPath's
-// existing size via a Range request if it's already partially present.
-// Returns the total bytes now on disk (not just bytes newly written).
-// limiter, if non-nil, caps this download's rate — the same
-// *rate.Limiter instance passed by a caller downloading several files
-// of one job concurrently (see internal/daemon's startWebDAV) shares
-// one cap across all of them, so the job's own concurrency doesn't
-// multiply it. globalLimiter, if non-nil, is the Settings tab's shared
-// bandwidth cap — the same instance handed to every webdav (and url)
-// job's download loop across the whole daemon, waited on in addition
-// to limiter rather than instead of it.
-func (c *Client) Download(ctx context.Context, remotePath, localPath string, limiter, globalLimiter *rate.Limiter, progress func(done, total int64)) (int64, error) {
-	if err := os.MkdirAll(filepath.Dir(localPath), 0o755); err != nil {
-		return 0, err
-	}
-
-	var start int64
-	if fi, err := os.Stat(localPath); err == nil {
-		start = fi.Size()
-	}
-
-	f, err := os.OpenFile(localPath, os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
-		return 0, err
-	}
-	defer f.Close()
-
-	// dlCtx (derived from ctx, not ctx itself) is what the request and
-	// its body reads run under, so the idle watchdog below can abort a
-	// stalled transfer without touching the caller's own ctx — a
-	// distinction the error handling after both doRetrying429 and the
-	// read loop relies on to tell "genuinely canceled" (ctx.Err() set)
-	// apart from "our own idle timer fired" (idleFired set).
-	dlCtx, dlCancel := context.WithCancel(ctx)
-	defer dlCancel()
-	var idleFired atomic.Bool
-	idle := time.AfterFunc(downloadIdleTimeout, func() {
-		idleFired.Store(true)
-		dlCancel()
-	})
-	defer idle.Stop()
-
-	resp, err := doRetrying429(dlCtx, func() (*http.Response, error) {
-		req, err := http.NewRequestWithContext(dlCtx, http.MethodGet, c.resolve(remotePath).String(), nil)
-		if err != nil {
-			return nil, err
-		}
-		c.setAuth(req)
-		if start > 0 {
-			req.Header.Set("Range", fmt.Sprintf("bytes=%d-", start))
-		}
-		return c.HTTP.Do(req)
-	})
-	if err != nil {
-		if idleFired.Load() {
-			return start, fmt.Errorf("downloading %s: no data received for %s, giving up", remotePath, downloadIdleTimeout)
-		}
-		return start, err
-	}
-	defer resp.Body.Close()
-	idle.Reset(downloadIdleTimeout) // headers arrived; give the body its own full window rather than sharing the one used to wait for them
-
-	switch resp.StatusCode {
-	case http.StatusOK:
-		// Either we didn't ask for a range, or the server ignored it —
-		// either way it's sending the whole file, so start over.
-		start = 0
-		if _, err := f.Seek(0, io.SeekStart); err != nil {
-			return 0, err
-		}
-		if err := f.Truncate(0); err != nil {
-			return 0, err
-		}
-	case http.StatusPartialContent:
-		if _, err := f.Seek(start, io.SeekStart); err != nil {
-			return start, err
-		}
-	default:
-		return start, fmt.Errorf("unexpected status downloading %s: %s", remotePath, resp.Status)
-	}
-
-	total := int64(-1)
-	if resp.ContentLength >= 0 {
-		total = start + resp.ContentLength
-	}
-
-	// 256KiB, not a smaller default: fewer Read/Write syscalls per MB
-	// transferred (see the matching constant in internal/downloader).
-	buf := make([]byte, 256*1024)
-	written := start
-	lastReport := time.Now()
-	for {
-		n, rerr := resp.Body.Read(buf)
-		if n > 0 {
-			idle.Reset(downloadIdleTimeout)
-			if werr := ratelimit.WaitAll(ctx, n, limiter, globalLimiter); werr != nil {
-				return written, werr
-			}
-			if _, werr := f.Write(buf[:n]); werr != nil {
-				return written, werr
-			}
-			written += int64(n)
-			if progress != nil && time.Since(lastReport) > 200*time.Millisecond {
-				progress(written, total)
-				lastReport = time.Now()
-			}
-		}
-		if rerr != nil {
-			if rerr == io.EOF {
-				if progress != nil {
-					progress(written, total)
-				}
-				return written, nil
-			}
-			if idleFired.Load() {
-				return written, fmt.Errorf("downloading %s: no data received for %s, giving up", remotePath, downloadIdleTimeout)
-			}
-			if ctx.Err() != nil {
-				return written, ctx.Err()
-			}
-			return written, rerr
-		}
-	}
 }

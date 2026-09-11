@@ -8,6 +8,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"godl/internal/version"
+	"godl/tui"
 )
 
 var rootCmd = &cobra.Command{
@@ -25,7 +26,7 @@ remove/list subcommands to script it.`,
 	SilenceErrors: true,
 	Args:          cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return runStatusTUI()
+		return tui.Run()
 	},
 }
 

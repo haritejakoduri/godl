@@ -18,6 +18,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 )
 
 // installHint names the OS-appropriate way to install mpv, for an
@@ -139,7 +140,7 @@ func Play(target string, headers map[string]string) error {
 		for k, v := range headers {
 			fields = append(fields, fmt.Sprintf("%s: %s", k, v))
 		}
-		args = append(args, "--http-header-fields="+joinComma(fields))
+		args = append(args, "--http-header-fields="+strings.Join(fields, ","))
 	}
 	args = append(args, target)
 
@@ -151,12 +152,4 @@ func Play(target string, headers map[string]string) error {
 	// Detached on purpose (see doc comment): release rather than Wait,
 	// so godl's own process exiting doesn't reap/signal the player.
 	return cmd.Process.Release()
-}
-
-func joinComma(fields []string) string {
-	out := fields[0]
-	for _, f := range fields[1:] {
-		out += "," + f
-	}
-	return out
 }

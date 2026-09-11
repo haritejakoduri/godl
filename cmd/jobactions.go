@@ -6,6 +6,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"godl/internal/daemon"
+	"godl/internal/format"
 )
 
 func jobActionCmd(use, short, apiCmd, verb string) *cobra.Command {
@@ -22,7 +23,7 @@ func jobActionCmd(use, short, apiCmd, verb string) *cobra.Command {
 				return err
 			}
 			j := resp.Job
-			fmt.Printf("%s %s (%s, %s/%s)\n", j.ID, verb, j.Status, humanBytes(j.BytesDone), humanBytes(j.BytesTotal))
+			fmt.Printf("%s %s (%s, %s/%s)\n", j.ID, verb, j.Status, format.Bytes(j.BytesDone), format.Bytes(j.BytesTotal))
 			return nil
 		},
 	}

@@ -46,13 +46,8 @@ type Options struct {
 	// use), so splitting into more chunks doesn't multiply the cap.
 	// nil means unlimited.
 	Limiter *rate.Limiter
-	// GlobalLimiter, if non-nil, is the Settings tab's shared bandwidth
-	// cap — the same *rate.Limiter instance handed to every url/webdav
-	// job's download loop across the whole daemon (not just this job's
-	// own chunks), so total combined throughput across every such job
-	// stays under one ceiling regardless of how many are running at
-	// once. Waited on in addition to Limiter, not instead of it — see
-	// waitLimiters.
+	// GlobalLimiter is the daemon-wide cap: one instance shared by every
+	// url/webdav job, waited on in addition to Limiter.
 	GlobalLimiter *rate.Limiter
 	// Sha256, if set, is the expected hex digest of the completed file.
 	// Verified once after the download reaches 100% (not per-chunk —
@@ -79,23 +74,15 @@ func waitLimiters(ctx context.Context, opt Options, n int) error {
 	return ratelimit.WaitAll(ctx, n, opt.Limiter, opt.GlobalLimiter)
 }
 
-// copyBufSize is the read/write buffer size for the streaming copy loops
-// below. 256KiB rather than a smaller default (e.g. 32KiB) cuts the
-// number of Read/WriteAt syscalls (and the goroutine wakeups that go
-// with them) per MB transferred by 8x, which matters most on a
-// concurrently chunked download where several goroutines are each
-// doing this in parallel.
+// 256KiB rather than the usual 32KiB: ~8x fewer syscalls per MB, which
+// matters most when several chunk goroutines are copying at once.
 const copyBufSize = 256 * 1024
 
 func Run(ctx context.Context, opt Options) (Result, error) {
 	if opt.Concurrency < 1 {
 		opt.Concurrency = 1
 	}
-	// Pooled and timeout-bounded, but with no whole-request deadline —
-	// see internal/httpx. The pool matters most here: a chunked download
-	// issues opt.Concurrency ranged requests to one host at once, and
-	// Go's default of two idle connections per host meant most of them
-	// paid for a fresh TCP and TLS handshake on every chunk.
+	// See internal/httpx: pooled, no whole-request deadline.
 	client := httpx.TransferClient(false)
 	supportsRange, total, err := probe(ctx, client, opt.URL)
 	if err != nil {
@@ -133,18 +120,10 @@ func Run(ctx context.Context, opt Options) (Result, error) {
 	return res, nil
 }
 
-// verifyChecksum hashes the completed download at path and compares it
-// (case-insensitively) against wantHex. A mismatch means the source
-// served bytes that don't match what the caller expected — most likely
-// corruption or tampering in transit, not a bug in godl's own transfer
-// path, which is exactly what this check exists to catch. But the
-// digest covers the whole file, so a mismatch can't be narrowed down to
-// which byte range is wrong: the caller removes the file (and any
-// resume sidecar) and the next attempt has no choice but to redownload
-// everything, the same tradeoff every whole-file-checksum tool makes
-// (curl/wget/aria2 included). True partial repair would need the
-// source to publish per-chunk hashes (as BitTorrent does), which plain
-// HTTP downloads generally don't have.
+// verifyChecksum compares the finished file against wantHex. A whole-file
+// digest can't localize the bad range, so a mismatch means the caller
+// deletes and redownloads everything — the same tradeoff curl, wget and
+// aria2 make. Partial repair would need per-chunk hashes.
 func verifyChecksum(path, wantHex string) error {
 	f, err := os.Open(path)
 	if err != nil {
@@ -353,12 +332,9 @@ func runChunked(ctx context.Context, client *http.Client, opt Options, total int
 	defer f.Close()
 
 	var mu sync.Mutex
-	// Written via temp-file + rename (same pattern as
-	// internal/connections) because this runs every 250ms for the whole
-	// life of the download: a crash during a plain in-place write leaves
-	// truncated JSON, which the resume path above discards outright —
-	// throwing away every byte of a multi-GB download that was otherwise
-	// perfectly resumable.
+	// Temp-file + rename: this runs every 250ms for the life of the
+	// download, and a crash mid-write leaves truncated JSON that the
+	// resume path discards outright — losing a whole multi-GB download.
 	saveSidecar := func() {
 		mu.Lock()
 		data, _ := json.Marshal(sc)

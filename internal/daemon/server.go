@@ -30,11 +30,9 @@ import (
 	"godl/internal/ytdlp"
 )
 
-// runtime holds the in-memory state of an active job that doesn't belong
-// in the database: how to cancel it, the samples needed for a live
-// speed/ETA, and a done channel that closes only after the job's
-// goroutine has finished persisting its terminal state — so pause/cancel
-// handlers can wait for it and avoid racing the goroutine's own DB write.
+// runtime is an active job's in-memory state. done closes only after the
+// job's goroutine has persisted its terminal state, so pause/cancel can
+// wait on it instead of racing that write.
 type runtime struct {
 	mu         sync.Mutex
 	cancel     context.CancelFunc
@@ -44,30 +42,18 @@ type runtime struct {
 	speedBps   float64
 	lastBytes  int64
 	lastTime   time.Time
-	// lastPersist/lastPersistBytes track when this job's progress was
-	// last written to the store, so reportProgress can skip most of
-	// those writes — see progressPersistInterval.
+	// See progressPersistInterval.
 	lastPersist      time.Time
 	lastPersistBytes int64
 }
 
-// progressPersistInterval and progressPersistBytes bound how stale the
-// stored byte counts may be while a job is running: whichever comes
-// first triggers a write.
-//
-// Progress callbacks fire roughly every 200ms per stream, and a WebDAV
-// folder job runs several files at once, each with its own — so
-// persisting every callback meant tens of sqlite transactions a second
-// for one job, all serialized through the store's single connection and
-// competing with the TUI's own reads. The numbers themselves are
-// re-derived from the file on disk when a download resumes; what the
-// store holds is a checkpoint, not the source of truth.
-//
-// The cost of the throttle is bounded and stated: an ungraceful daemon
-// death (kill -9, power loss) loses at most this much progress, and the
-// byte trigger keeps that small on a fast link even though the interval
-// is coarse. Terminal transitions don't rely on it at all — finishJob
-// and pause write the final counts directly.
+// How stale the stored byte counts may get while a job runs; whichever
+// trips first forces a write. Progress callbacks fire ~5x a second per
+// stream and a folder job runs several at once, so persisting each one
+// meant tens of sqlite transactions a second through a single
+// connection. What's stored is a checkpoint — resume re-derives from the
+// file on disk — so an ungraceful death costs at most this much, and
+// finishJob/pause write the final counts regardless.
 //
 // Vars, not consts, so tests can shrink them.
 var (
@@ -102,51 +88,28 @@ type Daemon struct {
 	logMu   sync.Mutex
 	logSubs map[chan logMsg]struct{}
 
-	// settingsMu guards settings, the in-memory cache of the store's
-	// settings table — read on every job start/finish (max concurrency,
-	// default rate limit, auto-retry, notifications), so those hot
-	// paths don't hit sqlite each time. Refreshed on every set_settings.
+	// Cache of the store's settings table, read on every job
+	// start/finish so those paths don't hit sqlite. Refreshed on save.
 	settingsMu sync.RWMutex
 	settings   store.Settings
 
-	// globalMu guards globalLimiter and globalRateLimitBps, both derived
-	// from settings.GlobalRateLimit and rebuilt together (see
-	// rebuildGlobalLimiter) whenever it changes.
-	//
-	// globalLimiter is one *rate.Limiter instance shared by every
-	// concurrently active url/webdav job's download loop — since
-	// rate.Limiter is safe for concurrent use, handing the very same
-	// instance to N jobs at once makes their combined throughput share
-	// one token bucket, actually enforcing "N jobs together stay under
-	// this ceiling" rather than each independently allowing up to it
-	// (which would let combined throughput reach N times the setting).
-	// nil means unlimited.
-	//
-	// globalRateLimitBps is the same cap as a raw bytes/sec number,
-	// for job types that can't share globalLimiter's bucket: torrent
-	// (anacrolix/torrent takes its own single client-wide limiter, not
-	// an externally supplied *rate.Limiter) and social (a yt-dlp
-	// subprocess, capped via its own --limit-rate flag). Those job
-	// types instead each get individually capped at
-	// min(their own LimitRate, globalRateLimitBps) — every such job
-	// individually respects the ceiling, but since they're not drawing
-	// from one shared bucket, several running at once (or alongside
-	// url/webdav jobs, which do share the real bucket) can still add up
-	// to more than globalRateLimitBps combined. 0 means unlimited.
+	// Both derived from settings.GlobalRateLimit; see its doc comment in
+	// internal/store for what each job type does with it. globalLimiter
+	// is one shared instance — handing the same *rate.Limiter to every
+	// url/webdav job is what makes their combined throughput share one
+	// bucket. globalRateLimitBps is the same cap as a number, for the
+	// job types that can't draw from that bucket. 0/nil means unlimited.
 	globalMu           sync.RWMutex
 	globalLimiter      *rate.Limiter
 	globalRateLimitBps int64
 
-	// tryMu guards tryStartQueued's re-entrancy flags — see its own doc
-	// comment for why it can be re-entered at all.
+	// See tryStartQueued for why it can be re-entered.
 	tryMu      sync.Mutex
 	tryRunning bool
 	tryAgain   bool
 
-	// retryMu guards retryTimers, the pending auto-retry backoff timers
-	// keyed by job ID (see scheduleAutoRetry/finishJob) — tracked so
-	// Close can stop them, rather than letting one fire after the store
-	// it would write to is already closed.
+	// Pending auto-retry timers, tracked so Close can stop them rather
+	// than letting one fire after the store it writes to is closed.
 	retryMu     sync.Mutex
 	retryTimers map[string]*time.Timer
 }
@@ -192,14 +155,9 @@ func NewDaemon() (*Daemon, error) {
 	return d, nil
 }
 
-// rebuildGlobalLimiter derives globalLimiter/globalRateLimitBps from
-// s.GlobalRateLimit and swaps them in — called at startup and after
-// every successful applySettings. A fresh *rate.Limiter (rather than
-// mutating the existing one's rate) means every job currently holding
-// a reference to the old instance keeps running against the cap it
-// started with until it naturally picks up the new one on its own next
-// start, the same "don't retroactively change a running job's own
-// LimitRate either" behavior the per-job cap already has.
+// rebuildGlobalLimiter swaps in a fresh limiter rather than mutating the
+// existing one's rate, so jobs already holding the old instance keep the
+// cap they started with — matching how a per-job LimitRate behaves.
 func (d *Daemon) rebuildGlobalLimiter(s store.Settings) {
 	var bps int64
 	if s.GlobalRateLimit != "" {
@@ -226,10 +184,8 @@ func (d *Daemon) cachedGlobalRateLimitBps() int64 {
 }
 
 // minPositiveRate returns the smaller of a and b, treating <=0 as
-// "unset" rather than "zero" — so a job with no cap of its own still
-// picks up a global cap, and a global cap of 0 (unlimited) doesn't
-// clobber a job's own explicit cap. Returns 0 (unlimited) only when
-// both are unset.
+// "unset" rather than zero, so neither an absent job cap nor an absent
+// global cap clobbers the other.
 func minPositiveRate(a, b int64) int64 {
 	switch {
 	case a <= 0:
@@ -521,30 +477,14 @@ func (d *Daemon) createJob(ctx context.Context, typ store.JobType, source, outpu
 	return j, nil
 }
 
-// start dispatches a job to its type-specific starter, recovering from any
-// panic that escapes it. Job starters do real work (parsing sources,
-// talking to third-party libraries like anacrolix/torrent) synchronously
-// on this goroutine before handing off to a background one, so a bug or
-// a malformed input surfacing as a panic here would otherwise crash the
-// entire daemon process — every job, not just this one. That's especially
-// bad for resumeInterruptedJobs, which calls start for jobs restored from
-// disk: without this recover, a single bad persisted job would crash the
-// daemon on every subsequent restart, forever. Recovered panics are
-// reported the same way an ordinary error would be: the job fails, and
-// every other job keeps running.
+// start launches j if a concurrency slot is free, and reports whether
+// the slot was taken — tryStartQueued relies on that to stop, since a
+// job that can't start stays queued and would be handed back forever.
 //
-// Every caller that wants a job running — the four add_* handlers,
-// resume, retry, resumeInterruptedJobs, and the auto-retry timer — goes
-// through here rather than calling a startX function directly, so the
-// max-concurrent-downloads cap (see acquireSlot) only has to be
-// enforced in one place. When the cap is full, start is a no-op: the
-// job simply stays in the store as StatusQueued (every caller sets that
-// before calling start, same as a brand new job already does) and
-// tryStartQueued picks it up once a slot frees.
-// start launches j if a concurrency slot is free. It reports whether the
-// slot was taken — tryStartQueued relies on that to stop, since a job
-// that can't start stays queued in the store and would otherwise be
-// handed back on the very next pass, forever.
+// Every caller goes through here rather than calling a startX directly,
+// so the concurrency cap is enforced in one place. The recover matters
+// most for resumeInterruptedJobs: without it one bad persisted job would
+// crash the daemon on every restart, forever.
 func (d *Daemon) start(j *store.Job) bool {
 	if !d.acquireSlot(j.ID) {
 		return false

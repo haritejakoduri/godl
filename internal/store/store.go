@@ -47,20 +47,13 @@ type Job struct {
 	Output      string // destination file (url) or directory (social/torrent)
 	Format      string // yt-dlp -f value, social jobs only
 	Concurrency int    // url jobs only
-	// LimitRate caps this job's own transfer at this many bytes/second
-	// (0 = unlimited). Persisted so pause/resume/retry reapply the same
-	// cap the job was started with instead of silently going unlimited.
-	// Torrent jobs share one client-wide limiter (see internal/torrentmgr)
-	// rather than a true per-job one — the last torrent job to set this
-	// wins for all of them, a limitation of the underlying torrent
-	// library, not of this field.
+	// Bytes/second, 0 = unlimited. Persisted so pause/resume reapply the
+	// cap the job started with. Torrent jobs share one client-wide
+	// limiter, so the last one to set this wins for all of them.
 	LimitRate int64
-	// Sha256 is the expected hex digest for url jobs (empty = no
-	// verification). Persisted so pause/resume/retry re-verify against
-	// the same value the job was started with. See internal/downloader's
-	// verifyChecksum for why a mismatch means the whole file is
-	// redownloaded rather than repaired: the digest covers the whole
-	// file, so there's no way to know which part is bad.
+	// Expected hex digest for url jobs, empty to skip. See
+	// downloader.verifyChecksum for why a mismatch redownloads
+	// everything.
 	Sha256     string
 	Status     JobStatus
 	BytesDone  int64
@@ -73,31 +66,22 @@ type Job struct {
 	// itself doesn't need it: anacrolix/torrent re-verifies whatever
 	// piece data already exists on disk when the torrent is re-added.
 	InfoHash string
-	// ResolvedPaths holds the actual file(s) written to disk, for job
-	// types where Output is a directory rather than the exact file:
-	// the torrent's content path (Output/<torrent name>) once its info
-	// is known, or each file yt-dlp actually produced (its own naming,
-	// and only the final post-merge/post-processed path — not
-	// intermediate video/audio streams that get deleted after
-	// merging). url jobs don't need this: Output already is the exact
-	// file. Used by "godl remove --purge" to know what to delete.
+	// The actual file(s) on disk, for job types where Output is a
+	// directory. url jobs don't need it — Output is already the file.
+	// Used by "godl remove --purge" to know what to delete.
 	ResolvedPaths []string
 	ErrorMsg      string
-	// RetryCount is how many times the daemon has auto-retried this job
-	// since its last success (see Settings.AutoRetry). A manual "godl
-	// retry" resets it to 0 — it tracks the automated backoff streak,
-	// not a lifetime total. Always 0 unless auto-retry is/was enabled.
+	// Auto-retries since the last success. A manual retry resets it: it
+	// tracks the backoff streak, not a lifetime total.
 	RetryCount int
 	CreatedAt  time.Time
 	UpdatedAt  time.Time
 }
 
-// Settings holds the daemon's user-configurable defaults, edited from
-// the TUI's Settings tab (or godl settings) and applied to every job
-// from then on until changed again. Stored as individual key/value rows
-// (see the settings table) rather than one JSON blob, so a future field
-// doesn't need a data migration for existing rows — GetSettings just
-// falls back to the zero-ish default below for any key that isn't set.
+// Settings are the daemon's user-configurable defaults, applied to every
+// job started from then on. Stored as key/value rows rather than one
+// JSON blob, so adding a field needs no migration: GetSettings falls back
+// to DefaultSettings for any key that isn't set.
 type Settings struct {
 	// MaxConcurrent caps how many jobs run at once, across every job
 	// type combined; jobs beyond the cap stay queued and start as
@@ -110,17 +94,11 @@ type Settings struct {
 	// to this default can still add up to 3x it combined — see
 	// GlobalRateLimit for a shared combined ceiling instead.
 	DefaultRateLimit string
-	// GlobalRateLimit caps every job's transfer combined, in the same
-	// syntax as DefaultRateLimit; "" means unlimited. Enforced as one
-	// real shared token bucket for url/webdav jobs (they're godl's own
-	// in-process transfer code); torrent (anacrolix/torrent) and social
-	// (a yt-dlp subprocess) can't share that bucket — each such job is
-	// instead individually capped at this rate (or its own --limit-rate/
-	// DefaultRateLimit if lower), so combined throughput can still
-	// exceed this value when a torrent or social job runs alongside
-	// url/webdav ones. See internal/daemon's globalLimiter/
-	// globalRateLimitBps doc comments for exactly how each job type
-	// applies this.
+	// Caps every job's transfer combined; "" means unlimited. url and
+	// webdav jobs share one real token bucket. Torrent and social can't
+	// (anacrolix takes its own client-wide limiter; yt-dlp is a
+	// subprocess), so each is capped individually instead — meaning
+	// combined throughput can exceed this when those run alongside.
 	GlobalRateLimit string
 	// AutoRetry, when true, automatically re-queues a job that fails
 	// (not one that's paused/canceled) after a backoff delay, up to
@@ -133,9 +111,7 @@ type Settings struct {
 	NotifyOnComplete bool
 }
 
-// DefaultSettings is what GetSettings returns before anything has ever
-// been saved — unlimited concurrency and rate, no auto-retry, no
-// notifications, matching godl's behavior before this feature existed.
+// DefaultSettings is what GetSettings returns before anything is saved.
 func DefaultSettings() Settings {
 	return Settings{AutoRetryMaxAttempts: 3}
 }
@@ -143,14 +119,10 @@ func DefaultSettings() Settings {
 type Store struct {
 	db *sql.DB
 
-	// resolvedMu serializes AppendResolvedPath's read-modify-write
-	// (read the current list, append, write the whole list back) across
-	// goroutines. db.SetMaxOpenConns(1) below only serializes individual
-	// statements, not this multi-statement sequence — without this,
-	// concurrent callers (e.g. a WebDAV folder job downloading several
-	// files at once) can each read the same pre-append list and then
-	// both write, and whichever write lands second silently discards
-	// the other's entry.
+	// Serializes AppendResolvedPath's read-modify-write.
+	// SetMaxOpenConns(1) only serializes individual statements, so
+	// without this two concurrent appends can each read the same list and
+	// the second write silently drops the first's entry.
 	resolvedMu sync.Mutex
 }
 
@@ -159,12 +131,10 @@ func Open(path string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	// sql.Open is lazy (no file created yet); force it now so the
-	// permission tightening below actually has a file to act on. The
-	// containing directory (paths.DataDir, 0700) is the primary
-	// protection — job records carry full source URLs, which can
-	// include auth tokens — this chmod is defense in depth in case
-	// that file ever ends up somewhere less restrictive.
+	// sql.Open is lazy, so force the file into existence before the
+	// chmod below. Job records carry source URLs, which can include auth
+	// tokens; paths.DataDir's 0700 is the real protection, this is
+	// defense in depth.
 	if err := db.Ping(); err != nil {
 		db.Close()
 		return nil, err
@@ -181,20 +151,16 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
-	// WAL defaults to synchronous=FULL, which fsyncs on every commit.
-	// An active download commits constantly (progress ticks), so that
-	// default costs an fsync several times a second per job for data
-	// that's re-derivable: the worst a crash can lose here is a little
-	// progress, and the download resumes from the file on disk anyway.
-	// NORMAL is the standard pairing with WAL and keeps crash safety —
-	// only a power loss can lose the last commits, not an app crash.
+	// WAL defaults to synchronous=FULL — an fsync per commit, several
+	// times a second per active download, for data that resume re-derives
+	// from disk anyway. NORMAL still survives an app crash; only power
+	// loss can cost the last commits.
 	if _, err := db.Exec(`PRAGMA synchronous=NORMAL;`); err != nil {
 		db.Close()
 		return nil, err
 	}
-	// SetMaxOpenConns(1) already serializes this process, but a second
-	// godl (a stray daemon, or a CLI opening the store directly) would
-	// otherwise get an immediate SQLITE_BUSY instead of waiting.
+	// SetMaxOpenConns(1) serializes this process; this is for a second
+	// godl, which would otherwise get an immediate SQLITE_BUSY.
 	if _, err := db.Exec(`PRAGMA busy_timeout=5000;`); err != nil {
 		db.Close()
 		return nil, err
@@ -288,12 +254,8 @@ CREATE TABLE IF NOT EXISTS settings (
 		return err
 	}
 
-	// The two orderings every hot query uses: ListJobs sorts the whole
-	// table by created_at (the TUI polls it continuously), and
-	// ListQueuedJobs filters by status then sorts the same way (consulted
-	// on every job completion). Without these, both do a full scan plus a
-	// temp B-tree sort. IF NOT EXISTS keeps this idempotent for databases
-	// created before the indexes existed.
+	// The two orderings the hot queries use; without them both do a full
+	// scan plus a temp B-tree sort.
 	if _, err := s.db.Exec(`
 CREATE INDEX IF NOT EXISTS jobs_created_at ON jobs(created_at);
 CREATE INDEX IF NOT EXISTS jobs_status_created_at ON jobs(status, created_at);

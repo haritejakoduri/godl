@@ -25,12 +25,8 @@ import (
 )
 
 // Run launches the full-screen dashboard and blocks until the user
-// quits. It is this package's entire public surface: the cobra commands
-// in package cmd call it, and nothing here reaches back the other way.
-// That one-directional dependency is what would let a GUI sit alongside
-// this package rather than inside it — both would drive the same daemon
-// client and the same internal/format helpers, neither aware of the
-// other.
+// quits. It is this package's entire public surface — see
+// boundary_test.go for the dependency rule that keeps it that way.
 func Run() error {
 	if err := daemon.EnsureRunning(); err != nil {
 		return err
@@ -46,16 +42,8 @@ var (
 	errStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Padding(0, 1)
 	statStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Padding(0, 1)
 
-	// jobStatusStyles color-codes the Status column so a job's state
-	// reads at a glance instead of requiring you to read the word:
-	// gray for not-currently-running (queued/canceled), amber for
-	// paused (idle, but only because someone asked it to be), bright
-	// yellow for active (matches statStyle's own "something's
-	// happening" color), green for completed, red for failed (matches
-	// errStyle). Plain ANSI 0-15 codes, not hex — like errStyle/
-	// statStyle above, these are foreground-only (no background), so
-	// they don't have the Selected style's contrast-on-a-re-themed-
-	// terminal problem that motivated hex there.
+	// Plain ANSI 0-15, not hex: foreground-only, so unlike the Selected
+	// style these don't have a contrast problem on a re-themed terminal.
 	jobStatusStyles = map[store.JobStatus]lipgloss.Style{
 		store.StatusQueued:    lipgloss.NewStyle().Foreground(lipgloss.Color("8")),
 		store.StatusActive:    lipgloss.NewStyle().Foreground(lipgloss.Color("11")),
@@ -66,19 +54,11 @@ var (
 	}
 )
 
-// renderStatus color-codes status for the jobs table's Status cell.
-// Column width matters here in a way it doesn't for any other cell:
-// bubbles/table truncates every cell via go-runewidth, which (same
-// trap as the progress bar — see newStatusModel's comment) isn't
-// ANSI-aware and overcounts a colored string's width by the escape
-// sequences' own byte length, not just its visible characters. Get
-// the column width wrong and it truncates mid-escape-sequence,
-// corrupting the row. statusColWidth is sized (and verified in
-// TestRenderStatusFitsStatusColumn) to comfortably clear that
-// overcount for every status word with the colors above, so this
-// never happens — unlike the bar, which sidesteps the problem
-// entirely by forcing plain ASCII, coloring the actual text is the
-// point here, so the fix is a wide-enough column instead.
+// renderStatus color-codes the Status cell. bubbles/table truncates via
+// go-runewidth, which isn't ANSI-aware and counts escape sequences
+// toward the width — truncate mid-sequence and the row is corrupted.
+// statusColWidth is sized to clear that overcount (see
+// TestRenderStatusFitsStatusColumn).
 func renderStatus(status store.JobStatus) string {
 	style, ok := jobStatusStyles[status]
 	if !ok {
@@ -92,37 +72,26 @@ type subErrMsg struct{ err error }
 type subEndedMsg struct{}
 type actionDoneMsg struct{ err error }
 
-// playedMsg reports the outcome of doPlay ("o"). Deliberately not
-// actionDoneMsg, which the "n" new-download wizard also uses and stays
-// silent on success by convention: for playback, silence on success
-// would be indistinguishable from "the keypress did nothing" — mpv is
-// launched detached, so godl only ever learns whether the process
-// *started*, not whether it actually opened a usable stream/window (a
-// stale signed URL, for instance, starts mpv fine and then fails
-// inside it) — so confirming what was actually handed to the player is
-// the only signal a user gets to tell those apart.
+// playedMsg reports doPlay's outcome. Not actionDoneMsg, which stays
+// silent on success: the player is launched detached, so godl only knows
+// it *started*. Naming what was handed to it is the only way a user can
+// tell success from "the keypress did nothing".
 type playedMsg struct {
 	target string // empty when err is set before a target was chosen
 	err    error
 }
 
-// bulkActionDoneMsg reports the outcome of a pause/resume/cancel/retry/
-// remove fired against n job IDs at once (n==1 for the ordinary,
-// no-selection case — see actionTargets). Unlike actionDoneMsg, one
-// failure among several targets doesn't hide the rest: ok/failed are
-// counted separately so "3 succeeded, 1 failed" is reported instead of
-// only ever the first error swallowing everything else.
+// bulkActionDoneMsg reports an action fired against n jobs at once
+// (n==1 for the no-selection case). Counts ok/failed separately so one
+// failure among several doesn't hide the rest.
 type bulkActionDoneMsg struct {
 	n          int
 	ok, failed int
 	err        error // first error encountered, if failed > 0
 }
 
-// settingsLoadedMsg/settingsSavedMsg carry the daemon's response to
-// get_settings/set_settings back into Update — see loadSettings/
-// saveSettings. Both are handled even if m.settings is nil by the time
-// they arrive (the overlay was closed before the round trip finished),
-// in which case they're just dropped.
+// Dropped if m.settings is nil by the time they arrive — the overlay was
+// closed before the round trip finished.
 type settingsLoadedMsg struct {
 	settings store.Settings
 	err      error
@@ -146,34 +115,18 @@ type statusModel struct {
 	width     int // last known terminal width, for responsive column sizing
 	height    int // last known terminal height, for sizing full-screen overlays
 
-	// selected holds job IDs checked with space, for a bulk pause/
-	// resume/cancel/retry/remove — same convention as webdavBrowseState's
-	// own multi-select: an action key with the map non-empty acts on
-	// every selected job; with it empty, on just the row under the
-	// cursor, same as before multi-select existed.
+	// Job IDs checked with space. An action key acts on these when
+	// non-empty, otherwise on the row under the cursor.
 	selected map[string]bool
 
-	// confirmRemove holds a pending "d"/"D" keypress awaiting a y/N
-	// answer — remove (especially with purge) is a step more
-	// consequential than pause/cancel/retry, so unlike those it isn't
-	// a single keypress.
+	// A pending d/D awaiting y/N: remove is consequential enough not to
+	// be a single keypress.
 	confirmRemove *pendingRemove
 
-	// newJob holds in-progress "start a new download" wizard state, or
-	// is nil when the overlay isn't showing — another modal interaction
-	// alongside confirmRemove, following the same overlay-over-the-
-	// existing-table convention rather than a separate full-screen mode.
-	newJob *newJobState
-
-	// webdavBrowse holds in-progress "browse a saved WebDAV connection"
-	// state, or is nil when the overlay isn't showing — same
-	// overlay-over-the-table convention as newJob/confirmRemove.
+	// The overlays. Each is nil when not showing; at most one is set.
+	newJob       *newJobState
 	webdavBrowse *webdavBrowseState
-
-	// settings holds the Settings tab's state, or is nil when it isn't
-	// showing — same overlay-over-the-table convention as newJob/
-	// webdavBrowse/confirmRemove.
-	settings *settingsState
+	settings     *settingsState
 }
 
 type pendingRemove struct {

@@ -7,53 +7,30 @@ import (
 	"time"
 )
 
-// The problem this file solves: nothing used to coordinate how many
-// requests godl aimed at one WebDAV server at a time. Each job built its
-// own Client (see internal/daemon's startWebDAV), each Walk fanned out
-// walkConcurrency PROPFINDs, and each folder download ran
-// webdavDownloadConcurrency GETs on top of that — so selecting several
-// folders in the browser, which queues one job per selection and starts
-// them all at once by default (Settings.MaxConcurrent is unlimited out of
-// the box), pointed dozens of simultaneous requests at a single host.
-// Rate-limiting backends answer that with 429s, and because every request
-// then backed off on its own identical schedule, they all came back at
-// the same moment and collided again.
+// A hostGate caps concurrent requests to one WebDAV host. It is shared
+// per host across every Client in the process, because the thing that
+// draws 429s is the total: each job builds its own Client, each Walk
+// fans out PROPFINDs, each folder download runs its own GETs, and jobs
+// start all at once by default.
 //
-// A gate is shared per host across every Client in the process, so the
-// ceiling holds no matter how many jobs, walks and downloads are running.
+// AIMD: halve the ceiling on a 429, widen by one after a quiet spell.
 
-// hostGateDefaultLimit is the steady-state ceiling on concurrent requests
-// to one host. Deliberately modest: WebDAV backends that proxy cloud
-// storage do real work per PROPFIND, and being handed four requests at a
-// time is plenty to keep a link busy while staying well inside what these
-// services tolerate.
-const hostGateDefaultLimit = 4
+const (
+	hostGateDefaultLimit = 4 // enough to keep a link busy; gentle on cloud-proxying backends
+	hostGateMinLimit     = 1
+)
 
-// hostGateMinLimit is how far a run of 429s may shrink the ceiling. One
-// in-flight request at a time is the politest godl can be while still
-// making progress.
-const hostGateMinLimit = 1
-
-// hostGateRecoverAfter is how long the gate must go without a 429 before
-// it widens by one. Additive increase, multiplicative decrease: back off
-// fast when the server complains, return slowly once it stops.
 var hostGateRecoverAfter = 5 * time.Second
 
 type hostGate struct {
-	mu sync.Mutex
-	// limit is the current ceiling, between hostGateMinLimit and
-	// hostGateDefaultLimit.
-	limit int
-	// inFlight counts requests currently holding a slot.
+	mu       sync.Mutex
+	limit    int
 	inFlight int
-	// waiters are signalled as slots free up.
-	waiters []chan struct{}
-	// coolUntil is a hard pause applied to every request to this host
-	// after a 429, so one rate-limit response slows the whole fleet
-	// instead of each request having to discover the limit for itself.
-	coolUntil time.Time
-	// lastThrottle is when the most recent 429 arrived, for the recovery
-	// schedule above.
+	waiters  []chan struct{}
+	// coolUntil pauses every request to this host after a 429, so one
+	// rate-limit response slows the whole fleet rather than each request
+	// discovering the limit for itself.
+	coolUntil    time.Time
 	lastThrottle time.Time
 }
 
@@ -62,7 +39,6 @@ var (
 	hostGates   = map[string]*hostGate{}
 )
 
-// gateFor returns the shared gate for host, creating it on first use.
 func gateFor(host string) *hostGate {
 	hostGatesMu.Lock()
 	defer hostGatesMu.Unlock()
@@ -148,15 +124,13 @@ func (g *hostGate) cancelWaiter(ch chan struct{}) {
 	g.wakeOne()
 }
 
-// throttled records a 429 from this host: halve the ceiling, and hold
-// every request to it until the caller's own backoff for this response
-// has elapsed, so requests that haven't been sent yet don't walk into
-// the same limit while one of their peers is waiting it out.
+// throttled records a 429: halve the ceiling and hold every request to
+// this host until pause elapses, so requests not yet sent don't walk
+// into the same limit while a peer waits it out.
 //
-// pause is passed through exactly as given — a server answering
-// "Retry-After: 0" means retry essentially immediately, and substituting
-// some default here would turn its explicit "go ahead" into a stall. The
-// narrowed ceiling still applies either way.
+// pause is used exactly as given. "Retry-After: 0" means retry
+// immediately, and substituting a default would turn the server's
+// explicit go-ahead into a stall.
 func (g *hostGate) throttled(pause time.Duration) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -173,10 +147,9 @@ func (g *hostGate) throttled(pause time.Duration) {
 	}
 }
 
-// jitter spreads a backoff delay by ±25%. Without it, a burst of
-// requests that were all throttled at the same moment wait exactly the
-// same time and hit the server together again — turning one rate-limit
-// response into a repeating collision instead of a recovery.
+// jitter spreads a backoff by ±25%. Without it, requests throttled at
+// the same moment wait the same time and collide again, turning one
+// rate-limit response into a repeating cycle.
 func jitter(d time.Duration) time.Duration {
 	if d <= 0 {
 		return d

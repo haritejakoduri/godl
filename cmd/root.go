@@ -53,6 +53,8 @@ func init() {
 		removeCmd,
 		listCmd,
 		updateCmd,
+		daemonCmd,
+		trayCmd,
 		internalDaemonCmd,
 	)
 }

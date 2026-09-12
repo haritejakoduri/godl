@@ -5,8 +5,9 @@
 #   1. cross-compile godl.exe itself into installer/payload/ (embedded input)
 #   2. build the installer, which go:embeds that payload
 #
-# Both exes get a Windows version-info resource (file/product name,
-# version, copyright) embedded via go-winres before compiling. A bare
+# Both exes get godl's icon plus a Windows version-info resource
+# (file/product name, version, copyright) embedded via go-winres before
+# compiling. A bare
 # Go-compiled exe with no version resource is more likely to get
 # heuristically flagged by Defender/SmartScreen than one with normal PE
 # metadata; this doesn't replace code signing (nothing does, short of an
@@ -29,6 +30,7 @@ trap cleanup EXIT
 
 echo "1/2 Building godl.exe payload ($VERSION)..."
 $GO_WINRES simply --arch amd64 --out godl_rsrc --manifest cli \
+	--icon tray/icon/godl.png \
 	--file-version "$VERSION" --product-version "$VERSION" \
 	--file-description "godl - terminal download manager" \
 	--product-name "godl" --original-filename "godl.exe" \
@@ -42,6 +44,7 @@ mkdir -p dist
 (
 	cd installer
 	$GO_WINRES simply --arch amd64 --out installer_rsrc --manifest cli \
+		--icon ../tray/icon/godl.png \
 		--file-version "$VERSION" --product-version "$VERSION" \
 		--file-description "godl installer" \
 		--product-name "godl" --original-filename "godl-setup.exe" \

@@ -63,6 +63,42 @@ func EnsureRunning() error {
 	return fmt.Errorf("timed out waiting for godl daemon to start (see %s)", logPath)
 }
 
+// Running reports whether a daemon is currently listening on the
+// socket, without starting one.
+func Running() bool {
+	sockPath, err := paths.SocketPath()
+	if err != nil {
+		return false
+	}
+	return pingOK(sockPath)
+}
+
+// Stop asks a running daemon to exit and waits for the socket to go
+// quiet. It is not an error for no daemon to be running — stopped is
+// false in that case, and nothing was there to stop.
+func Stop() (stopped bool, err error) {
+	sockPath, err := paths.SocketPath()
+	if err != nil {
+		return false, err
+	}
+	if !pingOK(sockPath) {
+		return false, nil
+	}
+	if _, err := Call(Request{Cmd: CmdShutdown}); err != nil {
+		return false, err
+	}
+	// The reply is sent before the listener closes, so the process is
+	// still on its way out when Call returns; wait for it to actually
+	// let go of the socket rather than reporting success early.
+	for i := 0; i < 50; i++ {
+		if !pingOK(sockPath) {
+			return true, nil
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return false, fmt.Errorf("daemon did not exit within 5s")
+}
+
 func pingOK(sockPath string) bool {
 	conn, err := net.DialTimeout("unix", sockPath, 300*time.Millisecond)
 	if err != nil {

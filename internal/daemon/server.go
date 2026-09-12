@@ -51,6 +51,27 @@ type Daemon struct {
 	// than letting one fire after the store it writes to is closed.
 	retryMu     sync.Mutex
 	retryTimers map[string]*time.Timer
+
+	// The accept loop's listener, held so Shutdown can close it out
+	// from under Serve. stopped covers the window before Serve has
+	// assigned it, so a shutdown arriving in that gap still takes.
+	listenMu sync.Mutex
+	listener net.Listener
+	stopped  bool
+}
+
+// Shutdown stops the accept loop, which makes Serve return and the
+// daemon process exit. Jobs still running are left as they are: the
+// next start normalizes anything marked active back to queued and picks
+// it up again (see resumeInterruptedJobs), which is the same path a
+// killed daemon already took.
+func (d *Daemon) Shutdown() {
+	d.listenMu.Lock()
+	defer d.listenMu.Unlock()
+	d.stopped = true
+	if d.listener != nil {
+		d.listener.Close()
+	}
 }
 
 func NewDaemon() (*Daemon, error) {
@@ -110,6 +131,14 @@ func (d *Daemon) Serve() error {
 	}
 	defer l.Close()
 	defer os.Remove(sockPath)
+
+	d.listenMu.Lock()
+	stopped := d.stopped
+	d.listener = l
+	d.listenMu.Unlock()
+	if stopped {
+		return nil // Shutdown ran before the listener existed
+	}
 	// Unix sockets get created with a mode based on umask (often
 	// world-connectable), and SocketPath() can fall back to a shared
 	// temp dir when $XDG_RUNTIME_DIR isn't set — restrict explicitly so

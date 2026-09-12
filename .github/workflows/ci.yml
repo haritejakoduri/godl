@@ -11,6 +11,10 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
+        # darwin is here as a CGO_ENABLED=0 cross-compile on purpose: it
+        # proves a macOS build without cgo still compiles, which is the
+        # path tray/app_unsupported.go exists to keep working. The real
+        # macOS build is the separate job below.
         goos: [linux, darwin, windows]
         goarch: [amd64]
     steps:
@@ -57,4 +61,27 @@ jobs:
         if: matrix.goos == 'linux'
         env:
           CGO_ENABLED: 1
+        run: go test -race -count=1 ./...
+
+  # The published macOS binary is built here rather than cross-compiled,
+  # because the tray needs Cocoa and so needs cgo and the macOS SDK (see
+  # scripts/build-darwin.sh). Running it in CI as well as at release
+  # time means a change that breaks the macOS build is caught on the PR
+  # instead of after the merge, when Release is the first thing to try it.
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+
+      - name: build (cgo, with tray)
+        run: ./scripts/build-darwin.sh
+
+      - name: test
+        run: go test ./...
+
+      - name: test (race detector)
         run: go test -race -count=1 ./...

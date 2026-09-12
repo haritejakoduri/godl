@@ -16,20 +16,24 @@ permissions:
   contents: write
 
 jobs:
-  release:
+  # Decides whether there is anything to release at all, so the build
+  # jobs below don't spend runner time on a commit that isn't a new
+  # version. internal/version/version.go is bumped by hand per release
+  # (see its own doc comment) rather than auto-derived — this workflow
+  # respects that instead of minting a version on every push.
+  check:
     if: github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      exists: ${{ steps.check.outputs.exists }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
           fetch-depth: 0
 
-      # internal/version/version.go is bumped by hand per release (see
-      # its own doc comment) rather than auto-derived — this workflow
-      # respects that instead of minting a version on every push, so a
-      # release is created exactly when there's a new version to ship,
-      # not on every unrelated commit that lands on master.
       - name: Read version
         id: version
         run: |
@@ -51,26 +55,79 @@ jobs:
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
 
+  # Everything that can be produced on Linux: the Linux binary, the
+  # Windows installer, and the .deb.
+  build-linux:
+    needs: check
+    if: needs.check.outputs.exists == 'false'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
       - uses: actions/setup-go@v5
-        if: steps.check.outputs.exists == 'false'
         with:
           go-version: "1.25"
 
       - name: Install packaging tools
-        if: steps.check.outputs.exists == 'false'
         run: sudo apt-get update && sudo apt-get install -y fakeroot dpkg-dev
 
-      - name: Build all release artifacts
-        if: steps.check.outputs.exists == 'false'
+      - name: Build
         run: ./scripts/build-all.sh
 
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-linux
+          path: dist/
+          if-no-files-found: error
+
+  # macOS is built on a Mac, not cross-compiled, because its system tray
+  # needs Cocoa and therefore cgo and the macOS SDK. A CGO_ENABLED=0
+  # cross-compile would still produce a working godl, just one silently
+  # missing the tray — see scripts/build-darwin.sh, which fails rather
+  # than let that ship.
+  build-macos:
+    needs: check
+    if: needs.check.outputs.exists == 'false'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+
+      - name: Build
+        run: ./scripts/build-darwin.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-macos
+          path: dist/
+          if-no-files-found: error
+
+  release:
+    needs: [check, build-linux, build-macos]
+    if: needs.check.outputs.exists == 'false'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*
+          merge-multiple: true
+          path: dist
+
       - name: Create GitHub Release
-        if: steps.check.outputs.exists == 'false'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
         run: |
-          gh release create "${{ steps.version.outputs.tag }}" \
-            --title "godl ${{ steps.version.outputs.version }}" \
+          ls -lh dist/
+          gh release create "${{ needs.check.outputs.tag }}" \
+            --title "godl ${{ needs.check.outputs.version }}" \
             --generate-notes \
             --target "${{ github.event.workflow_run.head_sha }}" \
             dist/*

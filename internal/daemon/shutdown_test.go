@@ -12,11 +12,29 @@ import (
 	"godl/internal/store"
 )
 
+// socketPath points GODL_SOCKET_PATH at a short-lived socket.
+//
+// Deliberately not t.TempDir(): that embeds the test's name in the
+// path, and a Unix socket address is capped at 104 bytes on macOS
+// (108 on Linux) by sockaddr_un.sun_path. The long names in this file
+// pushed it to exactly 104, and every bind failed with a bare
+// "invalid argument" that says nothing about length. os.MkdirTemp
+// keeps it short regardless of what the test is called.
+func socketPath(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "godl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	return filepath.Join(dir, "s.sock")
+}
+
 // serveTestDaemon runs d.Serve in the background against a socket in a
 // temp dir, and returns once it is actually accepting connections.
 func serveTestDaemon(t *testing.T, d *Daemon) (served chan error) {
 	t.Helper()
-	t.Setenv("GODL_SOCKET_PATH", t.TempDir()+"/godl.sock")
+	t.Setenv("GODL_SOCKET_PATH", socketPath(t))
 	served = make(chan error, 1)
 	go func() { served <- d.Serve() }()
 	for i := 0; i < 100; i++ {
@@ -76,7 +94,7 @@ func TestShutdownCommandEndsAServingDaemon(t *testing.T) {
 // not a failure — the tray's Quit and "godl daemon stop" both rely on
 // that rather than having to check first.
 func TestStopOnNoDaemonIsNotAnError(t *testing.T) {
-	t.Setenv("GODL_SOCKET_PATH", t.TempDir()+"/godl.sock")
+	t.Setenv("GODL_SOCKET_PATH", socketPath(t))
 	stopped, err := Stop()
 	if err != nil {
 		t.Fatalf("Stop with no daemon running: %v", err)
@@ -92,7 +110,7 @@ func TestStopOnNoDaemonIsNotAnError(t *testing.T) {
 // dropped and the daemon would serve forever.
 func TestShutdownBeforeServeStillStops(t *testing.T) {
 	d := newTestDaemon(t)
-	t.Setenv("GODL_SOCKET_PATH", t.TempDir()+"/godl.sock")
+	t.Setenv("GODL_SOCKET_PATH", socketPath(t))
 
 	d.Shutdown()
 
@@ -155,7 +173,7 @@ func TestMain(m *testing.M) {
 // its answer rather than an EOF.
 func TestShutdownReplyReachesClientAcrossProcessExit(t *testing.T) {
 	dir := t.TempDir()
-	sock := filepath.Join(dir, "godl.sock")
+	sock := socketPath(t)
 	t.Setenv("GODL_SOCKET_PATH", sock)
 
 	cmd := exec.Command(os.Args[0])

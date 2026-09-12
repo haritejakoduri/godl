@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net"
 	"os"
@@ -127,6 +128,14 @@ func (d *Daemon) Serve() error {
 
 	l, err := net.Listen("unix", sockPath)
 	if err != nil {
+		// A too-long path fails here as a bare "invalid argument".
+		// sockaddr_un.sun_path holds 104 bytes on macOS and 108 on
+		// Linux, and nothing in the error mentions length — so say so
+		// rather than pre-rejecting, which would break a path that
+		// currently works on the roomier platform.
+		if len(sockPath) > 100 {
+			return fmt.Errorf("%w — the socket path is %d characters, and the OS caps it near 104; set GODL_SOCKET_PATH to something shorter", err, len(sockPath))
+		}
 		return err
 	}
 	defer l.Close()

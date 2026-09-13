@@ -41,11 +41,16 @@ type Settings struct {
 	// NotifyOnComplete fires a best-effort desktop notification
 	// (internal/notify) when a job completes successfully.
 	NotifyOnComplete bool
+	// ShowTray, when true (the default), has the daemon put a system
+	// tray icon up for itself on start, so a running daemon is visible
+	// and stoppable without anyone having to know "godl tray" exists.
+	// Ignored where there's nowhere to show one — see tray.Attach.
+	ShowTray bool
 }
 
 // DefaultSettings is what GetSettings returns before anything is saved.
 func DefaultSettings() Settings {
-	return Settings{AutoRetryMaxAttempts: 3}
+	return Settings{AutoRetryMaxAttempts: 3, ShowTray: true}
 }
 
 // settingsKeys names every row GetSettings/SaveSettings read and write
@@ -58,6 +63,7 @@ const (
 	settingsKeyAutoRetry            = "auto_retry"
 	settingsKeyAutoRetryMaxAttempts = "auto_retry_max_attempts"
 	settingsKeyNotifyOnComplete     = "notify_on_complete"
+	settingsKeyShowTray             = "show_tray"
 )
 
 // GetSettings reads the daemon's saved settings, falling back to
@@ -103,6 +109,9 @@ func (s *Store) GetSettings(ctx context.Context) (Settings, error) {
 			set.AutoRetryMaxAttempts = n
 		}
 	}
+	if v, ok := kv[settingsKeyShowTray]; ok {
+		set.ShowTray = v == "true"
+	}
 	if v, ok := kv[settingsKeyNotifyOnComplete]; ok {
 		set.NotifyOnComplete = v == "true"
 	}
@@ -120,6 +129,7 @@ func (s *Store) SaveSettings(ctx context.Context, set Settings) error {
 		settingsKeyAutoRetry:            strconv.FormatBool(set.AutoRetry),
 		settingsKeyAutoRetryMaxAttempts: strconv.Itoa(set.AutoRetryMaxAttempts),
 		settingsKeyNotifyOnComplete:     strconv.FormatBool(set.NotifyOnComplete),
+		settingsKeyShowTray:             strconv.FormatBool(set.ShowTray),
 	}
 	for k, v := range kv {
 		if _, err := s.db.ExecContext(ctx,

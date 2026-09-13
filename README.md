@@ -84,7 +84,6 @@ godl webdav mynas /Photos -o ~/Photos     # a file or a whole folder, recursivel
 godl serve ~/Public -p 8080 --username alice   # share a folder, over WebDAV + browser
 
 godl status                 # live TUI dashboard
-godl tray                   # system tray icon, with a menu to stop the daemon
 godl list                   # one-shot table, for scripts
 godl pause <job-id>
 godl resume <job-id>
@@ -95,6 +94,7 @@ godl rm <job-id> --purge    # drop from the list AND delete the downloaded file
 
 godl daemon status          # is the background daemon running?
 godl daemon stop            # stop it; unfinished jobs resume next time
+godl tray                   # a tray icon by hand (the daemon shows one itself)
 ```
 
 Job state and logs live under `~/.local/share/godl` (override with
@@ -394,36 +394,58 @@ navigating away or quitting mid-edit):
 second `enter` saves, `esc` cancels the edit) or toggles a checkbox
 field immediately, and `esc` closes the tab.
 
-### `godl tray` — system tray icon
+### The system tray icon
 
-The daemon is otherwise invisible: any command starts it, and it then
-keeps running with nothing to show for it. `godl tray` puts it in the
-notification area on Windows, Linux and macOS.
+The daemon used to be invisible: any command started it, and it then
+kept running with nothing to show for it. Now **it puts itself in the
+notification area whenever it starts** — on Windows, Linux and macOS —
+so a running daemon is something you can see and stop. There is nothing
+to enable and no command to remember.
 
-```sh
-godl tray                     # run in the foreground until dismissed
-godl tray --install-autostart # start it at login from now on
-godl tray --uninstall-autostart
 ```
+  godl — 2 active, 5 queued, 4.1 MiB/s
+  ──────────────────────────────────
+  Open status dashboard
+  Pause all
+  Resume all
+  ──────────────────────────────────
+  Quit godl daemon
+  Hide this icon
+```
+
+The icon appears with the daemon and goes away with it, so its presence
+is the answer to "is godl running". *Hide this icon* closes just the
+icon and leaves the daemon working.
+
+Turn it off in the Settings tab of `godl status` ("Show tray icon"), or
+set `GODL_NO_TRAY=1` where there's no database to configure (a
+container, CI, anything embedding the daemon). It is skipped
+automatically where there is nowhere to show one — no desktop session,
+or a session whose desktop has no tray host — so nothing changes for
+headless use and nothing is left running that can't be seen.
+
+`godl tray` still exists for running one by hand: that icon outlives the
+daemon and offers to start it again, which is useful if you turned the
+automatic one off. `--install-autostart` / `--uninstall-autostart`
+register it at login (Windows Run key, XDG `.desktop`, macOS
+LaunchAgent). Only one icon is ever shown — whichever tray gets there
+first holds it, and the others stand down.
 
 The menu shows what the daemon is doing — active, queued and paused
 counts with the combined speed, updated live — and can open the
 dashboard, pause or resume everything, and **quit the daemon**. Quitting
 mid-download is safe: unfinished jobs are left alone and resume the next
-time the daemon starts. *Hide this icon* closes the tray only, leaving
-the daemon running.
-
-`godl tray` deliberately does **not** start the daemon; it reports it as
-stopped and offers to start it, so putting the tray in your autostart
-doesn't silently launch a download daemon at every login.
+time the daemon starts.
 
 Platform notes: on Linux the icon is published over D-Bus
 (StatusNotifierItem), which KDE, and GNOME with the AppIndicator
-extension, show natively — a desktop offering only the older XEmbed tray
-won't display it. On macOS the tray needs Cocoa, so it's in the
-published macOS binaries (built on a Mac) but not in a
-`CGO_ENABLED=0` build you cross-compile yourself, where `godl tray`
-says so and points you at `godl daemon` instead.
+extension, host natively. godl checks for a host before starting a tray
+at all, so on a desktop offering only the older XEmbed tray you get a
+clear message from `godl tray` rather than an icon that never appears.
+On macOS the tray needs Cocoa, so it's in the published macOS binaries
+(built on a Mac) but not in a `CGO_ENABLED=0` build you cross-compile
+yourself, where `godl tray` says so and points you at `godl daemon`
+instead.
 
 ### `godl daemon` — the background daemon, directly
 

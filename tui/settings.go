@@ -139,6 +139,13 @@ var settingsFields = []settingsField{
 		get:    func(s store.Settings) string { return boolLabel(s.NotifyOnComplete) },
 		toggle: func(s *store.Settings) { s.NotifyOnComplete = !s.NotifyOnComplete },
 	},
+	{
+		label:  "Show tray icon",
+		help:   "Puts a system tray icon up while the daemon runs, with a menu to stop it. Ignored where there's no desktop session (a server, or over SSH).",
+		kind:   settingsFieldBool,
+		get:    func(s store.Settings) string { return boolLabel(s.ShowTray) },
+		toggle: func(s *store.Settings) { s.ShowTray = !s.ShowTray },
+	},
 }
 
 // loadSettings fetches the daemon's current settings for the Settings

@@ -17,8 +17,42 @@ import "errors"
 // one feature.
 var ErrUnsupported = errors.New("the system tray is not available in this build")
 
-// Run shows the tray icon and blocks until the user dismisses it.
-// It does not start the daemon: the tray reports the daemon as stopped
-// and offers to start it, so putting this in a desktop's autostart
-// doesn't silently launch a download daemon at every login.
-func Run() error { return run() }
+// Run shows the tray icon and blocks until the user dismisses it. This
+// is the explicit "godl tray" path: the daemon is not started for you,
+// and the icon stays up if the daemon stops, offering to start it
+// again.
+func Run() error { return start(false) }
+
+// Attach is the entry point the daemon spawns for itself, so a running
+// daemon is visible without anyone knowing this command exists.
+//
+// Unlike Run, every reason an icon can't appear is a silent no-op: no
+// desktop session (a server, a container, over SSH), no tray in this
+// build, or one already up. Nobody asked for this icon, so failing to
+// show it is not an error worth printing into the daemon's log on every
+// start.
+func Attach() error {
+	err := start(true)
+	switch {
+	case errors.Is(err, ErrNoSession), errors.Is(err, ErrUnsupported), errors.Is(err, ErrAlreadyRunning):
+		return nil
+	}
+	return err
+}
+
+// start claims the icon and shows it. attached ties the tray's lifetime
+// to the daemon's.
+func start(attached bool) error {
+	// Checked before the instance lock so a headless run leaves nothing
+	// behind, and before systray.Run, which would otherwise block
+	// forever waiting on a tray host that isn't there.
+	if err := checkSession(); err != nil {
+		return err
+	}
+	release, err := claimInstance()
+	if err != nil {
+		return err
+	}
+	defer release()
+	return run(attached)
+}

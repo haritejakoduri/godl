@@ -2,4 +2,4 @@
 
 package tray
 
-func run() error { return ErrUnsupported }
+func run(bool) error { return ErrUnsupported }

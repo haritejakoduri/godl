@@ -30,13 +30,8 @@ var (
 	iconTemplatePNG []byte
 )
 
-func run() error {
-	// Checked before systray.Run, which otherwise blocks forever
-	// waiting on a tray host that isn't there.
-	if err := checkSession(); err != nil {
-		return err
-	}
-	systray.Run(onReady, func() {})
+func run(attached bool) error {
+	systray.Run(func() { onReady(attached) }, func() {})
 	return nil
 }
 
@@ -54,13 +49,13 @@ func applyIcon() {
 	}
 }
 
-func onReady() {
+func onReady(attached bool) {
 	applyIcon()
 	systray.SetTooltip("godl")
 
-	m := newMenu()
+	m := newMenu(attached)
 	ctx, cancel := context.WithCancel(context.Background())
-	go m.watch(ctx)
+	go m.watch(ctx, attached)
 	go m.handle(ctx, cancel)
 }
 
@@ -77,7 +72,7 @@ type menu struct {
 	hide      *systray.MenuItem
 }
 
-func newMenu() *menu {
+func newMenu(attached bool) *menu {
 	m := &menu{header: systray.AddMenuItem("Connecting…", "")}
 	m.header.Disable()
 	systray.AddSeparator()
@@ -85,7 +80,12 @@ func newMenu() *menu {
 	m.pause = systray.AddMenuItem("Pause all", "Pause every active and queued job")
 	m.resume = systray.AddMenuItem("Resume all", "Resume every paused job")
 	systray.AddSeparator()
-	m.start = systray.AddMenuItem("Start daemon", "Start the godl background daemon")
+	if !attached {
+		// An attached tray exits with the daemon, so it is never on
+		// screen to offer this — the icon's presence *is* the answer to
+		// "is the daemon running".
+		m.start = systray.AddMenuItem("Start daemon", "Start the godl background daemon")
+	}
 	m.quit = systray.AddMenuItem("Quit godl daemon", "Stop the daemon, then close this icon")
 	m.hide = systray.AddMenuItem("Hide this icon", "Close this icon and leave the daemon running")
 	return m
@@ -106,6 +106,9 @@ func (m *menu) apply(s summary) {
 }
 
 func setEnabled(item *systray.MenuItem, on bool) {
+	if item == nil {
+		return // omitted for this mode, see newMenu
+	}
 	if on {
 		item.Enable()
 	} else {
@@ -113,17 +116,34 @@ func setEnabled(item *systray.MenuItem, on bool) {
 	}
 }
 
+// daemonStartupGrace is how long an attached tray waits for the daemon
+// that spawned it to start answering before concluding it is gone. The
+// daemon spawns the tray and only then binds its socket, so the first
+// few checks legitimately find nothing.
+const daemonStartupGrace = 30 * time.Second
+
 // watch keeps the menu in step with the daemon, which can come and go
 // underneath the tray — it may not be running when the tray starts at
 // login, and Quit stops it without stopping this icon's siblings. So
 // this reconnects rather than subscribing once and giving up.
-func (m *menu) watch(ctx context.Context) {
+//
+// When attached, the icon's whole reason to exist is that the daemon is
+// running, so the daemon going away takes the icon with it instead of
+// leaving a "Daemon not running" tray behind that nobody asked for.
+func (m *menu) watch(ctx context.Context, attached bool) {
+	seen := false
+	deadline := time.Now().Add(daemonStartupGrace)
 	for ctx.Err() == nil {
 		if !daemon.Running() {
+			if attached && (seen || time.Now().After(deadline)) {
+				systray.Quit()
+				return
+			}
 			m.apply(summary{})
 			sleep(ctx, 2*time.Second)
 			continue
 		}
+		seen = true
 		subCtx, cancel := context.WithCancel(ctx)
 		snapCh, _ := daemon.Subscribe(subCtx)
 		for jobs := range snapCh {
@@ -158,7 +178,7 @@ func (m *menu) handle(ctx context.Context, cancel context.CancelFunc) {
 			go report("pausing all jobs", pauseAll)
 		case <-m.resume.ClickedCh:
 			go report("resuming all jobs", resumeAll)
-		case <-m.start.ClickedCh:
+		case <-startCh(m.start):
 			go report("starting the daemon", daemon.EnsureRunning)
 		case <-m.quit.ClickedCh:
 			report("stopping the daemon", func() error { _, err := daemon.Stop(); return err })
@@ -169,6 +189,16 @@ func (m *menu) handle(ctx context.Context, cancel context.CancelFunc) {
 			return
 		}
 	}
+}
+
+// startCh guards against selecting on a menu item this mode never
+// created: a nil channel blocks forever, which is exactly the "this
+// case can't fire" behavior wanted.
+func startCh(item *systray.MenuItem) <-chan struct{} {
+	if item == nil {
+		return nil
+	}
+	return item.ClickedCh
 }
 
 // report logs what went wrong and carries on. A tray has nowhere good

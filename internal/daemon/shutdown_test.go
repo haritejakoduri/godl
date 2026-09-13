@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -179,6 +180,7 @@ func TestShutdownReplyReachesClientAcrossProcessExit(t *testing.T) {
 	cmd := exec.Command(os.Args[0])
 	cmd.Env = append(os.Environ(),
 		daemonSubprocessEnv+"=1",
+		NoTrayEnv+"=1", // belt and braces; spawnTray also refuses test binaries
 		"GODL_SOCKET_PATH="+sock,
 		"GODL_DATA_DIR="+dir,
 	)
@@ -212,4 +214,62 @@ func TestShutdownReplyReachesClientAcrossProcessExit(t *testing.T) {
 	if err := cmd.Wait(); err != nil {
 		t.Fatalf("daemon subprocess exited badly: %v", err)
 	}
+}
+
+// TestSpawnTrayRefusesToReExecATestBinary is the regression test for a
+// fork bomb this feature briefly had.
+//
+// spawnTray re-execs os.Executable() as "godl tray --attached". Under
+// "go test" that is the test binary, which does not understand those
+// arguments and simply runs the whole suite again — including the tests
+// here that start a daemon, each of which spawns another copy. The
+// copies bind the torrent port and linger long after the test run ends.
+//
+// Checked by observing the real effect rather than a flag: nothing must
+// be started at all, no matter what the environment says.
+func TestSpawnTrayRefusesToReExecATestBinary(t *testing.T) {
+	t.Setenv(NoTrayEnv, "") // not relying on the env guard
+
+	before := countTrayChildren(t)
+	spawnTray()
+	time.Sleep(500 * time.Millisecond)
+	if after := countTrayChildren(t); after != before {
+		t.Fatalf("spawnTray started %d process(es) from a test binary; want none", after-before)
+	}
+}
+
+// TestSpawnTrayHonorsTheOffSwitch: the env guard has to work on its own
+// too, since that is what containers and embedders reach for.
+func TestSpawnTrayHonorsTheOffSwitch(t *testing.T) {
+	t.Setenv(NoTrayEnv, "1")
+
+	before := countTrayChildren(t)
+	spawnTray()
+	time.Sleep(500 * time.Millisecond)
+	if after := countTrayChildren(t); after != before {
+		t.Fatalf("spawnTray started a process with %s set", NoTrayEnv)
+	}
+}
+
+// countTrayChildren counts live processes whose command line mentions
+// the tray subcommand. Linux-only detail, so the tests using it skip
+// elsewhere rather than assert nothing.
+func countTrayChildren(t *testing.T) int {
+	t.Helper()
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		t.Skip("no /proc to count processes with")
+	}
+	n := 0
+	for _, e := range entries {
+		raw, err := os.ReadFile(filepath.Join("/proc", e.Name(), "cmdline"))
+		if err != nil {
+			continue
+		}
+		args := strings.ReplaceAll(string(raw), "\x00", " ")
+		if strings.Contains(args, TrayCommand+" --"+TrayAttachedFlag) {
+			n++
+		}
+	}
+	return n
 }

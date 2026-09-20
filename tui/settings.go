@@ -246,12 +246,12 @@ func (m statusModel) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m statusModel) viewSettings() string {
 	s := m.settings
 	var b strings.Builder
-	b.WriteString(statStyle.Render("Settings"))
+	b.WriteString(m.wrapped(statStyle).Render("Settings"))
 	b.WriteString("\n")
 
 	if s.loading {
 		b.WriteString("loading...\n")
-		b.WriteString(helpStyle.Render("esc close"))
+		b.WriteString(m.helpView("esc close"))
 		return b.String()
 	}
 
@@ -266,23 +266,23 @@ func (m statusModel) viewSettings() string {
 		}
 		fmt.Fprintf(&b, "%s%-28s %s\n", cursor, f.label, value)
 		if i == s.cursor {
-			b.WriteString("    " + helpStyle.Render(f.help) + "\n")
+			b.WriteString("    " + m.helpView(f.help) + "\n")
 		}
 	}
 
 	switch {
 	case s.err != "":
-		b.WriteString(errStyle.Render("error: " + s.err))
+		b.WriteString(m.wrapped(errStyle).Render("error: " + s.err))
 		b.WriteString("\n")
 	case s.saved:
-		b.WriteString(statStyle.Render("saved"))
+		b.WriteString(m.wrapped(statStyle).Render("saved"))
 		b.WriteString("\n")
 	}
 
 	if s.editing {
-		b.WriteString(helpStyle.Render("enter save  esc cancel"))
+		b.WriteString(m.helpView("enter save  esc cancel"))
 	} else {
-		b.WriteString(helpStyle.Render("↑/↓ select  enter edit/toggle  esc close"))
+		b.WriteString(m.helpView("↑/↓ select  enter edit/toggle  esc close"))
 	}
 	return b.String()
 }

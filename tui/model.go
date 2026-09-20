@@ -75,13 +75,14 @@ type statusModel struct {
 	snapCh <-chan []*daemon.JobView
 	errCh  <-chan error
 
-	table     table.Model
-	bar       progress.Model
-	jobs      []*daemon.JobView
-	err       error
-	statusMsg string
-	width     int // last known terminal width, for responsive column sizing
-	height    int // last known terminal height, for sizing full-screen overlays
+	table       table.Model
+	bar         progress.Model
+	jobs        []*daemon.JobView
+	err         error
+	statusMsg   string
+	tableHeight int // last height fitTable gave the table
+	width       int // last known terminal width, for responsive column sizing
+	height      int // last known terminal height, for sizing full-screen overlays
 
 	// Job IDs checked with space. An action key acts on these when
 	// non-empty, otherwise on the row under the cursor.

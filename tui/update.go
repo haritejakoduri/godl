@@ -61,16 +61,24 @@ func (m statusModel) settingsResult(s store.Settings, err error, saved bool) (te
 	return m, nil
 }
 
+// Update applies msg, then re-fits the table to whatever the footer now
+// needs (see fitTable).
 func (m statusModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	next, cmd := m.update(msg)
+	if sm, ok := next.(statusModel); ok {
+		sm.fitTable()
+		return sm, cmd
+	}
+	return next, cmd
+}
+
+func (m statusModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
 		m.table.SetColumns(columnsForWidth(msg.Width))
 		m.table.SetWidth(msg.Width)
-		if h := msg.Height - 7; h > 3 {
-			m.table.SetHeight(h)
-		}
 		return m, nil
 
 	case jobsMsg:

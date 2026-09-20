@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"godl/internal/daemon"
+	"godl/internal/store"
 	"godl/internal/webdav"
 )
 
@@ -120,6 +121,79 @@ func TestFitCellsAlignsWideCharacters(t *testing.T) {
 		got := fitCells(s, 20)
 		if w := lipgloss.Width(got); w != 20 {
 			t.Errorf("fitCells(%q, 20) is %d cells wide: %q", s, w, got)
+		}
+	}
+}
+
+func browsingModel() statusModel {
+	return statusModel{webdavBrowse: &webdavBrowseState{
+		step: webdavBrowsing, path: "/", selected: map[string]bool{},
+		cache: map[string][]webdav.Entry{},
+	}}
+}
+
+// TestStaleWebDAVListingsAreIgnored: a slow PROPFIND that answers after
+// the user closed the browser, reopened it, or moved to another folder
+// must not overwrite what they're now looking at.
+func TestStaleWebDAVListingsAreIgnored(t *testing.T) {
+	old := &webdavBrowseState{}
+	stale := []webdav.Entry{{Path: "/stale/"}}
+	fresh := []webdav.Entry{{Path: "/fresh.txt"}}
+
+	t.Run("from a previous browser session", func(t *testing.T) {
+		m := browsingModel()
+		m.webdavBrowse.loading, m.webdavBrowse.pending = true, "/"
+		next, _ := m.Update(webdavListedMsg{wb: old, path: "/", entries: stale})
+		wb := next.(statusModel).webdavBrowse
+		if len(wb.entries) != 0 || !wb.loading {
+			t.Errorf("a reply from another session was applied: %+v", wb.entries)
+		}
+		next, _ = m.Update(webdavListErrMsg{wb: old, path: "/", err: fmt.Errorf("boom")})
+		if wb := next.(statusModel).webdavBrowse; wb.err != "" || !wb.loading {
+			t.Errorf("an error from another session was applied: %q", wb.err)
+		}
+	})
+
+	t.Run("for a folder the user already left", func(t *testing.T) {
+		m := browsingModel()
+		wb := m.webdavBrowse
+		wb.loading, wb.pending = true, "/b/"
+		next, _ := m.Update(webdavListedMsg{wb: wb, path: "/a/", entries: stale})
+		if got := next.(statusModel).webdavBrowse; len(got.entries) != 0 || got.path != "/" {
+			t.Errorf("a listing for /a/ replaced the view while /b/ is loading: path=%q", got.path)
+		}
+		next, _ = m.Update(webdavListedMsg{wb: wb, path: "/b/", entries: fresh})
+		if got := next.(statusModel).webdavBrowse; len(got.entries) != 1 || got.path != "/b/" || got.loading {
+			t.Errorf("the awaited listing was not applied: %+v", got)
+		}
+	})
+}
+
+// TestStaleSettingsRepliesAreIgnored is the same guard for the Settings
+// tab: a reply for a tab that was closed and reopened isn't the new tab's.
+func TestStaleSettingsRepliesAreIgnored(t *testing.T) {
+	old := &settingsState{}
+	m := statusModel{settings: &settingsState{loading: true}}
+	next, _ := m.Update(settingsLoadedMsg{st: old, settings: store.Settings{MaxConcurrent: 99}})
+	got := next.(statusModel).settings
+	if !got.loading || got.current.MaxConcurrent == 99 {
+		t.Errorf("a reply for a previous Settings tab was applied: %+v", got)
+	}
+
+	next, _ = m.Update(settingsLoadedMsg{st: m.settings, settings: store.Settings{MaxConcurrent: 7}})
+	if got := next.(statusModel).settings; got.loading || got.current.MaxConcurrent != 7 {
+		t.Errorf("the awaited reply was not applied: %+v", got)
+	}
+}
+
+// TestSettingsSavedIndicatorClearsOnNavigation: "saved" is documented as
+// lasting until the next interaction, but moving the cursor left it up.
+func TestSettingsSavedIndicatorClearsOnNavigation(t *testing.T) {
+	for _, k := range []tea.KeyType{tea.KeyDown, tea.KeyUp} {
+		m := statusModel{settings: &settingsState{current: store.DefaultSettings(), cursor: 1, saved: true}}
+		next, _ := m.Update(tea.KeyMsg{Type: k})
+		if next.(statusModel).settings.saved {
+			t.Errorf("%v left the saved indicator up", k)
 		}
 	}
 }

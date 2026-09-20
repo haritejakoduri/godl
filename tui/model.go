@@ -57,14 +57,17 @@ type bulkActionDoneMsg struct {
 	err        error // first error encountered, if failed > 0
 }
 
-// Dropped if m.settings is nil by the time they arrive — the overlay was
-// closed before the round trip finished.
+// Dropped unless the Settings tab they were requested by (st) is still
+// the one showing — it was closed, or closed and reopened, before the
+// round trip finished.
 type settingsLoadedMsg struct {
+	st       *settingsState
 	settings store.Settings
 	err      error
 }
 
 type settingsSavedMsg struct {
+	st       *settingsState
 	settings store.Settings
 	err      error
 }

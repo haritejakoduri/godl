@@ -45,9 +45,9 @@ func (m statusModel) applyJobs(msg jobsMsg) statusModel {
 
 // settingsResult applies a reply from the daemon to the Settings tab.
 // saved marks the "saved" confirmation, which only a save earns.
-func (m statusModel) settingsResult(s store.Settings, err error, saved bool) (tea.Model, tea.Cmd) {
-	if m.settings == nil {
-		return m, nil // the tab was closed before this reply arrived
+func (m statusModel) settingsResult(st *settingsState, s store.Settings, err error, saved bool) (tea.Model, tea.Cmd) {
+	if m.settings == nil || m.settings != st {
+		return m, nil // the tab was closed (or reopened) before this reply arrived
 	}
 	m.settings.loading = false
 	m.settings.saved = false
@@ -126,7 +126,7 @@ func (m statusModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case webdavListedMsg:
-		if wb := m.webdavBrowse; wb != nil {
+		if wb := m.webdavBrowse; wb != nil && wb == msg.wb && wb.loading && wb.pending == msg.path {
 			wb.loading, wb.err = false, ""
 			wb.path, wb.entries, wb.cursor = msg.path, msg.entries, 0
 			wb.cache[msg.path] = msg.entries
@@ -134,7 +134,7 @@ func (m statusModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case webdavListErrMsg:
-		if wb := m.webdavBrowse; wb != nil {
+		if wb := m.webdavBrowse; wb != nil && wb == msg.wb && wb.loading && wb.pending == msg.path {
 			wb.loading, wb.err = false, msg.err.Error()
 		}
 		return m, nil
@@ -151,10 +151,10 @@ func (m statusModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case settingsLoadedMsg:
-		return m.settingsResult(msg.settings, msg.err, false)
+		return m.settingsResult(msg.st, msg.settings, msg.err, false)
 
 	case settingsSavedMsg:
-		return m.settingsResult(msg.settings, msg.err, true)
+		return m.settingsResult(msg.st, msg.settings, msg.err, true)
 
 	case tea.KeyMsg:
 		return m.handleKey(msg)
@@ -205,7 +205,7 @@ func (m statusModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.openWebDAVBrowser()
 	case "s":
 		m.settings = &settingsState{loading: true}
-		return m, loadSettings()
+		return m, loadSettings(m.settings)
 	case " ":
 		j, idx, ok := m.cursorJob()
 		if !ok {

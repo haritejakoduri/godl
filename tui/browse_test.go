@@ -489,10 +489,12 @@ func TestWebDAVBrowseCachesVisitedDirectories(t *testing.T) {
 		path:     "/",
 		selected: map[string]bool{},
 		cache:    map[string][]webdav.Entry{},
+		loading:  true, // as after connecting: the root listing is in flight
+		pending:  "/",
 	}}
 
 	// Root listing: real network round-trip.
-	msg := listWebDAVDir(client, "/")()
+	msg := listWebDAVDir(m.webdavBrowse, "/")()
 	mm, _ := m.Update(msg)
 	m = mm.(statusModel)
 	if m.webdavBrowse.path != "/" || len(m.webdavBrowse.entries) != 1 {

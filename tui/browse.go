@@ -59,6 +59,7 @@ type webdavBrowseState struct {
 	// browser is opened, not stale forever.
 	cache   map[string][]webdav.Entry
 	loading bool
+	pending string // directory the in-flight listing is for, while loading
 	err     string
 
 	// searching is true while the "/" search prompt is focused and
@@ -91,11 +92,21 @@ func (wb *webdavBrowseState) visibleEntries() []webdav.Entry {
 	return out
 }
 
+// The listing replies carry the browser session (wb) and directory they
+// were requested for. A reply is applied only if it still matches what
+// the browser is waiting on: closing and reopening the browser, or
+// moving on to another folder mid-load, must not let a late answer
+// overwrite the view with a listing the user has already left.
 type webdavListedMsg struct {
+	wb      *webdavBrowseState
 	path    string
 	entries []webdav.Entry
 }
-type webdavListErrMsg struct{ err error }
+type webdavListErrMsg struct {
+	wb   *webdavBrowseState
+	path string
+	err  error
+}
 type webdavStartedMsg struct {
 	n      int
 	output string
@@ -105,7 +116,8 @@ type webdavStartedMsg struct {
 // listWebDAVDir lists one directory's immediate children, dirs first
 // then alphabetically. Runs over the network, so it's a tea.Cmd rather
 // than something Update calls inline.
-func listWebDAVDir(client *webdav.Client, dir string) tea.Cmd {
+func listWebDAVDir(wb *webdavBrowseState, dir string) tea.Cmd {
+	client := wb.client
 	return func() tea.Msg {
 		// Longer than internal/webdav's own propfindTimeout (3 minutes):
 		// that's what actually bounds a single PROPFIND round-trip,
@@ -118,7 +130,7 @@ func listWebDAVDir(client *webdav.Client, dir string) tea.Cmd {
 		defer cancel()
 		entries, err := client.List(ctx, dir)
 		if err != nil {
-			return webdavListErrMsg{err}
+			return webdavListErrMsg{wb: wb, path: dir, err: err}
 		}
 		sort.Slice(entries, func(i, j int) bool {
 			if entries[i].IsDir != entries[j].IsDir {
@@ -126,7 +138,7 @@ func listWebDAVDir(client *webdav.Client, dir string) tea.Cmd {
 			}
 			return entries[i].Path < entries[j].Path
 		})
-		return webdavListedMsg{path: dir, entries: entries}
+		return webdavListedMsg{wb: wb, path: dir, entries: entries}
 	}
 }
 
@@ -181,7 +193,8 @@ func (m statusModel) openWebDAVDir(target string) tea.Cmd {
 		return nil
 	}
 	wb.loading = true
-	return listWebDAVDir(wb.client, target)
+	wb.pending = target
+	return listWebDAVDir(wb, target)
 }
 
 func (m statusModel) updateWebDAVBrowse(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -227,7 +240,8 @@ func (m statusModel) webdavPickConnKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		wb.cache = map[string][]webdav.Entry{}
 		wb.step = webdavBrowsing
 		wb.loading = true
-		return m, listWebDAVDir(client, "/")
+		wb.pending = "/"
+		return m, listWebDAVDir(wb, "/")
 	case "esc":
 		m.webdavBrowse = nil
 	}

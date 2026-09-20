@@ -77,8 +77,10 @@ func (m statusModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.applyJobs(msg), waitForSnapshot(m.snapCh, m.errCh)
 
 	case subErrMsg:
+		// SubscribeRetrying reconnects by itself; keep listening so the
+		// next snapshot (which clears m.err) can arrive.
 		m.err = msg.err
-		return m, nil
+		return m, waitForSnapshot(m.snapCh, m.errCh)
 
 	case subEndedMsg:
 		return m, nil

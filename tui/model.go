@@ -104,7 +104,7 @@ type pendingRemove struct {
 
 func newStatusModel() statusModel {
 	ctx, cancel := context.WithCancel(context.Background())
-	snapCh, errCh := daemon.Subscribe(ctx)
+	snapCh, errCh := daemon.SubscribeRetrying(ctx)
 
 	t := table.New(table.WithColumns(columnsForWidth(0)), table.WithFocused(true), table.WithHeight(15))
 	styles := table.DefaultStyles()

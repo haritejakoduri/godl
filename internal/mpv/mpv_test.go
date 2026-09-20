@@ -1,9 +1,7 @@
 package mpv
 
 import (
-	"os"
-	"path/filepath"
-	"runtime"
+	"encoding/base64"
 	"strings"
 	"testing"
 )
@@ -75,30 +73,59 @@ func TestPlayReportsNeitherPlayerFound(t *testing.T) {
 	}
 }
 
-// TestPlayRejectsHeadersWhenOnlyVLCAvailable confirms Play refuses a
-// target that needs custom headers rather than silently dropping them
-// (or, worse, falling back to embedding credentials in the URL) when
-// mpv isn't available and only VLC is found — VLC has no equivalent to
-// mpv's --http-header-fields flag. Skipped on Windows: the fake
-// executable below is a POSIX shell script, not something Windows can
-// exec directly.
-func TestPlayRejectsHeadersWhenOnlyVLCAvailable(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("fake vlc executable below is a POSIX shell script")
+// TestAuthArgsPerPlayer pins how each player is handed credentials.
+// VLC used to be refused outright for an authenticated target, because
+// it has no equivalent of mpv's --http-header-fields; it has its own
+// user/password flags instead, so the WebDAV "o" action now works with
+// either player rather than only with mpv installed.
+//
+// Neither form embeds the credential in the URL, which is the one
+// option genuinely worse than the others: a player writes the URL it
+// was given into its own recent-files list, where the password would
+// outlive the process that was handed it.
+func TestAuthArgsPerPlayer(t *testing.T) {
+	auth := &Auth{Username: "alice", Password: "s3cret"}
+
+	mpvArgs := authArgs(playerMPV, auth)
+	// base64("alice:s3cret")
+	want := "--http-header-fields=Authorization: Basic " + base64.StdEncoding.EncodeToString([]byte("alice:s3cret"))
+	if len(mpvArgs) != 1 || mpvArgs[0] != want {
+		t.Errorf("authArgs(mpv) = %q, want [%q]", mpvArgs, want)
 	}
 
-	dir := t.TempDir()
-	fakeVLC := filepath.Join(dir, "vlc")
-	if err := os.WriteFile(fakeVLC, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
-		t.Fatal(err)
+	vlcArgs := authArgs(playerVLC, auth)
+	wantVLC := []string{"--http-user=alice", "--http-pwd=s3cret"}
+	if len(vlcArgs) != len(wantVLC) {
+		t.Fatalf("authArgs(vlc) = %q, want %q", vlcArgs, wantVLC)
 	}
-	t.Setenv("PATH", dir) // only "vlc" is found; mpv is not
+	for i := range wantVLC {
+		if vlcArgs[i] != wantVLC[i] {
+			t.Errorf("authArgs(vlc)[%d] = %q, want %q", i, vlcArgs[i], wantVLC[i])
+		}
+	}
 
-	err := Play("https://example.com/stream", map[string]string{"Authorization": "Basic abc"})
-	if err == nil {
-		t.Fatal("Play with headers and only VLC available succeeded, want an error")
+	for _, kind := range []playerKind{playerMPV, playerVLC} {
+		if got := authArgs(kind, nil); got != nil {
+			t.Errorf("authArgs(%v, nil) = %q, want no flags at all", kind, got)
+		}
+		if got := authArgs(kind, &Auth{}); got != nil {
+			t.Errorf("authArgs(%v, empty) = %q, want no flags at all", kind, got)
+		}
 	}
-	if !strings.Contains(err.Error(), "VLC") {
-		t.Errorf("error %q doesn't explain VLC is the reason, want it to mention VLC", err.Error())
+
+	// Nothing may leak the password into the target-facing URL form.
+	for _, a := range append(mpvArgs, vlcArgs...) {
+		if strings.Contains(a, "alice:s3cret@") {
+			t.Errorf("argument %q embeds credentials in URL form", a)
+		}
+	}
+}
+
+// TestNameReportsNoPlayer: with neither player on PATH, Name must fail
+// rather than name one that isn't there.
+func TestNameReportsNoPlayer(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	if name, err := Name(); err == nil {
+		t.Errorf("Name() = %q with no player installed, want an error", name)
 	}
 }

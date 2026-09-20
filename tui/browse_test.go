@@ -579,3 +579,58 @@ func TestWebDAVBrowseShowsDownloadDestination(t *testing.T) {
 		t.Errorf("browse view doesn't show the download destination:\n%s", view)
 	}
 }
+
+// TestWebDAVBrowsePlaysFileUnderCursor covers the browser's "o": a
+// remote file can be streamed straight from the server, without first
+// queueing a download job and waiting for it to finish.
+func TestWebDAVBrowsePlaysFileUnderCursor(t *testing.T) {
+	t.Setenv("PATH", t.TempDir()) // no player installed: the attempt still reports back
+
+	client, err := webdav.New("https://nas.example.com/dav/", "alice", "s3cret", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newModel := func(cursor int) statusModel {
+		return statusModel{webdavBrowse: &webdavBrowseState{
+			step: webdavBrowsing, connName: "nas", client: client, path: "/",
+			entries: []webdav.Entry{
+				{Path: "/sub/", IsDir: true},
+				{Path: "/movie.mkv", Size: 1 << 20},
+			},
+			cursor:   cursor,
+			selected: map[string]bool{},
+		}}
+	}
+
+	// On a directory: nothing to stream, and the browser stays open.
+	m, cmd := newModel(0).updateWebDAVBrowse(key("o"))
+	if cmd != nil {
+		t.Error(`"o" on a directory returned a command, want none`)
+	}
+	if m.(statusModel).webdavBrowse == nil {
+		t.Error(`"o" on a directory closed the browser`)
+	}
+
+	// On a file: the browser closes so the result is visible, and the
+	// remote URL is what gets played.
+	m, cmd = newModel(1).updateWebDAVBrowse(key("o"))
+	if cmd == nil {
+		t.Fatal(`"o" on a file returned no command`)
+	}
+	if m.(statusModel).webdavBrowse != nil {
+		t.Error("the browser stayed open, which would swallow the reply (see startBrowsePlay)")
+	}
+	msg, ok := cmd().(playedMsg)
+	if !ok {
+		t.Fatalf("expected a playedMsg, got %#v", cmd())
+	}
+	if msg.target != "https://nas.example.com/dav/movie.mkv" {
+		t.Errorf("played %q, want the remote file's URL", msg.target)
+	}
+	if msg.err == nil {
+		t.Error("expected the no-player-installed error to be reported")
+	}
+	if strings.Contains(msg.target, "s3cret") {
+		t.Errorf("credentials leaked into the played URL: %q", msg.target)
+	}
+}

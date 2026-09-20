@@ -15,6 +15,7 @@ import (
 	"godl/internal/connections"
 	"godl/internal/daemon"
 	"godl/internal/format"
+	"godl/internal/mpv"
 	"godl/internal/paths"
 	"godl/internal/webdav"
 )
@@ -337,6 +338,16 @@ func (m statusModel) webdavBrowsingKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m.startBrowseDownloads(targets)
+	case "o":
+		// Files only — there's nothing to stream for a directory. Closes
+		// the browser the way d/D do, because viewWebDAVBrowse doesn't
+		// render m.statusMsg: leaving it open would swallow the result,
+		// including "no media player found".
+		e, ok := current()
+		if !ok || e.IsDir {
+			return m, nil
+		}
+		return m.startBrowsePlay(e.Path)
 	case "D":
 		// Downloads the folder currently being browsed, in full — not
 		// whatever's under the cursor or individually checked with space.
@@ -349,6 +360,21 @@ func (m statusModel) webdavBrowsingKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.startBrowseDownloads([]string{wb.path})
 	}
 	return m, nil
+}
+
+// startBrowsePlay closes the browser and streams one remote file
+// straight from the server — no download job, no waiting for one to
+// finish, the same as a webdav job's "o" in the jobs table (see
+// play.go's doPlay) reached one step earlier.
+func (m statusModel) startBrowsePlay(remotePath string) (tea.Model, tea.Cmd) {
+	client := m.webdavBrowse.client
+	m.webdavBrowse = nil
+	m.statusMsg = "starting player..."
+	return m, func() tea.Msg {
+		target := client.URLFor(remotePath).String()
+		auth := &mpv.Auth{Username: client.Username, Password: client.Password}
+		return playedMsg{target: target, err: mpv.Play(target, auth)}
+	}
 }
 
 // startBrowseDownloads closes the browser and queues targets for download.
@@ -417,7 +443,7 @@ func (m statusModel) viewWebDAVBrowse() string {
 		head += "\n" + m.wrapped(statStyle).Render(fmt.Sprintf("filter: %q (/ to edit, esc to clear)", wb.query))
 	}
 
-	foot := m.helpView("↑/↓ move  enter open folder  space select  / search  d download selected (or current)  D download this whole folder  ←/backspace up  esc cancel")
+	foot := m.helpView("↑/↓ move  enter open folder  space select  / search  d download selected (or current)  D download this whole folder  o play/stream  ←/backspace up  esc cancel")
 	if wb.searching {
 		foot = m.helpView("type to filter  enter confirm  esc cancel")
 	}

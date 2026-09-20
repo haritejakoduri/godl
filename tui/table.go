@@ -94,9 +94,6 @@ func newestFirst(jobs []*daemon.JobView) []*daemon.JobView {
 	return out
 }
 
-// cursorJobID returns the ID of the job currently under the cursor, or
-// "" if there isn't one — used to re-find and re-focus the same job
-// after a snapshot reorders the list (see the jobsMsg handler).
 // cursorJob returns the job the table cursor is on, and its row index.
 // ok is false when the table is empty or the cursor is out of range.
 func (m statusModel) cursorJob() (job *daemon.JobView, idx int, ok bool) {
@@ -107,6 +104,9 @@ func (m statusModel) cursorJob() (job *daemon.JobView, idx int, ok bool) {
 	return m.jobs[idx], idx, true
 }
 
+// cursorJobID returns the ID of the job under the cursor, or "" if there
+// isn't one — used to re-find and re-focus the same job after a snapshot
+// reorders the list (see applyJobs).
 func (m statusModel) cursorJobID() string {
 	j, _, ok := m.cursorJob()
 	if !ok {
@@ -140,9 +140,13 @@ func (m *statusModel) pruneSelected() {
 // uses for its "d" (download) key.
 func (m statusModel) actionTargets() []string {
 	if len(m.selected) > 0 {
+		// In the order shown on screen, not map order, so a bulk action
+		// (and which failure it reports first) is repeatable.
 		ids := make([]string, 0, len(m.selected))
-		for id := range m.selected {
-			ids = append(ids, id)
+		for _, j := range m.jobs {
+			if m.selected[j.ID] {
+				ids = append(ids, j.ID)
+			}
 		}
 		return ids
 	}

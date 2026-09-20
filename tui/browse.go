@@ -312,6 +312,7 @@ func (m statusModel) webdavBrowsingKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		for p := range wb.selected {
 			targets = append(targets, p)
 		}
+		sort.Strings(targets) // queue in a repeatable order, not map order
 		if len(targets) == 0 {
 			if e, ok := current(); ok {
 				targets = []string{e.Path}

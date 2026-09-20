@@ -161,6 +161,10 @@ func (m statusModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // pending confirmation, or to the dashboard's own bindings. Keys it
 // doesn't claim drive the table's cursor.
 func (m statusModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if msg.String() == "ctrl+c" {
+		m.cancel()
+		return m, tea.Quit
+	}
 	if m.newJob != nil {
 		return m.updateNewJob(msg)
 	}
@@ -173,8 +177,12 @@ func (m statusModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.confirmRemove != nil {
 		return m.resolveRemove(msg)
 	}
+	// A keypress dismisses whatever the last action left in the footer, so
+	// a stale message can't sit on top of the selected job's failure
+	// reason (see View). Anything this key does then sets its own.
+	m.statusMsg = ""
 	switch msg.String() {
-	case "q", "ctrl+c":
+	case "q":
 		m.cancel()
 		return m, tea.Quit
 	case "n":
@@ -223,7 +231,7 @@ func (m statusModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if !ok {
 			return m, nil
 		}
-		m.statusMsg = "starting mpv..."
+		m.statusMsg = "starting player..."
 		return m, doPlay(j)
 	}
 

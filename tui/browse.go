@@ -39,6 +39,16 @@ type webdavBrowseState struct {
 	// step 1: pick a saved connection.
 	conns     []connections.Connection
 	connIndex int
+	// form is non-nil while the "add a connection" form (opened with
+	// 'a') is showing, in place of the connection list.
+	form *connFormState
+	// confirmRemoveConn holds the name of a connection awaiting a y/N
+	// removal confirmation (opened with 'd'/'x'), "" when none pending.
+	confirmRemoveConn string
+	// connMsg is a one-shot status line for the connection list (e.g.
+	// "saved connection ..."/"removed connection ..."), cleared on the
+	// next keypress the way the dashboard's own statusMsg is.
+	connMsg string
 
 	// step 2: browsing.
 	connName  string
@@ -211,6 +221,13 @@ func (m statusModel) updateWebDAVBrowse(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m statusModel) webdavPickConnKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	wb := m.webdavBrowse
+	if wb.form != nil {
+		return m.updateConnForm(msg)
+	}
+	if wb.confirmRemoveConn != "" {
+		return m.resolveRemoveConn(msg)
+	}
+	wb.connMsg = ""
 	switch msg.String() {
 	case "up", "k":
 		if wb.connIndex > 0 {
@@ -220,7 +237,16 @@ func (m statusModel) webdavPickConnKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if wb.connIndex < len(wb.conns)-1 {
 			wb.connIndex++
 		}
+	case "a":
+		wb.form = newConnForm()
+	case "d", "x":
+		if len(wb.conns) > 0 {
+			wb.confirmRemoveConn = wb.conns[wb.connIndex].Name
+		}
 	case "enter":
+		if len(wb.conns) == 0 {
+			return m, nil
+		}
 		conn := wb.conns[wb.connIndex]
 		client, err := webdav.New(conn.URL, conn.Username, conn.Password, conn.Insecure)
 		if err != nil {
@@ -245,6 +271,36 @@ func (m statusModel) webdavPickConnKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, listWebDAVDir(wb, "/")
 	case "esc":
 		m.webdavBrowse = nil
+	}
+	return m, nil
+}
+
+// resolveRemoveConn answers the pending y/N connection-removal
+// confirmation armed by 'd'/'x' in webdavPickConnKey — mirrors
+// resolveRemove's own y/N handling for job removal.
+func (m statusModel) resolveRemoveConn(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	wb := m.webdavBrowse
+	name := wb.confirmRemoveConn
+	wb.confirmRemoveConn = ""
+	switch msg.String() {
+	case "y", "Y":
+		if err := connections.Remove(name); err != nil {
+			wb.connMsg = "error: " + err.Error()
+			return m, nil
+		}
+		conns, err := connections.List()
+		if err != nil {
+			m.webdavBrowse = nil
+			m.statusMsg = "error: " + err.Error()
+			return m, nil
+		}
+		wb.conns = conns
+		if wb.connIndex >= len(conns) && wb.connIndex > 0 {
+			wb.connIndex = len(conns) - 1
+		}
+		wb.connMsg = fmt.Sprintf("removed connection %q", name)
+	default:
+		wb.connMsg = "remove canceled"
 	}
 	return m, nil
 }
@@ -422,8 +478,14 @@ func (m statusModel) viewWebDAVBrowse() string {
 	var b strings.Builder
 
 	if wb.step == webdavPickConn {
+		if wb.form != nil {
+			return m.viewConnForm()
+		}
 		b.WriteString(m.wrapped(statStyle).Render("Browse WebDAV — pick a connection:"))
 		b.WriteString("\n")
+		if len(wb.conns) == 0 {
+			b.WriteString("No saved connections yet. Press a to add one.\n")
+		}
 		for i, c := range wb.conns {
 			cursor := "  "
 			if i == wb.connIndex {
@@ -431,7 +493,15 @@ func (m statusModel) viewWebDAVBrowse() string {
 			}
 			b.WriteString(fmt.Sprintf("%s%s (%s)\n", cursor, c.Name, c.URL))
 		}
-		b.WriteString(m.helpView("↑/↓ select  enter connect  esc cancel"))
+		switch {
+		case wb.confirmRemoveConn != "":
+			b.WriteString(m.wrapped(statStyle).Render(fmt.Sprintf("Remove connection %q? [y/N]", wb.confirmRemoveConn)))
+			b.WriteString("\n")
+		case wb.connMsg != "":
+			b.WriteString(m.wrapped(statStyle).Render(wb.connMsg))
+			b.WriteString("\n")
+		}
+		b.WriteString(m.helpView("↑/↓ select  enter connect  a add connection  d remove  esc cancel"))
 		return b.String()
 	}
 

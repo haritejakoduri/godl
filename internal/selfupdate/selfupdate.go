@@ -10,10 +10,10 @@
 // standalone binary asset to swap in), so a Windows install has to go
 // back to the Releases page instead; the same is true for any other
 // unbuilt platform (darwin/amd64, linux/arm64). A godl installed from
-// the Debian package also refuses to self-replace: dpkg owns that
-// file, and silently swapping it out from under apt would leave the
-// package database out of sync with what's actually on disk —
-// `apt upgrade` is the correct path there.
+// the .deb or .rpm package also refuses to self-replace: dpkg/rpm owns
+// that file, and silently swapping it out from under apt/dnf would
+// leave the package database out of sync with what's actually on disk
+// — `apt upgrade`/`dnf upgrade` is the correct path there.
 package selfupdate
 
 import (
@@ -57,13 +57,18 @@ var assetName = func(ver string) (string, bool) {
 	}
 }
 
-// dpkgManagedPath is the fixed location godl's .deb package installs
-// to (see scripts/build-deb.sh and the README's Linux install/uninstall
-// instructions) — the one path self-update refuses to touch.
-const dpkgManagedPath = "/usr/bin/godl"
+// packageManagedPath is the fixed location both godl's .deb and .rpm
+// packages install to (see scripts/build-deb.sh, scripts/build-rpm.sh,
+// and the README's Linux install/uninstall instructions) — the one
+// path self-update refuses to touch. The two package formats can't be
+// told apart by path alone (both use /usr/bin/godl), but they don't
+// need to be: either way, some system package manager owns this file,
+// and `apt upgrade`/`dnf upgrade` is the correct path forward, not a
+// self-update.
+const packageManagedPath = "/usr/bin/godl"
 
-func dpkgManaged(exePath string) bool {
-	return runtime.GOOS == "linux" && exePath == dpkgManagedPath
+func packageManaged(exePath string) bool {
+	return runtime.GOOS == "linux" && exePath == packageManagedPath
 }
 
 // Result describes what ForceUpdate did, for callers (godl update) to
@@ -97,7 +102,7 @@ var osExecutable = os.Executable
 // ForceUpdate's second return value is the latest published version
 // (e.g. "0.4.0"), whenever it was actually looked up — every outcome
 // except the two that return before ever calling the GitHub API
-// (osExecutable failing, or a dpkg-managed install refusing to touch
+// (osExecutable failing, or a package-managed install refusing to touch
 // itself at all). Callers use it to tell a genuinely unsupported
 // platform/install ("here's what's new, go get it yourself") apart
 // from one that's already current, even though both currently print
@@ -111,7 +116,7 @@ func ForceUpdate(ctx context.Context, progress func(string)) (result Result, lat
 		exePath = resolved
 	}
 
-	if dpkgManaged(exePath) {
+	if packageManaged(exePath) {
 		return ManagedInstall, "", nil
 	}
 

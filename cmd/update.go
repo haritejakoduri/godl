@@ -30,9 +30,9 @@ checks the copy godl itself is actually using.
 
 This also checks for a newer godl release and updates the running
 binary in place, on platforms with one published for it (currently
-linux/amd64 and darwin/arm64) — everywhere else (Windows, an apt-
-installed godl, or another platform entirely) it tells you where to
-get the update instead of trying to replace anything itself.`,
+linux/amd64 and darwin/arm64) — everywhere else (Windows, a godl
+installed via apt/dnf, or another platform entirely) it tells you
+where to get the update instead of trying to replace anything itself.`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -75,7 +75,7 @@ func reportSelfUpdateResult(result selfupdate.Result, latestVersion string, err 
 	case result == selfupdate.AlreadyLatest:
 		fmt.Println("  already up to date.")
 	case result == selfupdate.ManagedInstall:
-		fmt.Println("  installed via apt — run \"sudo apt update && sudo apt upgrade\" instead.")
+		fmt.Println("  installed via a system package — run \"sudo apt update && sudo apt upgrade\" (Debian/Ubuntu) or \"sudo dnf upgrade godl\" (Fedora/RHEL) instead.")
 	case latestVersion != "": // Unsupported, but we know what's actually out there
 		fmt.Printf("  %s available — no self-update for this platform/install; grab it from %s\n", latestVersion, releasesURL)
 	default: // Unsupported, and couldn't even check what's latest

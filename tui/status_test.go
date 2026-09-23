@@ -39,7 +39,7 @@ func TestBuildAddRequestDefaultsUnderDownloads(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.apiCmd, func(t *testing.T) {
-			req, err := buildAddRequest(c.apiCmd, c.source)
+			req, err := buildAddRequest(c.apiCmd, c.source, "")
 			if err != nil {
 				t.Fatal(err)
 			}

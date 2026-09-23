@@ -4,7 +4,8 @@
 # binaries for Linux/macOS, plus the one-click installers for Windows
 # (godl-setup.exe, which embeds its own windows/amd64 build — no
 # separate raw Windows binary published, since the installer is a
-# strictly better artifact for anyone on Windows) and Linux (.deb).
+# strictly better artifact for anyone on Windows) and Linux (.deb and
+# .rpm).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -35,6 +36,9 @@ echo
 
 echo
 "$SCRIPT_DIR/build-deb.sh"
+
+echo
+"$SCRIPT_DIR/build-rpm.sh"
 
 echo
 echo "All godl $VERSION artifacts:"

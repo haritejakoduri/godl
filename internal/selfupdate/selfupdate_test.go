@@ -23,7 +23,11 @@ func TestAssetName(t *testing.T) {
 	}
 }
 
-func TestDpkgManaged(t *testing.T) {
+// TestPackageManaged covers both package formats that install to
+// /usr/bin/godl (.deb and .rpm) — the check can't tell them apart by
+// path alone, and doesn't need to, since either way self-update should
+// refuse to touch it.
+func TestPackageManaged(t *testing.T) {
 	cases := []struct {
 		path string
 		want bool
@@ -34,8 +38,8 @@ func TestDpkgManaged(t *testing.T) {
 		{"", false},
 	}
 	for _, c := range cases {
-		if got := dpkgManaged(c.path); got != c.want {
-			t.Errorf("dpkgManaged(%q) = %v, want %v", c.path, got, c.want)
+		if got := packageManaged(c.path); got != c.want {
+			t.Errorf("packageManaged(%q) = %v, want %v", c.path, got, c.want)
 		}
 	}
 }

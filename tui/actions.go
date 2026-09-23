@@ -54,41 +54,47 @@ func doBulkRemove(jobIDs []string, purge bool) tea.Cmd {
 	}
 }
 
+// resolveJobOutput mirrors cmd/output.go's outputPath: an empty
+// override defaults to the Downloads folder (joined with name for a
+// url job's file path, used as the directory itself when name is ""),
+// while a user-supplied override is resolved exactly as given — the
+// same semantics "godl url/social/torrent -o ..." already has, so the
+// wizard's optional output field behaves identically to the flag.
+func resolveJobOutput(override, name string) (string, error) {
+	if override == "" {
+		dir, err := paths.DownloadsDir()
+		if err != nil {
+			return "", err
+		}
+		override = filepath.Join(dir, name)
+	}
+	return paths.ResolveOutput(override)
+}
+
 // buildAddRequest fills in a daemon.Request for apiCmd (CmdAddURL/
 // CmdAddSocial/CmdAddTorrent) from source, applying the same output
 // defaults as the corresponding CLI command (see url.go/social.go/
 // torrent.go's RunE) — so a download started from the TUI behaves
-// exactly like "godl url"/"godl social"/"godl torrent".
-func buildAddRequest(apiCmd, source string) (daemon.Request, error) {
+// exactly like "godl url"/"godl social"/"godl torrent". outputOverride
+// is the wizard's optional output field ("" keeps the CLI default).
+func buildAddRequest(apiCmd, source, outputOverride string) (daemon.Request, error) {
 	switch apiCmd {
 	case daemon.CmdAddURL:
-		dir, err := paths.DownloadsDir()
-		if err != nil {
-			return daemon.Request{}, err
-		}
-		output, err := paths.ResolveOutput(filepath.Join(dir, urlname.FromURL(source)))
+		output, err := resolveJobOutput(outputOverride, urlname.FromURL(source))
 		if err != nil {
 			return daemon.Request{}, err
 		}
 		return daemon.Request{Cmd: apiCmd, Source: source, Output: output, Concurrency: 4}, nil
 
 	case daemon.CmdAddSocial:
-		dir, err := paths.DownloadsDir()
-		if err != nil {
-			return daemon.Request{}, err
-		}
-		output, err := paths.ResolveOutput(dir)
+		output, err := resolveJobOutput(outputOverride, "")
 		if err != nil {
 			return daemon.Request{}, err
 		}
 		return daemon.Request{Cmd: apiCmd, Source: source, Output: output}, nil
 
 	case daemon.CmdAddTorrent:
-		def, err := paths.DownloadsDir()
-		if err != nil {
-			return daemon.Request{}, err
-		}
-		output, err := paths.ResolveOutput(def)
+		output, err := resolveJobOutput(outputOverride, "")
 		if err != nil {
 			return daemon.Request{}, err
 		}
@@ -110,17 +116,20 @@ func buildAddRequest(apiCmd, source string) (daemon.Request, error) {
 // for CmdAddSocial (the chosen preset's yt-dlp format selector, or ""
 // for the default); buildAddRequest never sets Format for url/torrent,
 // and the daemon ignores Format for those job types, so passing it
-// through unconditionally is harmless for them.
-func startNewJob(apiCmd, source, format string) tea.Cmd {
+// through unconditionally is harmless for them. outputOverride and
+// limitRate are the wizard's optional output/rate-limit fields ("" and
+// 0 meaning "use the same default the CLI would").
+func startNewJob(apiCmd, source, format, outputOverride string, limitRate int64) tea.Cmd {
 	return func() tea.Msg {
 		if err := daemon.EnsureRunning(); err != nil {
 			return actionDoneMsg{err}
 		}
-		req, err := buildAddRequest(apiCmd, source)
+		req, err := buildAddRequest(apiCmd, source, outputOverride)
 		if err != nil {
 			return actionDoneMsg{err}
 		}
 		req.Format = format
+		req.LimitRate = limitRate
 		_, err = daemon.Call(req)
 		return actionDoneMsg{err}
 	}

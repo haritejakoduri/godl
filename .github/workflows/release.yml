@@ -58,7 +58,7 @@ jobs:
 
       - name: Install packaging tools
         if: steps.check.outputs.exists == 'false'
-        run: sudo apt-get update && sudo apt-get install -y fakeroot dpkg-dev
+        run: sudo apt-get update && sudo apt-get install -y fakeroot dpkg-dev rpm
 
       - name: Build all release artifacts
         if: steps.check.outputs.exists == 'false'

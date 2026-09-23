@@ -99,6 +99,7 @@ type statusModel struct {
 	newJob       *newJobState
 	webdavBrowse *webdavBrowseState
 	settings     *settingsState
+	serve        *serveState
 }
 
 type pendingRemove struct {

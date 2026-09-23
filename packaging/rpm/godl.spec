@@ -1,10 +1,12 @@
 # Packages the already-built, already-verified binary scripts/build-rpm.sh
-# places in %{_sourcedir} — there's no source tarball, no %prep, and
+# places in %%{_sourcedir} — there's no source tarball, no %%prep, and
 # nothing gets compiled or checked again here, so those stages are
 # skipped rather than left in as no-op placeholders that would just
-# confuse a reader.
+# confuse a reader. (%%-escaped throughout these comments: rpmbuild
+# expands macros even inside a comment line, which otherwise prints a
+# harmless but noisy "Macro expanded in comment" warning on every build.)
 #
-# %{_version} is passed in via `rpmbuild --define "_version ..."` (see
+# %%{_version} is passed in via `rpmbuild --define "_version ..."` (see
 # scripts/build-rpm.sh), read from internal/version/version.go the same
 # way scripts/build-deb.sh's control file is, so both packages always
 # agree on the version.

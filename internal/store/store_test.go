@@ -104,3 +104,50 @@ func TestJobRetryCountPersists(t *testing.T) {
 		t.Fatalf("GetJob after UpdateJob: RetryCount = %d, want 5", afterUpdate.RetryCount)
 	}
 }
+
+// TestShowTrayDefaultsOnForExistingDatabases: settings are read with
+// "missing key means default", and ShowTray defaults on. A database
+// written before this setting existed has no show_tray row, so without
+// the default reaching that path an upgrade would silently leave the
+// daemon invisible again on every machine that already had one.
+func TestShowTrayDefaultsOnForExistingDatabases(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+
+	// Save settings as an older godl would have, then drop the row it
+	// would never have written.
+	if err := st.SaveSettings(ctx, DefaultSettings()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.db.ExecContext(ctx, `DELETE FROM settings WHERE key=?`, settingsKeyShowTray); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := st.GetSettings(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.ShowTray {
+		t.Error("ShowTray = false for a database predating the setting; want the default (on)")
+	}
+}
+
+// TestShowTrayOffSurvivesARoundTrip: turning it off has to stick, or
+// the opt-out is no opt-out at all.
+func TestShowTrayOffSurvivesARoundTrip(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+
+	s := DefaultSettings()
+	s.ShowTray = false
+	if err := st.SaveSettings(ctx, s); err != nil {
+		t.Fatal(err)
+	}
+	got, err := st.GetSettings(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ShowTray {
+		t.Error("ShowTray came back on after being saved off")
+	}
+}

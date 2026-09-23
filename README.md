@@ -91,6 +91,10 @@ godl retry <job-id>         # re-run from scratch
 godl cancel <job-id>
 godl remove <job-id>        # drop from the list, keep the downloaded file
 godl rm <job-id> --purge    # drop from the list AND delete the downloaded file
+
+godl daemon status          # is the background daemon running?
+godl daemon stop            # stop it; unfinished jobs resume next time
+godl tray                   # a tray icon by hand (the daemon shows one itself)
 ```
 
 Job state and logs live under `~/.local/share/godl` (override with
@@ -395,6 +399,71 @@ navigating away or quitting mid-edit):
 second `enter` saves, `esc` cancels the edit) or toggles a checkbox
 field immediately, and `esc` closes the tab.
 
+### The system tray icon
+
+The daemon used to be invisible: any command started it, and it then
+kept running with nothing to show for it. Now **it puts itself in the
+notification area whenever it starts** — on Windows, Linux and macOS —
+so a running daemon is something you can see and stop. There is nothing
+to enable and no command to remember.
+
+```
+  godl — 2 active, 5 queued, 4.1 MiB/s
+  ──────────────────────────────────
+  Open status dashboard
+  Pause all
+  Resume all
+  ──────────────────────────────────
+  Quit godl daemon
+  Hide this icon
+```
+
+The icon appears with the daemon and goes away with it, so its presence
+is the answer to "is godl running". *Hide this icon* closes just the
+icon and leaves the daemon working.
+
+Turn it off in the Settings tab of `godl status` ("Show tray icon"), or
+set `GODL_NO_TRAY=1` where there's no database to configure (a
+container, CI, anything embedding the daemon). It is skipped
+automatically where there is nowhere to show one — no desktop session,
+or a session whose desktop has no tray host — so nothing changes for
+headless use and nothing is left running that can't be seen.
+
+`godl tray` still exists for running one by hand: that icon outlives the
+daemon and offers to start it again, which is useful if you turned the
+automatic one off. `--install-autostart` / `--uninstall-autostart`
+register it at login (Windows Run key, XDG `.desktop`, macOS
+LaunchAgent). Only one icon is ever shown — whichever tray gets there
+first holds it, and the others stand down.
+
+The menu shows what the daemon is doing — active, queued and paused
+counts with the combined speed, updated live — and can open the
+dashboard, pause or resume everything, and **quit the daemon**. Quitting
+mid-download is safe: unfinished jobs are left alone and resume the next
+time the daemon starts.
+
+Platform notes: on Linux the icon is published over D-Bus
+(StatusNotifierItem), which KDE, and GNOME with the AppIndicator
+extension, host natively. godl checks for a host before starting a tray
+at all, so on a desktop offering only the older XEmbed tray you get a
+clear message from `godl tray` rather than an icon that never appears.
+On macOS the tray needs Cocoa, so it's in the published macOS binaries
+(built on a Mac) but not in a `CGO_ENABLED=0` build you cross-compile
+yourself, where `godl tray` says so and points you at `godl daemon`
+instead.
+
+### `godl daemon` — the background daemon, directly
+
+```sh
+godl daemon status   # running? how many jobs active/queued?
+godl daemon start
+godl daemon stop
+```
+
+Nothing here is needed in normal use — every other command starts the
+daemon on demand — but it's the headless equivalent of the tray's Quit,
+and the answer to "what is this process and how do I stop it".
+
 ### `godl update` — update everything godl manages, including itself
 
 Forces an immediate check for a newer yt-dlp/ffmpeg build (godl checks
@@ -440,6 +509,7 @@ talk over a Unix socket (newline-delimited JSON; see
 main.go            → cmd.Execute()
 cmd/               cobra commands and plain-CLI output only
 tui/               the terminal dashboard (bubbletea)
+tray/              the system tray icon (fyne.io/systray)
 internal/
   daemon/          the background daemon: job lifecycle, scheduling,
                    settings, and the socket protocol
@@ -451,6 +521,7 @@ internal/
   fileserver/      `godl serve` — the other direction: serve a local
                    directory over HTTP(S) and WebDAV
   connections/     saved WebDAV connection profiles
+  autostart/       run-at-login entries (Run key, .desktop, LaunchAgent)
   format/ social/  helpers shared by every front end
   urlname/ paths/
   httpx/           HTTP clients, with the timeouts and pooling that
@@ -459,12 +530,15 @@ internal/
 ```
 
 The dependency direction is one-way and enforced by a test
-(`tui/boundary_test.go`): **`cmd` → `tui` → `internal/…`**, and nothing
-under `internal/` imports either front end. `tui` exposes exactly one
-function, `tui.Run()`. That's what keeps a second front end — a GUI —
-a matter of adding a sibling package that drives the same daemon client
-and the same `internal/format` helpers, rather than untangling the
-terminal UI from the core first.
+(`boundary_test.go`): **`cmd` → {`tui`, `tray`} → `internal/…`**.
+Nothing under `internal/` imports a front end, and the front ends don't
+import each other — they're peers, not a chain. Each exposes exactly one
+function, `tui.Run()` and `tray.Run()`.
+
+`tray` is what that layout was for: it was added as a sibling package
+driving the same daemon client and the same `internal/format` helpers,
+without the terminal UI or the core needing to know it exists. A GUI
+would slot in the same way.
 
 ## Building from source
 
@@ -472,11 +546,24 @@ terminal UI from the core first.
 go build -trimpath -ldflags="-s -w" -o godl .
 ```
 
-Requires Go 1.25+. To build every release artifact (cross-platform
-binaries, the Windows installer, and the `.deb`) into `dist/`:
+Requires Go 1.25+. To build every release artifact that Linux can
+produce (the Linux binary, the Windows installer, and the `.deb`) into
+`dist/`:
 
 ```sh
 ./scripts/build-all.sh
 ```
+
+The macOS binaries are built separately, **on a Mac**, because the tray
+needs Cocoa and therefore cgo and the macOS SDK:
+
+```sh
+./scripts/build-darwin.sh
+```
+
+It refuses to produce a binary that resolved to the tray stub, so a
+macOS build silently missing the tray can't ship. CI builds both halves
+on every PR — Linux and the cross-compiles on `ubuntu-latest`, macOS on
+`macos-latest`.
 
 See `scripts/` for the individual build/install/uninstall scripts.

@@ -105,6 +105,16 @@ func (d *Daemon) dispatch(conn net.Conn, req Request) {
 		j, err := d.remove(ctx, req.JobID, req.Purge)
 		writeResult(conn, j, err)
 
+	case CmdShutdown:
+		writeResp(conn, Response{Type: "result", OK: true})
+		// Hang up before tearing the listener down. Defensive: in
+		// practice handleConn's deferred Close already wins, since
+		// Shutdown has to unwind Accept, Serve and RunForeground before
+		// the process goes — but the reply's delivery shouldn't rest on
+		// which of two unsynchronized paths gets there first.
+		conn.Close()
+		d.Shutdown()
+
 	case CmdList:
 		writeResp(conn, Response{Type: "result", OK: true, Jobs: d.snapshot()})
 

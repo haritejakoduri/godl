@@ -47,6 +47,7 @@ const (
 	CmdPing        = "ping"
 	CmdGetSettings = "get_settings"
 	CmdSetSettings = "set_settings"
+	CmdShutdown    = "shutdown"
 )
 
 // JobView is a store.Job plus the runtime stats (speed, ETA) the daemon

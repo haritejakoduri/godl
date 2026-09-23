@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net"
 	"os"
@@ -51,6 +52,27 @@ type Daemon struct {
 	// than letting one fire after the store it writes to is closed.
 	retryMu     sync.Mutex
 	retryTimers map[string]*time.Timer
+
+	// The accept loop's listener, held so Shutdown can close it out
+	// from under Serve. stopped covers the window before Serve has
+	// assigned it, so a shutdown arriving in that gap still takes.
+	listenMu sync.Mutex
+	listener net.Listener
+	stopped  bool
+}
+
+// Shutdown stops the accept loop, which makes Serve return and the
+// daemon process exit. Jobs still running are left as they are: the
+// next start normalizes anything marked active back to queued and picks
+// it up again (see resumeInterruptedJobs), which is the same path a
+// killed daemon already took.
+func (d *Daemon) Shutdown() {
+	d.listenMu.Lock()
+	defer d.listenMu.Unlock()
+	d.stopped = true
+	if d.listener != nil {
+		d.listener.Close()
+	}
 }
 
 func NewDaemon() (*Daemon, error) {
@@ -106,10 +128,26 @@ func (d *Daemon) Serve() error {
 
 	l, err := net.Listen("unix", sockPath)
 	if err != nil {
+		// A too-long path fails here as a bare "invalid argument".
+		// sockaddr_un.sun_path holds 104 bytes on macOS and 108 on
+		// Linux, and nothing in the error mentions length — so say so
+		// rather than pre-rejecting, which would break a path that
+		// currently works on the roomier platform.
+		if len(sockPath) > 100 {
+			return fmt.Errorf("%w — the socket path is %d characters, and the OS caps it near 104; set GODL_SOCKET_PATH to something shorter", err, len(sockPath))
+		}
 		return err
 	}
 	defer l.Close()
 	defer os.Remove(sockPath)
+
+	d.listenMu.Lock()
+	stopped := d.stopped
+	d.listener = l
+	d.listenMu.Unlock()
+	if stopped {
+		return nil // Shutdown ran before the listener existed
+	}
 	// Unix sockets get created with a mode based on umask (often
 	// world-connectable), and SocketPath() can fall back to a shared
 	// temp dir when $XDG_RUNTIME_DIR isn't set — restrict explicitly so

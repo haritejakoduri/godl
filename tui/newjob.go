@@ -112,7 +112,7 @@ func (m statusModel) viewNewJob() string {
 	switch m.newJob.step {
 	case newJobPickType:
 		var b strings.Builder
-		b.WriteString(statStyle.Render("Start a new download — pick a type:"))
+		b.WriteString(m.wrapped(statStyle).Render("Start a new download — pick a type:"))
 		b.WriteString("\n")
 		for i, t := range newJobTypes {
 			cursor := "  "
@@ -121,12 +121,12 @@ func (m statusModel) viewNewJob() string {
 			}
 			b.WriteString(cursor + t.label + "\n")
 		}
-		b.WriteString(helpStyle.Render("↑/↓ select  enter next  esc cancel"))
+		b.WriteString(m.helpView("↑/↓ select  enter next  esc cancel"))
 		return b.String()
 
 	case newJobPickPreset:
 		var b strings.Builder
-		b.WriteString(statStyle.Render("Social/media — pick a quality preset:"))
+		b.WriteString(m.wrapped(statStyle).Render("Social/media — pick a quality preset:"))
 		b.WriteString("\n")
 		for i, p := range social.Presets {
 			cursor := "  "
@@ -135,7 +135,7 @@ func (m statusModel) viewNewJob() string {
 			}
 			b.WriteString(fmt.Sprintf("%s%-8s %s\n", cursor, p.Name, p.Description))
 		}
-		b.WriteString(helpStyle.Render("↑/↓ select  enter next  esc back"))
+		b.WriteString(m.helpView("↑/↓ select  enter next  esc back"))
 		return b.String()
 
 	default: // newJobEnterLink
@@ -144,11 +144,11 @@ func (m statusModel) viewNewJob() string {
 			label += " [" + social.Presets[m.newJob.presetIndex].Name + "]"
 		}
 		var b strings.Builder
-		b.WriteString(statStyle.Render(fmt.Sprintf("%s — paste the link:", label)))
+		b.WriteString(m.wrapped(statStyle).Render(fmt.Sprintf("%s — paste the link:", label)))
 		b.WriteString("\n")
 		b.WriteString(m.newJob.input.View())
 		b.WriteString("\n")
-		b.WriteString(helpStyle.Render("enter start  esc back"))
+		b.WriteString(m.helpView("enter start  esc back"))
 		return b.String()
 	}
 }

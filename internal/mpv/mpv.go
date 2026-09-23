@@ -13,12 +13,12 @@
 package mpv
 
 import (
+	"encoding/base64"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strings"
 )
 
 // installHint names the OS-appropriate way to install mpv, for an
@@ -112,38 +112,51 @@ func findPlayer() (path string, kind playerKind, err error) {
 	return "", 0, fmt.Errorf("no media player found — install mpv (%s) or VLC (https://www.videolan.org/vlc/) to use this", installHint())
 }
 
+// Auth is HTTP Basic credentials for a target that needs them — a
+// WebDAV file behind a saved connection. It's kept as the two fields
+// rather than a ready-made header because the players take it
+// differently: mpv wants a header, VLC has its own flags.
+type Auth struct {
+	Username, Password string
+}
+
+func (a *Auth) empty() bool {
+	return a == nil || (a.Username == "" && a.Password == "")
+}
+
+// Name reports which player Play would launch — "mpv" or "vlc" —
+// without launching it, for a caller that has to prepare its target
+// differently for each (see the TUI's social playback, where only mpv
+// can resolve a yt-dlp link by itself).
+func Name() (string, error) {
+	_, kind, err := findPlayer()
+	if err != nil {
+		return "", err
+	}
+	if kind == playerVLC {
+		return "vlc", nil
+	}
+	return "mpv", nil
+}
+
 // Play launches a player on target — a URL or a local file path,
 // which both mpv and VLC treat identically — detached from godl's own
 // process so the TUI doesn't block while it plays and closing the TUI
 // doesn't kill it.
 //
-// headers, if non-nil, are passed via mpv's --http-header-fields flag
-// (e.g. {"Authorization": "Basic ..."}) rather than embedded in the
-// URL as user:pass@host: an argv-embedded password is readable by any
-// other local user via ps/Task Manager, while a header flag isn't
-// meaningfully more exposed than the URL/target argument itself
-// already is. VLC has no equivalent flag for arbitrary headers, so a
-// target that needs them is refused when only VLC is available rather
-// than falling back to the less-safe URL-embedded form.
-func Play(target string, headers map[string]string) error {
+// auth, if set, goes in flags rather than embedded in the URL as
+// user:pass@host. Both forms put the credential in another process's
+// argv, where ps/Task Manager can read it; the URL form additionally
+// writes it into the player's own recent-files list, where it outlives
+// the process. mpv takes a prebuilt Authorization header, VLC its
+// --http-user/--http-pwd pair.
+func Play(target string, auth *Auth) error {
 	playerPath, kind, err := findPlayer()
 	if err != nil {
 		return err
 	}
-	if kind == playerVLC && len(headers) > 0 {
-		return fmt.Errorf("VLC can't send this job's required request headers — install mpv instead (%s), or see https://mpv.io/installation/", installHint())
-	}
 
-	var args []string
-	if len(headers) > 0 {
-		fields := make([]string, 0, len(headers))
-		for k, v := range headers {
-			fields = append(fields, fmt.Sprintf("%s: %s", k, v))
-		}
-		args = append(args, "--http-header-fields="+strings.Join(fields, ","))
-	}
-	args = append(args, target)
-
+	args := append(authArgs(kind, auth), target)
 	cmd := exec.Command(playerPath, args...)
 	cmd.SysProcAttr = detachedSysProcAttr()
 	if err := cmd.Start(); err != nil {
@@ -152,4 +165,17 @@ func Play(target string, headers map[string]string) error {
 	// Detached on purpose (see doc comment): release rather than Wait,
 	// so godl's own process exiting doesn't reap/signal the player.
 	return cmd.Process.Release()
+}
+
+// authArgs renders auth the way kind's player expects it, or nothing
+// when there's nothing to send.
+func authArgs(kind playerKind, auth *Auth) []string {
+	if auth.empty() {
+		return nil
+	}
+	if kind == playerVLC {
+		return []string{"--http-user=" + auth.Username, "--http-pwd=" + auth.Password}
+	}
+	token := base64.StdEncoding.EncodeToString([]byte(auth.Username + ":" + auth.Password))
+	return []string{"--http-header-fields=Authorization: Basic " + token}
 }

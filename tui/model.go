@@ -57,14 +57,17 @@ type bulkActionDoneMsg struct {
 	err        error // first error encountered, if failed > 0
 }
 
-// Dropped if m.settings is nil by the time they arrive — the overlay was
-// closed before the round trip finished.
+// Dropped unless the Settings tab they were requested by (st) is still
+// the one showing — it was closed, or closed and reopened, before the
+// round trip finished.
 type settingsLoadedMsg struct {
+	st       *settingsState
 	settings store.Settings
 	err      error
 }
 
 type settingsSavedMsg struct {
+	st       *settingsState
 	settings store.Settings
 	err      error
 }
@@ -75,13 +78,14 @@ type statusModel struct {
 	snapCh <-chan []*daemon.JobView
 	errCh  <-chan error
 
-	table     table.Model
-	bar       progress.Model
-	jobs      []*daemon.JobView
-	err       error
-	statusMsg string
-	width     int // last known terminal width, for responsive column sizing
-	height    int // last known terminal height, for sizing full-screen overlays
+	table       table.Model
+	bar         progress.Model
+	jobs        []*daemon.JobView
+	err         error
+	statusMsg   string
+	tableHeight int // last height fitTable gave the table
+	width       int // last known terminal width, for responsive column sizing
+	height      int // last known terminal height, for sizing full-screen overlays
 
 	// Job IDs checked with space. An action key acts on these when
 	// non-empty, otherwise on the row under the cursor.
@@ -104,7 +108,7 @@ type pendingRemove struct {
 
 func newStatusModel() statusModel {
 	ctx, cancel := context.WithCancel(context.Background())
-	snapCh, errCh := daemon.Subscribe(ctx)
+	snapCh, errCh := daemon.SubscribeRetrying(ctx)
 
 	t := table.New(table.WithColumns(columnsForWidth(0)), table.WithFocused(true), table.WithHeight(15))
 	styles := table.DefaultStyles()

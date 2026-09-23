@@ -143,35 +143,35 @@ var settingsFields = []settingsField{
 
 // loadSettings fetches the daemon's current settings for the Settings
 // tab to display — called once when the tab is opened.
-func loadSettings() tea.Cmd {
+func loadSettings(st *settingsState) tea.Cmd {
 	return func() tea.Msg {
 		if err := daemon.EnsureRunning(); err != nil {
-			return settingsLoadedMsg{err: err}
+			return settingsLoadedMsg{st: st, err: err}
 		}
 		resp, err := daemon.Call(daemon.Request{Cmd: daemon.CmdGetSettings})
 		if err != nil {
-			return settingsLoadedMsg{err: err}
+			return settingsLoadedMsg{st: st, err: err}
 		}
 		if resp.Settings == nil {
-			return settingsLoadedMsg{err: fmt.Errorf("daemon returned no settings")}
+			return settingsLoadedMsg{st: st, err: fmt.Errorf("daemon returned no settings")}
 		}
-		return settingsLoadedMsg{settings: *resp.Settings}
+		return settingsLoadedMsg{st: st, settings: *resp.Settings}
 	}
 }
 
 // saveSettings sends s to the daemon to validate and persist — called
 // immediately after every single-field edit (see settingsState's own
 // doc comment for why there's no separate save step).
-func saveSettings(s store.Settings) tea.Cmd {
+func saveSettings(st *settingsState, s store.Settings) tea.Cmd {
 	return func() tea.Msg {
 		resp, err := daemon.Call(daemon.Request{Cmd: daemon.CmdSetSettings, Settings: &s})
 		if err != nil {
-			return settingsSavedMsg{err: err}
+			return settingsSavedMsg{st: st, err: err}
 		}
 		if resp.Settings == nil {
-			return settingsSavedMsg{err: fmt.Errorf("daemon returned no settings")}
+			return settingsSavedMsg{st: st, err: fmt.Errorf("daemon returned no settings")}
 		}
-		return settingsSavedMsg{settings: *resp.Settings}
+		return settingsSavedMsg{st: st, settings: *resp.Settings}
 	}
 }
 
@@ -197,7 +197,7 @@ func (m statusModel) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			s.editing = false
 			s.err = ""
 			s.saved = false
-			return m, saveSettings(working)
+			return m, saveSettings(s, working)
 		default:
 			var cmd tea.Cmd
 			s.input, cmd = s.input.Update(msg)
@@ -212,13 +212,13 @@ func (m statusModel) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "up", "k":
 		if s.cursor > 0 {
 			s.cursor--
-			s.err = ""
+			s.err, s.saved = "", false
 		}
 		return m, nil
 	case "down", "j":
 		if s.cursor < len(settingsFields)-1 {
 			s.cursor++
-			s.err = ""
+			s.err, s.saved = "", false
 		}
 		return m, nil
 	case "enter", " ":
@@ -228,7 +228,7 @@ func (m statusModel) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			field.toggle(&working)
 			s.err = ""
 			s.saved = false
-			return m, saveSettings(working)
+			return m, saveSettings(s, working)
 		}
 		ti := textinput.New()
 		ti.SetValue(field.get(s.current))
@@ -246,12 +246,12 @@ func (m statusModel) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m statusModel) viewSettings() string {
 	s := m.settings
 	var b strings.Builder
-	b.WriteString(statStyle.Render("Settings"))
+	b.WriteString(m.wrapped(statStyle).Render("Settings"))
 	b.WriteString("\n")
 
 	if s.loading {
 		b.WriteString("loading...\n")
-		b.WriteString(helpStyle.Render("esc close"))
+		b.WriteString(m.helpView("esc close"))
 		return b.String()
 	}
 
@@ -266,23 +266,23 @@ func (m statusModel) viewSettings() string {
 		}
 		fmt.Fprintf(&b, "%s%-28s %s\n", cursor, f.label, value)
 		if i == s.cursor {
-			b.WriteString("    " + helpStyle.Render(f.help) + "\n")
+			b.WriteString("    " + m.helpView(f.help) + "\n")
 		}
 	}
 
 	switch {
 	case s.err != "":
-		b.WriteString(errStyle.Render("error: " + s.err))
+		b.WriteString(m.wrapped(errStyle).Render("error: " + s.err))
 		b.WriteString("\n")
 	case s.saved:
-		b.WriteString(statStyle.Render("saved"))
+		b.WriteString(m.wrapped(statStyle).Render("saved"))
 		b.WriteString("\n")
 	}
 
 	if s.editing {
-		b.WriteString(helpStyle.Render("enter save  esc cancel"))
+		b.WriteString(m.helpView("enter save  esc cancel"))
 	} else {
-		b.WriteString(helpStyle.Render("↑/↓ select  enter edit/toggle  esc close"))
+		b.WriteString(m.helpView("↑/↓ select  enter edit/toggle  esc close"))
 	}
 	return b.String()
 }

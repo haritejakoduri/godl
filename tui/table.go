@@ -2,8 +2,10 @@ package tui
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/charmbracelet/bubbles/table"
+	"github.com/charmbracelet/lipgloss"
 
 	"godl/internal/daemon"
 	"godl/internal/format"
@@ -94,9 +96,6 @@ func newestFirst(jobs []*daemon.JobView) []*daemon.JobView {
 	return out
 }
 
-// cursorJobID returns the ID of the job currently under the cursor, or
-// "" if there isn't one — used to re-find and re-focus the same job
-// after a snapshot reorders the list (see the jobsMsg handler).
 // cursorJob returns the job the table cursor is on, and its row index.
 // ok is false when the table is empty or the cursor is out of range.
 func (m statusModel) cursorJob() (job *daemon.JobView, idx int, ok bool) {
@@ -107,6 +106,9 @@ func (m statusModel) cursorJob() (job *daemon.JobView, idx int, ok bool) {
 	return m.jobs[idx], idx, true
 }
 
+// cursorJobID returns the ID of the job under the cursor, or "" if there
+// isn't one — used to re-find and re-focus the same job after a snapshot
+// reorders the list (see applyJobs).
 func (m statusModel) cursorJobID() string {
 	j, _, ok := m.cursorJob()
 	if !ok {
@@ -140,9 +142,13 @@ func (m *statusModel) pruneSelected() {
 // uses for its "d" (download) key.
 func (m statusModel) actionTargets() []string {
 	if len(m.selected) > 0 {
+		// In the order shown on screen, not map order, so a bulk action
+		// (and which failure it reports first) is repeatable.
 		ids := make([]string, 0, len(m.selected))
-		for id := range m.selected {
-			ids = append(ids, id)
+		for _, j := range m.jobs {
+			if m.selected[j.ID] {
+				ids = append(ids, j.ID)
+			}
 		}
 		return ids
 	}
@@ -207,4 +213,25 @@ func renderStatus(status store.JobStatus) string {
 		return string(status)
 	}
 	return style.Render(string(status))
+}
+
+// fitCells truncates or pads s to exactly w terminal cells, marking a cut
+// with an ellipsis. Measured in cells rather than runes so CJK and emoji
+// names, which take two cells a character, still line up with the column
+// that follows (a plain %-40s or rune-count truncation gets them wrong).
+func fitCells(s string, w int) string {
+	if lipgloss.Width(s) > w {
+		var b strings.Builder
+		used := 0
+		for _, r := range s {
+			rw := lipgloss.Width(string(r))
+			if used+rw > w-1 {
+				break
+			}
+			b.WriteRune(r)
+			used += rw
+		}
+		s = b.String() + "…"
+	}
+	return s + strings.Repeat(" ", max(w-lipgloss.Width(s), 0))
 }

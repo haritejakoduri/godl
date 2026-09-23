@@ -190,60 +190,106 @@ func StreamSocial(ctx context.Context, req Request, onStart func(*JobView), onLi
 }
 
 // Subscribe opens a long-lived connection streaming a job-list snapshot
-// roughly twice a second, for the status TUI. It closes when ctx is
-// canceled.
+// roughly twice a second. The snapshot channel closes when the connection
+// ends — the daemon went away, or ctx was canceled — with the reason,
+// if it wasn't ctx, on the error channel first. Callers that want to
+// outlive a dropped connection use SubscribeRetrying.
 func Subscribe(ctx context.Context) (<-chan []*JobView, <-chan error) {
+	snapCh := make(chan []*JobView)
+	errCh := make(chan error, 1)
+	go func() {
+		defer close(snapCh)
+		if _, err := subscribeOnce(ctx, snapCh); err != nil && ctx.Err() == nil {
+			errCh <- err
+		}
+	}()
+	return snapCh, errCh
+}
+
+// SubscribeRetrying is Subscribe that reconnects, with backoff, when the
+// connection drops or the daemon isn't there yet, so a dashboard left
+// open across a daemon restart picks up again instead of freezing on the
+// last list it saw. The snapshot channel closes only when ctx is
+// canceled. Each failed attempt is reported on the error channel
+// (best-effort, never blocking) until the next snapshot arrives.
+//
+// It never starts the daemon: one that was stopped on purpose (see Stop)
+// stays stopped, and comes back into view when something else starts it.
+func SubscribeRetrying(ctx context.Context) (<-chan []*JobView, <-chan error) {
 	snapCh := make(chan []*JobView)
 	errCh := make(chan error, 1)
 
 	go func() {
 		defer close(snapCh)
-		sockPath, err := paths.SocketPath()
-		if err != nil {
-			errCh <- err
-			return
-		}
-		conn, err := net.Dial("unix", sockPath)
-		if err != nil {
-			errCh <- err
-			return
-		}
-		defer conn.Close()
-		go func() {
-			<-ctx.Done()
-			conn.Close()
-		}()
-
-		data, _ := json.Marshal(Request{Cmd: CmdSubscribe})
-		if _, err := conn.Write(append(data, '\n')); err != nil {
-			if ctx.Err() == nil {
-				errCh <- err
-			}
-			return
-		}
-
-		reader := bufio.NewReader(conn)
-		for {
-			line, err := reader.ReadBytes('\n')
-			if err != nil {
-				if ctx.Err() == nil {
-					errCh <- err
-				}
+		backoff := subscribeMinBackoff
+		for ctx.Err() == nil {
+			gotSnapshot, err := subscribeOnce(ctx, snapCh)
+			if ctx.Err() != nil {
 				return
 			}
-			var r Response
-			if json.Unmarshal(bytes.TrimSpace(line), &r) != nil {
-				continue
+			if gotSnapshot {
+				backoff = subscribeMinBackoff
 			}
 			select {
-			case snapCh <- r.Jobs:
+			case errCh <- err:
+			default: // an earlier error is still unread; it'll do
+			}
+			select {
+			case <-time.After(backoff):
 			case <-ctx.Done():
 				return
 			}
+			backoff = min(backoff*2, subscribeMaxBackoff)
 		}
 	}()
 
 	return snapCh, errCh
+}
+
+const (
+	subscribeMinBackoff = 500 * time.Millisecond
+	subscribeMaxBackoff = 5 * time.Second
+)
+
+// subscribeOnce holds one subscription connection open, forwarding
+// snapshots to snapCh, and returns why it ended. gotSnapshot reports
+// whether it delivered at least one, i.e. whether the connection was
+// healthy before it dropped.
+func subscribeOnce(ctx context.Context, snapCh chan<- []*JobView) (gotSnapshot bool, err error) {
+	sockPath, err := paths.SocketPath()
+	if err != nil {
+		return false, err
+	}
+	conn, err := net.Dial("unix", sockPath)
+	if err != nil {
+		return false, err
+	}
+	defer conn.Close()
+	stop := context.AfterFunc(ctx, func() { conn.Close() })
+	defer stop()
+
+	data, _ := json.Marshal(Request{Cmd: CmdSubscribe})
+	if _, err := conn.Write(append(data, '\n')); err != nil {
+		return false, err
+	}
+
+	reader := bufio.NewReader(conn)
+	for {
+		line, err := reader.ReadBytes('\n')
+		if err != nil {
+			return gotSnapshot, err
+		}
+		var r Response
+		if json.Unmarshal(bytes.TrimSpace(line), &r) != nil {
+			continue
+		}
+		select {
+		case snapCh <- r.Jobs:
+			gotSnapshot = true
+		case <-ctx.Done():
+			return gotSnapshot, ctx.Err()
+		}
+	}
 }
 
 // RunForeground runs the daemon in the current process until the socket

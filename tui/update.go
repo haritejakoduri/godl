@@ -45,9 +45,9 @@ func (m statusModel) applyJobs(msg jobsMsg) statusModel {
 
 // settingsResult applies a reply from the daemon to the Settings tab.
 // saved marks the "saved" confirmation, which only a save earns.
-func (m statusModel) settingsResult(s store.Settings, err error, saved bool) (tea.Model, tea.Cmd) {
-	if m.settings == nil {
-		return m, nil // the tab was closed before this reply arrived
+func (m statusModel) settingsResult(st *settingsState, s store.Settings, err error, saved bool) (tea.Model, tea.Cmd) {
+	if m.settings == nil || m.settings != st {
+		return m, nil // the tab was closed (or reopened) before this reply arrived
 	}
 	m.settings.loading = false
 	m.settings.saved = false
@@ -61,24 +61,34 @@ func (m statusModel) settingsResult(s store.Settings, err error, saved bool) (te
 	return m, nil
 }
 
+// Update applies msg, then re-fits the table to whatever the footer now
+// needs (see fitTable).
 func (m statusModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	next, cmd := m.update(msg)
+	if sm, ok := next.(statusModel); ok {
+		sm.fitTable()
+		return sm, cmd
+	}
+	return next, cmd
+}
+
+func (m statusModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
 		m.table.SetColumns(columnsForWidth(msg.Width))
 		m.table.SetWidth(msg.Width)
-		if h := msg.Height - 7; h > 3 {
-			m.table.SetHeight(h)
-		}
 		return m, nil
 
 	case jobsMsg:
 		return m.applyJobs(msg), waitForSnapshot(m.snapCh, m.errCh)
 
 	case subErrMsg:
+		// SubscribeRetrying reconnects by itself; keep listening so the
+		// next snapshot (which clears m.err) can arrive.
 		m.err = msg.err
-		return m, nil
+		return m, waitForSnapshot(m.snapCh, m.errCh)
 
 	case subEndedMsg:
 		return m, nil
@@ -116,7 +126,7 @@ func (m statusModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case webdavListedMsg:
-		if wb := m.webdavBrowse; wb != nil {
+		if wb := m.webdavBrowse; wb != nil && wb == msg.wb && wb.loading && wb.pending == msg.path {
 			wb.loading, wb.err = false, ""
 			wb.path, wb.entries, wb.cursor = msg.path, msg.entries, 0
 			wb.cache[msg.path] = msg.entries
@@ -124,7 +134,7 @@ func (m statusModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case webdavListErrMsg:
-		if wb := m.webdavBrowse; wb != nil {
+		if wb := m.webdavBrowse; wb != nil && wb == msg.wb && wb.loading && wb.pending == msg.path {
 			wb.loading, wb.err = false, msg.err.Error()
 		}
 		return m, nil
@@ -141,10 +151,10 @@ func (m statusModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case settingsLoadedMsg:
-		return m.settingsResult(msg.settings, msg.err, false)
+		return m.settingsResult(msg.st, msg.settings, msg.err, false)
 
 	case settingsSavedMsg:
-		return m.settingsResult(msg.settings, msg.err, true)
+		return m.settingsResult(msg.st, msg.settings, msg.err, true)
 
 	case tea.KeyMsg:
 		return m.handleKey(msg)
@@ -159,6 +169,10 @@ func (m statusModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // pending confirmation, or to the dashboard's own bindings. Keys it
 // doesn't claim drive the table's cursor.
 func (m statusModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if msg.String() == "ctrl+c" {
+		m.cancel()
+		return m, tea.Quit
+	}
 	if m.newJob != nil {
 		return m.updateNewJob(msg)
 	}
@@ -171,8 +185,12 @@ func (m statusModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.confirmRemove != nil {
 		return m.resolveRemove(msg)
 	}
+	// A keypress dismisses whatever the last action left in the footer, so
+	// a stale message can't sit on top of the selected job's failure
+	// reason (see View). Anything this key does then sets its own.
+	m.statusMsg = ""
 	switch msg.String() {
-	case "q", "ctrl+c":
+	case "q":
 		m.cancel()
 		return m, tea.Quit
 	case "n":
@@ -187,7 +205,7 @@ func (m statusModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.openWebDAVBrowser()
 	case "s":
 		m.settings = &settingsState{loading: true}
-		return m, loadSettings()
+		return m, loadSettings(m.settings)
 	case " ":
 		j, idx, ok := m.cursorJob()
 		if !ok {
@@ -221,7 +239,7 @@ func (m statusModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if !ok {
 			return m, nil
 		}
-		m.statusMsg = "starting mpv..."
+		m.statusMsg = "starting player..."
 		return m, doPlay(j)
 	}
 

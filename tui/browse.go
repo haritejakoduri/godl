@@ -10,10 +10,12 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"godl/internal/connections"
 	"godl/internal/daemon"
 	"godl/internal/format"
+	"godl/internal/mpv"
 	"godl/internal/paths"
 	"godl/internal/webdav"
 )
@@ -58,6 +60,7 @@ type webdavBrowseState struct {
 	// browser is opened, not stale forever.
 	cache   map[string][]webdav.Entry
 	loading bool
+	pending string // directory the in-flight listing is for, while loading
 	err     string
 
 	// searching is true while the "/" search prompt is focused and
@@ -90,11 +93,21 @@ func (wb *webdavBrowseState) visibleEntries() []webdav.Entry {
 	return out
 }
 
+// The listing replies carry the browser session (wb) and directory they
+// were requested for. A reply is applied only if it still matches what
+// the browser is waiting on: closing and reopening the browser, or
+// moving on to another folder mid-load, must not let a late answer
+// overwrite the view with a listing the user has already left.
 type webdavListedMsg struct {
+	wb      *webdavBrowseState
 	path    string
 	entries []webdav.Entry
 }
-type webdavListErrMsg struct{ err error }
+type webdavListErrMsg struct {
+	wb   *webdavBrowseState
+	path string
+	err  error
+}
 type webdavStartedMsg struct {
 	n      int
 	output string
@@ -104,7 +117,8 @@ type webdavStartedMsg struct {
 // listWebDAVDir lists one directory's immediate children, dirs first
 // then alphabetically. Runs over the network, so it's a tea.Cmd rather
 // than something Update calls inline.
-func listWebDAVDir(client *webdav.Client, dir string) tea.Cmd {
+func listWebDAVDir(wb *webdavBrowseState, dir string) tea.Cmd {
+	client := wb.client
 	return func() tea.Msg {
 		// Longer than internal/webdav's own propfindTimeout (3 minutes):
 		// that's what actually bounds a single PROPFIND round-trip,
@@ -117,7 +131,7 @@ func listWebDAVDir(client *webdav.Client, dir string) tea.Cmd {
 		defer cancel()
 		entries, err := client.List(ctx, dir)
 		if err != nil {
-			return webdavListErrMsg{err}
+			return webdavListErrMsg{wb: wb, path: dir, err: err}
 		}
 		sort.Slice(entries, func(i, j int) bool {
 			if entries[i].IsDir != entries[j].IsDir {
@@ -125,7 +139,7 @@ func listWebDAVDir(client *webdav.Client, dir string) tea.Cmd {
 			}
 			return entries[i].Path < entries[j].Path
 		})
-		return webdavListedMsg{path: dir, entries: entries}
+		return webdavListedMsg{wb: wb, path: dir, entries: entries}
 	}
 }
 
@@ -180,7 +194,8 @@ func (m statusModel) openWebDAVDir(target string) tea.Cmd {
 		return nil
 	}
 	wb.loading = true
-	return listWebDAVDir(wb.client, target)
+	wb.pending = target
+	return listWebDAVDir(wb, target)
 }
 
 func (m statusModel) updateWebDAVBrowse(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -226,7 +241,8 @@ func (m statusModel) webdavPickConnKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		wb.cache = map[string][]webdav.Entry{}
 		wb.step = webdavBrowsing
 		wb.loading = true
-		return m, listWebDAVDir(client, "/")
+		wb.pending = "/"
+		return m, listWebDAVDir(wb, "/")
 	case "esc":
 		m.webdavBrowse = nil
 	}
@@ -312,6 +328,7 @@ func (m statusModel) webdavBrowsingKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		for p := range wb.selected {
 			targets = append(targets, p)
 		}
+		sort.Strings(targets) // queue in a repeatable order, not map order
 		if len(targets) == 0 {
 			if e, ok := current(); ok {
 				targets = []string{e.Path}
@@ -321,6 +338,16 @@ func (m statusModel) webdavBrowsingKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m.startBrowseDownloads(targets)
+	case "o":
+		// Files only — there's nothing to stream for a directory. Closes
+		// the browser the way d/D do, because viewWebDAVBrowse doesn't
+		// render m.statusMsg: leaving it open would swallow the result,
+		// including "no media player found".
+		e, ok := current()
+		if !ok || e.IsDir {
+			return m, nil
+		}
+		return m.startBrowsePlay(e.Path)
 	case "D":
 		// Downloads the folder currently being browsed, in full — not
 		// whatever's under the cursor or individually checked with space.
@@ -333,6 +360,21 @@ func (m statusModel) webdavBrowsingKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.startBrowseDownloads([]string{wb.path})
 	}
 	return m, nil
+}
+
+// startBrowsePlay closes the browser and streams one remote file
+// straight from the server — no download job, no waiting for one to
+// finish, the same as a webdav job's "o" in the jobs table (see
+// play.go's doPlay) reached one step earlier.
+func (m statusModel) startBrowsePlay(remotePath string) (tea.Model, tea.Cmd) {
+	client := m.webdavBrowse.client
+	m.webdavBrowse = nil
+	m.statusMsg = "starting player..."
+	return m, func() tea.Msg {
+		target := client.URLFor(remotePath).String()
+		auth := &mpv.Auth{Username: client.Username, Password: client.Password}
+		return playedMsg{target: target, err: mpv.Play(target, auth)}
+	}
 }
 
 // startBrowseDownloads closes the browser and queues targets for download.
@@ -349,25 +391,30 @@ func (m statusModel) startBrowseDownloads(targets []string) (tea.Model, tea.Cmd)
 // showing nothing.
 const webdavBrowseVisibleFallback = 15
 
-// webdavBrowseVisible caps how many entries are shown at once, scrolled
-// to keep the cursor in view — a folder with hundreds of files
-// shouldn't blow out the terminal. Sized off the actual terminal
-// height (this view now fills the whole screen — see View()'s doc
-// comment) rather than a fixed constant, so a large listing actually
-// uses the space that's now available to it instead of being capped at
-// a small fixed window regardless of how tall the terminal is.
-func (m statusModel) webdavBrowseVisible() int {
+// webdavBrowseMinVisible is the fewest entries worth showing; on a
+// terminal too short for even that the view overflows rather than
+// showing a uselessly small window.
+const webdavBrowseMinVisible = 5
+
+// webdavBrowseVisible is how many entries fit between head and foot,
+// scrolled to keep the cursor in view — a folder with hundreds of files
+// shouldn't blow out the terminal. It's measured from the head and foot
+// as actually rendered (they wrap on a narrow terminal, and the head
+// gains a line while searching), not from a constant, so the list uses
+// exactly the room the screen has and the title stays on screen.
+func (m statusModel) webdavBrowseVisible(head, foot string) int {
 	if m.height <= 0 {
 		return webdavBrowseVisibleFallback
 	}
-	// Chrome around the list: title, "downloading to ~/...", an
-	// optional search/filter line, the "(x-y of z)" footer line below
-	// the list, and the view's own help line at the very bottom.
-	const chrome = 5
-	if v := m.height - chrome; v >= 5 {
-		return v
-	}
-	return 5
+	// Reserved whether or not it ends up shown, so the list doesn't
+	// change size when a folder crosses the one-screen threshold.
+	position := lipgloss.Height(m.helpView(browsePosition(1, 1, 1)))
+	const slack = 1
+	return max(m.height-lipgloss.Height(head)-lipgloss.Height(foot)-position-slack, webdavBrowseMinVisible)
+}
+
+func browsePosition(start, end, total int) string {
+	return fmt.Sprintf("(%d-%d of %d)", start, end, total)
 }
 
 func (m statusModel) viewWebDAVBrowse() string {
@@ -375,7 +422,7 @@ func (m statusModel) viewWebDAVBrowse() string {
 	var b strings.Builder
 
 	if wb.step == webdavPickConn {
-		b.WriteString(statStyle.Render("Browse WebDAV — pick a connection:"))
+		b.WriteString(m.wrapped(statStyle).Render("Browse WebDAV — pick a connection:"))
 		b.WriteString("\n")
 		for i, c := range wb.conns {
 			cursor := "  "
@@ -384,22 +431,25 @@ func (m statusModel) viewWebDAVBrowse() string {
 			}
 			b.WriteString(fmt.Sprintf("%s%s (%s)\n", cursor, c.Name, c.URL))
 		}
-		b.WriteString(helpStyle.Render("↑/↓ select  enter connect  esc cancel"))
+		b.WriteString(m.helpView("↑/↓ select  enter connect  esc cancel"))
 		return b.String()
 	}
 
-	b.WriteString(statStyle.Render(fmt.Sprintf("%s:%s  (%d selected)", wb.connName, wb.path, len(wb.selected))))
-	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("downloading to " + format.ShortenHome(wb.outputDir)))
-	b.WriteString("\n")
-
+	head := m.wrapped(statStyle).Render(fmt.Sprintf("%s:%s  (%d selected)", wb.connName, wb.path, len(wb.selected))) +
+		"\n" + m.helpView("downloading to "+format.ShortenHome(wb.outputDir))
 	if wb.searching {
-		b.WriteString("Search: " + wb.searchInput.View())
-		b.WriteString("\n")
+		head += "\nSearch: " + wb.searchInput.View()
 	} else if wb.query != "" {
-		b.WriteString(statStyle.Render(fmt.Sprintf("filter: %q (/ to edit, esc to clear)", wb.query)))
-		b.WriteString("\n")
+		head += "\n" + m.wrapped(statStyle).Render(fmt.Sprintf("filter: %q (/ to edit, esc to clear)", wb.query))
 	}
+
+	foot := m.helpView("↑/↓ move  enter open folder  space select  / search  d download selected (or current)  D download this whole folder  o play/stream  ←/backspace up  esc cancel")
+	if wb.searching {
+		foot = m.helpView("type to filter  enter confirm  esc cancel")
+	}
+
+	b.WriteString(head)
+	b.WriteString("\n")
 
 	visible := wb.visibleEntries()
 
@@ -407,14 +457,14 @@ func (m statusModel) viewWebDAVBrowse() string {
 	case wb.loading:
 		b.WriteString("Loading...\n")
 	case wb.err != "":
-		b.WriteString(errStyle.Render(wb.err))
+		b.WriteString(m.wrapped(errStyle).Render(wb.err))
 		b.WriteString("\n")
 	case len(visible) == 0 && wb.query != "":
 		b.WriteString("(no matches)\n")
 	case len(visible) == 0:
 		b.WriteString("(empty folder)\n")
 	default:
-		visibleRows := m.webdavBrowseVisible()
+		visibleRows := m.webdavBrowseVisible(head, foot)
 		start := 0
 		if wb.cursor >= visibleRows {
 			start = wb.cursor - visibleRows + 1
@@ -437,17 +487,32 @@ func (m statusModel) viewWebDAVBrowse() string {
 			} else if e.Size >= 0 {
 				size = format.Bytes(e.Size)
 			}
-			b.WriteString(fmt.Sprintf("%s%s %-40s %s\n", cursor, check, format.Truncate(name, 40), size))
+			b.WriteString(cursor + check + " " + fitCells(name, m.browseNameWidth()) + " " + size + "\n")
 		}
 		if len(visible) > visibleRows {
-			b.WriteString(helpStyle.Render(fmt.Sprintf("(%d-%d of %d)\n", start+1, end, len(visible))))
+			b.WriteString(m.helpView(browsePosition(start+1, end, len(visible))))
+			b.WriteString("\n")
 		}
 	}
 
-	if wb.searching {
-		b.WriteString(helpStyle.Render("type to filter  enter confirm  esc cancel"))
-	} else {
-		b.WriteString(helpStyle.Render("↑/↓ move  enter open folder  space select  / search  d download selected (or current)  D download this whole folder  ←/backspace up  esc cancel"))
-	}
+	b.WriteString(foot)
 	return b.String()
 }
+
+// browseNameWidth is the width, in terminal cells, of the name column:
+// up to browseNameMax, shrinking on a narrow terminal so the size column
+// isn't pushed off the edge.
+func (m statusModel) browseNameWidth() int {
+	if m.width <= 0 {
+		return browseNameMax
+	}
+	// cursor (2) + checkbox and its space (4) + the gap and a size like
+	// "1023.9 MiB" (11) are what share the line with the name.
+	const otherCells = 2 + 4 + 11
+	return min(max(m.width-otherCells, browseNameMin), browseNameMax)
+}
+
+const (
+	browseNameMax = 40
+	browseNameMin = 12
+)

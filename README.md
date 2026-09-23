@@ -50,6 +50,20 @@ sudo apt install ./godl_<version>_amd64.deb
 Installs to `/usr/bin/godl`. To uninstall: `sudo apt remove godl` (or
 `sudo apt purge godl` to also wipe job history and cached yt-dlp/ffmpeg).
 
+### Linux (Fedora/RHEL/other RPM-based distros)
+
+Double-click `godl-<version>-1.x86_64.rpm` in your file manager, or:
+
+```sh
+sudo dnf install ./godl-<version>-1.x86_64.rpm
+```
+
+Installs to `/usr/bin/godl`. To uninstall: `sudo dnf remove godl`.
+Unlike `apt purge`, `dnf` has no separate "also wipe application data"
+step — job history and cached yt-dlp/ffmpeg under
+`~/.local/share/godl` are always left in place; remove that directory
+yourself if you want it gone too.
+
 ### macOS / other Linux (no package manager, no sudo)
 
 ```sh
@@ -66,9 +80,11 @@ Builds from source (requires Go 1.25+) and installs to `~/.local/bin`
 ./scripts/uninstall.sh --purge    # also wipes ~/.local/share/godl
 ```
 
-Every uninstall path (this script, `apt remove`/`purge`, and the Windows
-installer) checks whether the background daemon is running and asks
-before stopping it — stopping it only pauses in-progress downloads, which
+Every uninstall path stops the background daemon if it's running —
+this script asks first, while `apt remove`/`purge`, `dnf remove`, and
+the Windows installer do it automatically, best-effort, with no
+prompt (package/installer uninstalls typically can't prompt anyway).
+Either way, stopping it only pauses in-progress downloads, which
 resume automatically on your next install.
 
 ## Usage
@@ -444,10 +460,11 @@ works where there's a raw binary to swap in, though:
   not a standalone binary — grab the newer installer from the
   [Releases page](https://github.com/haritejakoduri/godl/releases/latest)
   instead, same as a first install.
-- **Installed via `apt`** (the `.deb` package) is left alone
-  deliberately: dpkg owns `/usr/bin/godl`, and self-replacing it would
-  desync the package database from what's actually on disk. Run
-  `sudo apt update && sudo apt upgrade` instead.
+- **Installed via `apt` or `dnf`** (the `.deb`/`.rpm` package) is left
+  alone deliberately: dpkg/rpm owns `/usr/bin/godl`, and self-replacing
+  it would desync the package database from what's actually on disk.
+  Run `sudo apt update && sudo apt upgrade` (Debian/Ubuntu) or
+  `sudo dnf upgrade godl` (Fedora/RHEL) instead.
 - Any other platform without a published raw binary (currently just
   linux/amd64 and darwin/arm64 are built — see `scripts/build-all.sh`)
   falls back to pointing you at the Releases page too.
@@ -500,7 +517,8 @@ go build -trimpath -ldflags="-s -w" -o godl .
 ```
 
 Requires Go 1.25+. To build every release artifact (cross-platform
-binaries, the Windows installer, and the `.deb`) into `dist/`:
+binaries, the Windows installer, the `.deb`, and the `.rpm`) into
+`dist/`:
 
 ```sh
 ./scripts/build-all.sh

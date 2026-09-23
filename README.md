@@ -172,7 +172,11 @@ godl social <link> --list-formats
 ```
 
 The TUI's `n` "new download" wizard offers the same presets when you
-pick the Social/media type.
+pick the Social/media type. After the link, the wizard also asks for
+an optional output path/directory and an optional rate limit (`2M`,
+`500K`, ...) — leaving either blank keeps the same default the CLI
+flags would (Downloads folder, unlimited), so a plain `n` → link →
+enter → enter behaves exactly like the CLI with no `-o`/`-R`.
 
 [yt-dlp](https://github.com/yt-dlp/yt-dlp) and, if a format needs muxing
 separate video/audio streams, [ffmpeg](https://ffmpeg.org) are both
@@ -309,7 +313,8 @@ Keybinds: `space` toggles a job for multi-select (its checkbox shows
 resume, `x` cancel, `R` retry, `d` remove, `D` remove + delete
 downloaded file (both ask for confirmation), `o` play/stream a job (see
 below), `n` start a new url/social/torrent download, `w` browse a
-saved WebDAV connection, `↑`/`↓` navigate, `q` quit (jobs keep running
+saved WebDAV connection, `s` settings, `S` serve a local folder,
+`↑`/`↓` navigate, `q` quit (jobs keep running
 in the background). With one or more jobs checked, `p`/`r`/`x`/`R`/`d`/`D`
 act on all of them at once instead of just whatever the cursor happens
 to be on — the same "selected, or current" rule the WebDAV browser's
@@ -334,8 +339,14 @@ jobs only ever support the local file, and only once complete, since
 true streaming-while-downloading would need piece-sequencing
 anacrolix/torrent doesn't do.
 
-`w` opens a file browser for one of your saved `godl connection`s:
-`↑`/`↓` moves, `enter` opens a folder, `space` toggles a file or folder
+`w` opens a file browser for one of your saved `godl connection`s. The
+first screen picks a connection — `a` opens a form to add a new one
+right there (name, URL, username, password, insecure/skip-TLS-verify;
+same validation as `godl connection add`, saved the same way) and
+`d` removes the one under the cursor (confirmed), so setting up and
+managing WebDAV connections no longer needs a trip to the CLI. Once
+inside a connection: `↑`/`↓` moves, `enter` opens a folder, `space`
+toggles a file or folder
 for bulk selection, `/` searches the current folder by name (filters
 live as you type; `enter` keeps the filter and returns to browsing,
 `esc` clears it), `←`/backspace goes up a level (also clearing any
@@ -394,6 +405,22 @@ navigating away or quitting mid-edit):
 `↑`/`↓` moves between settings, `enter` edits a number/text field (a
 second `enter` saves, `esc` cancels the edit) or toggles a checkbox
 field immediately, and `esc` closes the tab.
+
+`S` opens the **Serve tab** — the TUI equivalent of `godl serve`,
+running for as long as the tab stays open instead of as its own
+foreground process. A form asks for the directory to share (defaults
+to your Downloads folder), host, port, an optional username/password,
+whether to allow write access, whether to use a self-signed https://
+certificate, and an "Insecure: allow no-auth" toggle (the TUI
+equivalent of `--insecure-no-auth`); `enter` on "Start serving"
+begins, and the same safety rail `godl serve` has applies here too —
+a host other than `127.0.0.1` without both a username and password is
+refused unless that toggle is on. Once
+running, the tab shows the same reachable-address/WebDAV/auth banner
+`godl serve` prints on startup, and `esc` or `x` stops the server and
+returns to the dashboard — leaving the tab always stops it, since
+there's no dashboard indicator for "a server is still running
+unattended" that would make it safe to forget about.
 
 ### `godl update` — update everything godl manages, including itself
 

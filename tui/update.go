@@ -182,6 +182,9 @@ func (m statusModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.settings != nil {
 		return m.updateSettings(msg)
 	}
+	if m.serve != nil {
+		return m.updateServe(msg)
+	}
 	if m.confirmRemove != nil {
 		return m.resolveRemove(msg)
 	}
@@ -206,6 +209,9 @@ func (m statusModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "s":
 		m.settings = &settingsState{loading: true}
 		return m, loadSettings(m.settings)
+	case "S":
+		m.serve = newServeForm()
+		return m, nil
 	case " ":
 		j, idx, ok := m.cursorJob()
 		if !ok {
@@ -285,15 +291,16 @@ func (m statusModel) promptRemove(purge bool) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// openWebDAVBrowser opens the connection picker even with zero saved
+// connections — 'a' from there opens the add-connection form, so
+// there's always a path from an empty list to a usable one without
+// dropping to the CLI.
 func (m statusModel) openWebDAVBrowser() (tea.Model, tea.Cmd) {
 	conns, err := connections.List()
-	switch {
-	case err != nil:
+	if err != nil {
 		m.statusMsg = "error: " + err.Error()
-	case len(conns) == 0:
-		m.statusMsg = `No saved connections. Run "godl connection add <name> --url ..." first.`
-	default:
-		m.webdavBrowse = &webdavBrowseState{step: webdavPickConn, conns: conns}
+		return m, nil
 	}
+	m.webdavBrowse = &webdavBrowseState{step: webdavPickConn, conns: conns}
 	return m, nil
 }

@@ -44,6 +44,26 @@ jobs:
         if: matrix.goos == 'windows'
         run: ./scripts/build-windows-installer.sh
 
+      # .deb/.rpm are also only ever built for real by release.yml, and
+      # only on a version bump (it skips the build entirely when the
+      # current version's tag already exists) — so without this, a
+      # break in either packaging script would go unnoticed by every
+      # push/PR and only surface at the next actual release. Building
+      # them here, every run, catches that immediately instead, the
+      # same reason the Windows installer is built above rather than
+      # only at release time.
+      - name: install linux packaging tools
+        if: matrix.goos == 'linux'
+        run: sudo apt-get update && sudo apt-get install -y fakeroot dpkg-dev rpm
+
+      - name: build .deb (exercises the release script)
+        if: matrix.goos == 'linux'
+        run: ./scripts/build-deb.sh
+
+      - name: build .rpm (exercises the release script)
+        if: matrix.goos == 'linux'
+        run: ./scripts/build-rpm.sh
+
       - name: test
         if: matrix.goos == 'linux'
         run: go test ./...

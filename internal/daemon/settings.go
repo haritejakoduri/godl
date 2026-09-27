@@ -3,9 +3,11 @@ package daemon
 import (
 	"context"
 	"fmt"
+	"os"
 
 	"golang.org/x/time/rate"
 
+	"godl/internal/prefs"
 	"godl/internal/ratelimit"
 	"godl/internal/store"
 )
@@ -73,21 +75,15 @@ func (d *Daemon) setCachedSettings(s store.Settings) {
 // silently clamped, so what the caller sees saved is always exactly
 // what it asked for).
 func (d *Daemon) applySettings(ctx context.Context, s store.Settings) (store.Settings, error) {
-	if s.MaxConcurrent < 0 {
-		return store.Settings{}, fmt.Errorf("max concurrent downloads can't be negative")
+	if err := prefs.Validate(s); err != nil {
+		return store.Settings{}, err
 	}
-	if s.DefaultRateLimit != "" {
-		if _, err := ratelimit.ParseRate(s.DefaultRateLimit); err != nil {
-			return store.Settings{}, err
+	// Created now rather than at the first download, so a path that
+	// can't be used is refused while the user is still looking at it.
+	if s.DownloadDir != "" {
+		if err := os.MkdirAll(s.DownloadDir, 0o755); err != nil {
+			return store.Settings{}, fmt.Errorf("download folder: %w", err)
 		}
-	}
-	if s.GlobalRateLimit != "" {
-		if _, err := ratelimit.ParseRate(s.GlobalRateLimit); err != nil {
-			return store.Settings{}, err
-		}
-	}
-	if s.AutoRetryMaxAttempts < 1 {
-		return store.Settings{}, fmt.Errorf("auto-retry max attempts must be at least 1")
 	}
 	if err := d.st.SaveSettings(ctx, s); err != nil {
 		return store.Settings{}, err

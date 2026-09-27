@@ -55,13 +55,45 @@ func printTable(header string, rows []string) error {
 // single file pass one, commands that download into a directory don't).
 func outputPath(flag, name string) (string, error) {
 	if flag == "" {
-		dir, err := paths.DownloadsDir()
+		dir, err := downloadsDir()
 		if err != nil {
 			return "", err
 		}
 		flag = filepath.Join(dir, name)
 	}
 	return paths.ResolveOutput(flag)
+}
+
+// appSettings returns the saved settings, which supply the defaults for
+// any flag a command wasn't given. Fetched once per command.
+func appSettings() (store.Settings, error) {
+	if cachedSettings != nil {
+		return *cachedSettings, nil
+	}
+	if err := daemon.EnsureRunning(); err != nil {
+		return store.Settings{}, err
+	}
+	resp, err := daemon.Call(daemon.Request{Cmd: daemon.CmdGetSettings})
+	if err != nil {
+		return store.Settings{}, err
+	}
+	if resp.Settings == nil {
+		return store.Settings{}, fmt.Errorf("daemon returned no settings")
+	}
+	cachedSettings = resp.Settings
+	return *resp.Settings, nil
+}
+
+var cachedSettings *store.Settings
+
+// downloadsDir is where a download goes without -o: the "Download
+// folder" setting, or the system Downloads folder.
+func downloadsDir() (string, error) {
+	s, err := appSettings()
+	if err != nil {
+		return "", err
+	}
+	return paths.DownloadsDirFor(s.DownloadDir)
 }
 
 // startJob hands req to the daemon, starting it first if it isn't

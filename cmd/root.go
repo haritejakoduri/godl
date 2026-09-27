@@ -53,6 +53,7 @@ func init() {
 		cancelCmd,
 		removeCmd,
 		listCmd,
+		settingsCmd,
 		updateCmd,
 		internalDaemonCmd,
 	)

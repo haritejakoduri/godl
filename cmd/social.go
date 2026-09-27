@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/spf13/cobra"
@@ -101,7 +102,17 @@ ffmpeg, needed to merge separately-downloaded video+audio streams.`,
 		if err != nil {
 			return err
 		}
-		opts.CookiesFromBrowser, _ = cmd.Flags().GetString("cookies-from-browser")
+		settings, err := appSettings()
+		if err != nil {
+			return err
+		}
+		opts.CookiesFromBrowser = settings.CookiesFromBrowser
+		if cmd.Flags().Changed("cookies-from-browser") {
+			opts.CookiesFromBrowser, _ = cmd.Flags().GetString("cookies-from-browser")
+		}
+		if b := strings.ToLower(opts.CookiesFromBrowser); b == "off" || b == "none" {
+			opts.CookiesFromBrowser = ""
+		}
 
 		if listFormats, _ := cmd.Flags().GetBool("list-formats"); listFormats {
 			if len(all) != 1 {
@@ -122,6 +133,9 @@ ffmpeg, needed to merge separately-downloaded video+audio streams.`,
 			return err
 		}
 
+		if preset == "" && format == "" {
+			preset = settings.SocialPreset
+		}
 		if preset != "" {
 			if format != "" {
 				return fmt.Errorf("pass either -p/--preset or -f/--format, not both")
@@ -200,12 +214,12 @@ func runListFormats(link string, opts store.JobOptions) error {
 func init() {
 	socialCmd.Flags().StringP("output", "o", "", "output directory (default: your Downloads folder)")
 	socialCmd.Flags().StringP("format", "f", "", `yt-dlp format selector (passed through as -f), e.g. "bv*+ba" or "bv*[height<=1080]+ba" — not together with -p`)
-	socialCmd.Flags().StringP("preset", "p", "", "quality preset (see --list-presets); not together with -f")
+	socialCmd.Flags().StringP("preset", "p", "", `quality preset (see --list-presets); not together with -f (default: the "social_preset" setting)`)
 	socialCmd.Flags().BoolP("wait", "w", false, "stay attached and stream yt-dlp's output live instead of returning immediately")
 	socialCmd.Flags().BoolP("list-formats", "F", false, "list available formats/resolutions for <link> and exit, without downloading")
 	socialCmd.Flags().Bool("list-presets", false, "list available quality presets and exit")
 	socialCmd.Flags().StringP("limit-rate", "R", "", "cap this download's speed, e.g. 500K or 2M (default: unlimited) — passed straight through to yt-dlp's own --limit-rate")
-	socialCmd.Flags().String("cookies-from-browser", "", `use your browser's logged-in cookies, e.g. "firefox" or "chrome" (yt-dlp's --cookies-from-browser) — fixes login-only, private and age-restricted videos`)
+	socialCmd.Flags().String("cookies-from-browser", "", `use your browser's logged-in cookies, e.g. "firefox" or "chrome", or "off" (default: the "cookies_from_browser" setting) — fixes login-only, private and age-restricted videos`)
 	addRequestFlags(socialCmd)
 	addBatchFlag(socialCmd)
 }

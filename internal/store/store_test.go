@@ -39,6 +39,13 @@ func TestSaveSettingsRoundTrips(t *testing.T) {
 		AutoRetry:            true,
 		AutoRetryMaxAttempts: 5,
 		NotifyOnComplete:     true,
+		DownloadDir:          "/data/downloads",
+		Connections:          8,
+		SocialPreset:         "720p",
+		CookiesFromBrowser:   "firefox",
+		SeedRatio:            1.5,
+		SeedTime:             "2h0m0s",
+		NoAnimations:         true,
 	}
 	if err := st.SaveSettings(ctx, want); err != nil {
 		t.Fatal(err)

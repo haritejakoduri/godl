@@ -65,6 +65,14 @@ type settingsLoadedMsg struct {
 	err      error
 }
 
+// prefsMsg delivers the saved settings the dashboard itself uses (the
+// animation switch, the new-download wizard's defaults), loaded once at
+// startup; the Settings tab keeps them current after that.
+type prefsMsg struct {
+	settings store.Settings
+	err      error
+}
+
 type settingsSavedMsg struct {
 	st       *settingsState
 	settings store.Settings
@@ -85,6 +93,9 @@ type statusModel struct {
 	tableHeight int // last height fitTable gave the table
 	width       int // last known terminal width, for responsive column sizing
 	height      int // last known terminal height, for sizing full-screen overlays
+
+	// prefs are the saved settings, for defaults the TUI applies itself.
+	prefs store.Settings
 
 	// Job IDs checked with space. An action key acts on these when
 	// non-empty, otherwise on the row under the cursor.

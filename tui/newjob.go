@@ -168,7 +168,7 @@ func (m statusModel) updateNewJob(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			m.newJob = nil
 			m.statusMsg = "starting..."
-			return m, startNewJob(apiCmd, link, format, output, limitRate)
+			return m, startNewJob(apiCmd, link, format, output, limitRate, m.prefs)
 		default:
 			m.newJob.err = ""
 			var cmd tea.Cmd
@@ -244,4 +244,16 @@ func (m statusModel) viewNewJob() string {
 		b.WriteString(m.helpView("enter start  esc back"))
 		return b.String()
 	}
+}
+
+// presetIndex is name's position in social.Presets, so the wizard's
+// quality step starts on the "Default quality" setting; 0 ("best") for
+// an unset or unknown name.
+func presetIndex(name string) int {
+	for i, p := range social.Presets {
+		if p.Name == name {
+			return i
+		}
+	}
+	return 0
 }

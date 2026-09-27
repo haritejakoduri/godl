@@ -41,6 +41,39 @@ type Settings struct {
 	// NotifyOnComplete fires a best-effort desktop notification
 	// (internal/notify) when a job completes successfully.
 	NotifyOnComplete bool
+
+	// Defaults a new job uses when its own flag isn't given. Every zero
+	// value means "godl's built-in default", so an empty Settings is
+	// always valid. See internal/prefs for how each is shown and edited.
+
+	// DownloadDir replaces the system Downloads folder; "" keeps it.
+	// GODL_DOWNLOADS_DIR still overrides it.
+	DownloadDir string
+	// Connections is how many chunks a url job downloads at once; 0
+	// means DefaultConnections.
+	Connections int
+	// SocialPreset names an internal/social preset; "" means "best".
+	SocialPreset string
+	// CookiesFromBrowser is yt-dlp's --cookies-from-browser; "" = none.
+	CookiesFromBrowser string
+	// SeedRatio and SeedTime (a Go duration, e.g. "2h") keep finished
+	// torrents uploading; zero/"" means stop at completion.
+	SeedRatio float64
+	SeedTime  string
+	// NoAnimations turns the dashboard's animation off. Inverted so the
+	// zero value keeps them on.
+	NoAnimations bool
+}
+
+// DefaultConnections is the url job chunk count when none is set.
+const DefaultConnections = 4
+
+// EffectiveConnections is Connections, or DefaultConnections if unset.
+func (s Settings) EffectiveConnections() int {
+	if s.Connections > 0 {
+		return s.Connections
+	}
+	return DefaultConnections
 }
 
 // DefaultSettings is what GetSettings returns before anything is saved.
@@ -58,6 +91,13 @@ const (
 	settingsKeyAutoRetry            = "auto_retry"
 	settingsKeyAutoRetryMaxAttempts = "auto_retry_max_attempts"
 	settingsKeyNotifyOnComplete     = "notify_on_complete"
+	settingsKeyDownloadDir          = "download_dir"
+	settingsKeyConnections          = "connections"
+	settingsKeySocialPreset         = "social_preset"
+	settingsKeyCookiesFromBrowser   = "cookies_from_browser"
+	settingsKeySeedRatio            = "seed_ratio"
+	settingsKeySeedTime             = "seed_time"
+	settingsKeyNoAnimations         = "no_animations"
 )
 
 // GetSettings reads the daemon's saved settings, falling back to
@@ -106,6 +146,17 @@ func (s *Store) GetSettings(ctx context.Context) (Settings, error) {
 	if v, ok := kv[settingsKeyNotifyOnComplete]; ok {
 		set.NotifyOnComplete = v == "true"
 	}
+	set.DownloadDir = kv[settingsKeyDownloadDir]
+	if n, err := strconv.Atoi(kv[settingsKeyConnections]); err == nil {
+		set.Connections = n
+	}
+	set.SocialPreset = kv[settingsKeySocialPreset]
+	set.CookiesFromBrowser = kv[settingsKeyCookiesFromBrowser]
+	if f, err := strconv.ParseFloat(kv[settingsKeySeedRatio], 64); err == nil {
+		set.SeedRatio = f
+	}
+	set.SeedTime = kv[settingsKeySeedTime]
+	set.NoAnimations = kv[settingsKeyNoAnimations] == "true"
 	return set, nil
 }
 
@@ -120,6 +171,13 @@ func (s *Store) SaveSettings(ctx context.Context, set Settings) error {
 		settingsKeyAutoRetry:            strconv.FormatBool(set.AutoRetry),
 		settingsKeyAutoRetryMaxAttempts: strconv.Itoa(set.AutoRetryMaxAttempts),
 		settingsKeyNotifyOnComplete:     strconv.FormatBool(set.NotifyOnComplete),
+		settingsKeyDownloadDir:          set.DownloadDir,
+		settingsKeyConnections:          strconv.Itoa(set.Connections),
+		settingsKeySocialPreset:         set.SocialPreset,
+		settingsKeyCookiesFromBrowser:   set.CookiesFromBrowser,
+		settingsKeySeedRatio:            strconv.FormatFloat(set.SeedRatio, 'g', -1, 64),
+		settingsKeySeedTime:             set.SeedTime,
+		settingsKeyNoAnimations:         strconv.FormatBool(set.NoAnimations),
 	}
 	for k, v := range kv {
 		if _, err := s.db.ExecContext(ctx,

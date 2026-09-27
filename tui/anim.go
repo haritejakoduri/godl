@@ -138,6 +138,15 @@ func (a *animState) observe(jobs []*daemon.JobView) {
 	}
 }
 
+// snap jumps every bar and the header speed straight to its target, for
+// when animation is switched off mid-flight.
+func (a *animState) snap() {
+	for _, ja := range a.jobs {
+		ja.shown, ja.vel = ja.target, 0
+	}
+	a.speedVel = 0
+}
+
 // step advances every spring by one frame.
 func (a *animState) step(jobs []*daemon.JobView) {
 	a.frame++

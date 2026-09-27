@@ -254,7 +254,7 @@ func (m statusModel) webdavPickConnKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.statusMsg = "error: " + err.Error()
 			return m, nil
 		}
-		outputDir, err := paths.DownloadsDir()
+		outputDir, err := paths.DownloadsDirFor(m.prefs.DownloadDir)
 		if err != nil {
 			m.webdavBrowse = nil
 			m.statusMsg = "error: " + err.Error()

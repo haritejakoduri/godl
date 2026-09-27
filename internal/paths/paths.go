@@ -137,6 +137,19 @@ func DownloadsDir() (string, error) {
 	return d, nil
 }
 
+// DownloadsDirFor is DownloadsDir with the user's "Download folder"
+// setting applied: GODL_DOWNLOADS_DIR still wins, then configured, then
+// the system Downloads folder.
+func DownloadsDirFor(configured string) (string, error) {
+	if configured == "" || os.Getenv("GODL_DOWNLOADS_DIR") != "" {
+		return DownloadsDir()
+	}
+	if err := os.MkdirAll(configured, 0o755); err != nil {
+		return "", err
+	}
+	return configured, nil
+}
+
 // ResolveOutput turns a user-supplied destination into an absolute path.
 // An empty value passes through unchanged, so callers can still tell
 // "no -o given" from "-o given" after the call.

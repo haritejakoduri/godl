@@ -11,7 +11,7 @@ import (
 func TestNewServeFormDefaultsMatchTheCLI(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("GODL_DOWNLOADS_DIR", "")
-	s := newServeForm()
+	s := newServeForm("")
 	if s.host != "0.0.0.0" || s.port != "8080" {
 		t.Errorf("host=%q port=%q, want the same defaults as \"godl serve\" (0.0.0.0:8080)", s.host, s.port)
 	}
@@ -120,7 +120,7 @@ func TestServeRejectsABadPort(t *testing.T) {
 // TestServeFormFieldNavigationBounds mirrors the Settings tab's own
 // cursor-clamping test: up/down should never go out of range.
 func TestServeFormFieldNavigationBounds(t *testing.T) {
-	m := statusModel{serve: newServeForm()}
+	m := statusModel{serve: newServeForm("")}
 	mm, _ := m.updateServeForm(key("up"))
 	m = mm.(statusModel)
 	if m.serve.cursor != serveFieldDir {
@@ -136,7 +136,7 @@ func TestServeFormFieldNavigationBounds(t *testing.T) {
 }
 
 func TestServeFormAllowWriteToggles(t *testing.T) {
-	m := statusModel{serve: newServeForm()}
+	m := statusModel{serve: newServeForm("")}
 	m.serve.cursor = serveFieldAllowWrite
 	mm, _ := m.updateServeForm(key("enter"))
 	m = mm.(statusModel)
@@ -146,7 +146,7 @@ func TestServeFormAllowWriteToggles(t *testing.T) {
 }
 
 func TestServeFormInsecureNoAuthToggles(t *testing.T) {
-	m := statusModel{serve: newServeForm()}
+	m := statusModel{serve: newServeForm("")}
 	m.serve.cursor = serveFieldInsecureNoAuth
 	mm, _ := m.updateServeForm(key("enter"))
 	m = mm.(statusModel)

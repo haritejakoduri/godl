@@ -107,6 +107,8 @@ godl serve ~/Public -p 8080 --username alice   # share a folder, over WebDAV + b
 
 godl status                 # live TUI dashboard
 godl list                   # one-shot table, for scripts
+godl settings               # every setting in one place (also "s" in godl status)
+godl settings set connections 8
 godl pause <job-id>
 godl resume <job-id>
 godl retry <job-id>         # re-run from scratch
@@ -126,8 +128,10 @@ known-folder path (which a user can relocate to another drive via
 Explorer) on Windows, your Linux desktop's configured XDG user-dirs
 location (which can be relocated, or in a non-English locale renamed
 entirely) on Linux, and `~/Downloads` — already correct there — on
-macOS. `GODL_DOWNLOADS_DIR` overrides all of that if you want
-downloads to land somewhere else by default.
+macOS. To use a different folder for everything, set it once with
+`godl settings set download_dir ~/Media` (or **Download folder** in the
+Settings tab); `GODL_DOWNLOADS_DIR` still overrides both, for scripts
+and containers.
 
 `-R`/`--limit-rate` (on `url`, `social`, `torrent`, and `webdav`) caps
 that job's own transfer speed, e.g. `-R 500K` or `-R 2M` (accepts a bare
@@ -137,8 +141,9 @@ library godl uses, only supports a rate limit shared across its whole
 client rather than one per torrent, so `-R` on `godl torrent` really
 means "cap every currently-active torrent job at this combined rate,"
 not just the one you passed it to. A job that doesn't pass `-R` at all
-falls back to the Settings tab's **default rate limit** (see `godl
-status` below), if one's set — `-R` always wins when both are present.
+falls back to the **Speed limit per download** setting (see [`godl
+settings`](#godl-settings--all-settings-in-one-place)), if one's set —
+`-R` always wins when both are present.
 
 ### `godl url` — direct HTTP(S) downloads
 
@@ -269,10 +274,12 @@ that's how BitTorrent pieces work, not a bug.)
 
 **Seed.** By default a torrent stops sharing the moment it finishes.
 `--seed-ratio 1.5` keeps uploading until you've sent 1.5x its size,
-`--seed-time 2h` for two hours — with both, whichever comes first. The
+`--seed-time 2h` for two hours — with both, whichever comes first (set
+them once for every torrent with the `seed_ratio`/`seed_time` settings;
+`--seed-ratio 0 --seed-time 0` then opts one torrent out). The
 job shows as `seeding` (with its live upload speed and ratio) and then
 settles to `completed`. Seeding doesn't take up one of the Settings
-tab's "max concurrent downloads" slots. Pausing or canceling a seeding
+tab's **Max concurrent downloads** slots. Pausing or canceling a seeding
 job just stops the seeding; the download stays completed. Seeding
 doesn't survive a daemon restart — the job is marked completed.
 
@@ -416,9 +423,10 @@ last few seconds as a sparkline, and a job that finishes sparkles for a
 moment. The header line sums it all up: jobs by state, the combined
 download speed with its own sparkline, and one color bar for everything
 still in flight. Frames only run while something is actually moving —
-an idle dashboard uses no CPU. Set `GODL_NO_ANIMATION=1` to turn all of
-it off (values then update in place, nothing spins); it's also off
-when `TERM=dumb`.
+an idle dashboard uses no CPU. Turn **Animations** off in Settings (or
+`godl settings set animations off`) to stop all of it — values then
+update in place and nothing spins. `GODL_NO_ANIMATION=1` and
+`TERM=dumb` also turn it off.
 
 Keybinds: `space` toggles a job for multi-select (its checkbox shows
 `[x]`, and the title bar shows the running count), `p` pause, `r`
@@ -472,50 +480,47 @@ recursively, preserving that folder's own name and structure under
 the destination), so a single `d` press can kick off any mix of
 individual files and whole folders at once.
 
-`s` opens the **Settings tab** — the daemon's configurable defaults,
-edited in place and saved immediately on each change (nothing to lose by
-navigating away or quitting mid-edit):
+`s` opens the **Settings tab** — every godl setting in one list,
+grouped into sections, saved the moment you change it (nothing to lose
+by leaving mid-edit). `↑`/`↓` moves, `enter` edits a number or text
+field (`enter` again saves, `esc` cancels, an empty value means the
+default), `←`/`→` or `enter` switches a choice or on/off setting, `r`
+resets the selected setting to its default, and `esc` closes the tab.
+The selected setting shows what it does and the matching `godl
+settings set` command below the list. The same list is available from
+the command line — see [`godl settings`](#godl-settings--all-settings-in-one-place).
 
-- **Max concurrent downloads** — caps how many jobs run at once, across
-  every job type combined. 0 (the default) means unlimited, matching
-  godl's behavior before this setting existed. Jobs beyond the cap show
-  as `queued` and start automatically, oldest first, as running ones
-  finish — nothing is dropped or needs to be manually resumed.
-- **Default rate limit** — applied to a new job that doesn't pass its
-  own `-R`/`--limit-rate`, in the same syntax that flag accepts (e.g.
-  `2M`). Empty means unlimited. An explicit `-R` on a given job always
-  overrides this. **Per-job**: three jobs each falling back to this
-  default can still add up to 3x it running together — see the next
-  setting for a true combined ceiling.
-- **Global bandwidth limit** — caps every currently-running job's
-  transfer **combined**, not each one separately. For `url` and `webdav`
-  jobs (godl's own in-process transfer code) this is a real shared cap:
-  every concurrently active job of either type draws from the exact
-  same token bucket, so total throughput across all of them together
-  never exceeds this value no matter how many are running. `torrent`
-  (anacrolix/torrent only exposes one client-wide limiter, not a
-  per-job one — see `-R`'s own torrent caveat below) and `social`
-  (yt-dlp, a subprocess capped via its own `--limit-rate`) can't share
-  that bucket, so each such job is instead individually capped at this
-  rate (or its own `-R`/default, if lower) — meaning a torrent or
-  social job running alongside url/webdav ones can still push combined
-  throughput over this ceiling, even though no single job exceeds it.
-  Empty means unlimited.
-- **Auto-retry on failure** — a job that fails (not one you paused or
-  canceled) is automatically re-queued after a backoff delay (5s, 15s,
-  45s, ... capped at 5 minutes) instead of sitting failed until you run
-  `godl retry` by hand. **Auto-retry max attempts** caps how many times
-  before it's left failed for good; a manual `godl retry` always resets
-  that count, giving the job a fresh budget.
-- **Notify on completion** — fires a best-effort desktop notification
-  when a job finishes successfully (`notify-send` on Linux, `osascript`
-  on macOS; no built-in mechanism on Windows, so it's a silent no-op
-  there). Best-effort by design: the daemon has no guaranteed UI session
-  to notify into, so a failure here never affects the download itself.
+### `godl settings` — all settings in one place
 
-`↑`/`↓` moves between settings, `enter` edits a number/text field (a
-second `enter` saves, `esc` cancels the edit) or toggles a checkbox
-field immediately, and `esc` closes the tab.
+```sh
+godl settings                                  # show everything, grouped
+godl settings set download_dir ~/Media
+godl settings set social_preset 720p
+godl settings get connections
+godl settings reset connections                # back to the default
+godl settings reset --all
+```
+
+Every setting is a **default**: a flag on a single command (`-o`, `-c`,
+`-p`/`-f`, `--cookies-from-browser`, `--seed-ratio`, `--seed-time`,
+`-R`) still wins for that job. Choice values also accept `off`/`none`
+to clear them, and dashes work in keys (`download-dir`).
+
+| Section | Setting (key) | What it does | Default |
+|---|---|---|---|
+| Downloads | Download folder (`download_dir`) | Where downloads go without `-o`; created if missing. `GODL_DOWNLOADS_DIR` overrides it. | system Downloads folder |
+| | Max concurrent downloads (`max_concurrent`) | Jobs beyond this wait as `queued` and start, oldest first, as running ones finish. | unlimited (0) |
+| | Connections per download (`connections`) | Parallel chunks for a direct link, when the server supports ranges. | 4 |
+| | Auto-retry failed downloads (`auto_retry`) | Re-queue a failed job after a backoff (5s, 15s, 45s, ... capped at 5 min). Pause/cancel never trigger it; a manual `godl retry` resets the count. | off |
+| | Auto-retry attempts (`auto_retry_max_attempts`) | How many auto-retries before a job stays failed. | 3 |
+| | Notify when done (`notify_on_complete`) | Desktop notification on completion (`notify-send` on Linux, built in on macOS, not available on Windows). Best-effort: it never affects the download. | off |
+| Bandwidth | Speed limit per download (`default_rate_limit`) | Cap for each job without its own `-R`, e.g. `2M`. Per job, so three jobs can use 3x it together. | unlimited |
+| | Total speed limit (`global_rate_limit`) | Cap on all running jobs **combined**. `url` and `webdav` jobs share one exact budget; `torrent` and `social` can't share it (their libraries have their own limiters), so each of those is capped at this value individually and can push the total over it. | unlimited |
+| Video & audio | Default quality (`social_preset`) | Quality preset when you don't pass `-p`/`-f`; also where the `n` wizard's quality list starts. | best |
+| | Use browser login (`cookies_from_browser`) | Send a browser's cookies to video sites (login-only, private, age-restricted videos). | off |
+| Torrents | Keep sharing until ratio (`seed_ratio`) | Seed finished torrents until uploaded/size reaches this. | off |
+| | Keep sharing for (`seed_time`) | Seed finished torrents for this long, e.g. `2h`; with a ratio, whichever comes first. | off |
+| Interface | Animations (`animations`) | Dashboard animation. `GODL_NO_ANIMATION=1` also turns it off. | on |
 
 `S` opens the **Serve tab** — the TUI equivalent of `godl serve`,
 running for as long as the tab stays open instead of as its own

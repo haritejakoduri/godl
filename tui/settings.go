@@ -2,23 +2,21 @@ package tui
 
 import (
 	"fmt"
-	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"godl/internal/daemon"
-	"godl/internal/ratelimit"
+	"godl/internal/format"
+	"godl/internal/prefs"
 	"godl/internal/store"
 )
 
-// settingsState is the TUI's Settings tab: a small fixed list of the
-// daemon's configurable defaults (see store.Settings), edited in place
-// and saved immediately on each change rather than needing a separate
-// "save" step — same immediate-apply model as toggling a checkbox in
-// most settings screens, so there's nothing to lose by navigating away
-// or quitting mid-edit.
+// settingsState is the TUI's Settings tab: every option in
+// internal/prefs, grouped by section, edited in place and saved on each
+// change — there's no separate save step to forget.
 type settingsState struct {
 	loading bool
 	err     string
@@ -29,117 +27,19 @@ type settingsState struct {
 	// of before being sent back to the daemon.
 	current store.Settings
 
-	cursor  int // index into settingsFields
+	cursor  int // index into prefs.Fields
 	editing bool
 	input   textinput.Model
 }
 
-type settingsFieldKind int
-
-const (
-	settingsFieldInt settingsFieldKind = iota
-	settingsFieldText
-	settingsFieldBool
+var (
+	settingsSectionStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#5FD6C9"))
+	settingsCursorStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#0B0B0B")).Background(lipgloss.Color("#5FD6C9"))
+	settingsDimStyle     = lipgloss.NewStyle().Faint(true)
 )
 
-// settingsField describes one row of the Settings tab: how to display
-// current's value for it, and how to apply an edit back onto a
-// store.Settings copy. get/set are used for int/text fields (set
-// parses+validates the raw textinput value); toggle is used for bool
-// fields instead — exactly one of the two is ever called for a given
-// field, per its kind.
-type settingsField struct {
-	label  string
-	help   string
-	kind   settingsFieldKind
-	get    func(store.Settings) string
-	set    func(*store.Settings, string) error
-	toggle func(*store.Settings)
-}
-
-func boolLabel(b bool) string {
-	if b {
-		return "on"
-	}
-	return "off"
-}
-
-var settingsFields = []settingsField{
-	{
-		label: "Max concurrent downloads",
-		help:  "0 = unlimited. Extra jobs queue and start as running ones finish.",
-		kind:  settingsFieldInt,
-		get:   func(s store.Settings) string { return strconv.Itoa(s.MaxConcurrent) },
-		set: func(s *store.Settings, v string) error {
-			n, err := strconv.Atoi(strings.TrimSpace(v))
-			if err != nil || n < 0 {
-				return fmt.Errorf("must be a whole number, 0 or more")
-			}
-			s.MaxConcurrent = n
-			return nil
-		},
-	},
-	{
-		label: "Default rate limit",
-		help:  `e.g. "2M" or "500K"; empty = unlimited. Applied to a job that doesn't pass its own -R.`,
-		kind:  settingsFieldText,
-		get:   func(s store.Settings) string { return s.DefaultRateLimit },
-		set: func(s *store.Settings, v string) error {
-			v = strings.TrimSpace(v)
-			if v != "" {
-				if _, err := ratelimit.ParseRate(v); err != nil {
-					return err
-				}
-			}
-			s.DefaultRateLimit = v
-			return nil
-		},
-	},
-	{
-		label: "Global bandwidth limit",
-		help:  `e.g. "5M"; empty = unlimited. Caps every job's transfer COMBINED, not each one separately (a true shared cap for url/webdav; torrent and social are each individually capped at it instead — see README).`,
-		kind:  settingsFieldText,
-		get:   func(s store.Settings) string { return s.GlobalRateLimit },
-		set: func(s *store.Settings, v string) error {
-			v = strings.TrimSpace(v)
-			if v != "" {
-				if _, err := ratelimit.ParseRate(v); err != nil {
-					return err
-				}
-			}
-			s.GlobalRateLimit = v
-			return nil
-		},
-	},
-	{
-		label:  "Auto-retry on failure",
-		help:   "Automatically re-queues a failed job after a backoff delay instead of leaving it failed.",
-		kind:   settingsFieldBool,
-		get:    func(s store.Settings) string { return boolLabel(s.AutoRetry) },
-		toggle: func(s *store.Settings) { s.AutoRetry = !s.AutoRetry },
-	},
-	{
-		label: "Auto-retry max attempts",
-		help:  "How many times to auto-retry before leaving a job failed for good.",
-		kind:  settingsFieldInt,
-		get:   func(s store.Settings) string { return strconv.Itoa(s.AutoRetryMaxAttempts) },
-		set: func(s *store.Settings, v string) error {
-			n, err := strconv.Atoi(strings.TrimSpace(v))
-			if err != nil || n < 1 {
-				return fmt.Errorf("must be a whole number, at least 1")
-			}
-			s.AutoRetryMaxAttempts = n
-			return nil
-		},
-	},
-	{
-		label:  "Notify on completion",
-		help:   "Fires a desktop notification when a job finishes successfully (best-effort; needs notify-send on Linux or macOS).",
-		kind:   settingsFieldBool,
-		get:    func(s store.Settings) string { return boolLabel(s.NotifyOnComplete) },
-		toggle: func(s *store.Settings) { s.NotifyOnComplete = !s.NotifyOnComplete },
-	},
-}
+// settingsLabelWidth fits the longest label with a little room.
+const settingsLabelWidth = 28
 
 // loadSettings fetches the daemon's current settings for the Settings
 // tab to display — called once when the tab is opened.
@@ -160,8 +60,7 @@ func loadSettings(st *settingsState) tea.Cmd {
 }
 
 // saveSettings sends s to the daemon to validate and persist — called
-// immediately after every single-field edit (see settingsState's own
-// doc comment for why there's no separate save step).
+// immediately after every single-field edit.
 func saveSettings(st *settingsState, s store.Settings) tea.Cmd {
 	return func() tea.Msg {
 		resp, err := daemon.Call(daemon.Request{Cmd: daemon.CmdSetSettings, Settings: &s})
@@ -175,11 +74,28 @@ func saveSettings(st *settingsState, s store.Settings) tea.Cmd {
 	}
 }
 
-// updateSettings handles a keypress while the Settings tab is open —
-// called from statusModel.Update, mirroring updateNewJob/
-// updateWebDAVBrowse's own per-overlay update methods.
+// commit applies change to a copy of the current settings and saves it,
+// or reports why it was refused without touching anything.
+func (s *settingsState) commit(change func(*store.Settings) error) tea.Cmd {
+	working := s.current
+	if err := change(&working); err != nil {
+		s.err = err.Error()
+		return nil
+	}
+	s.err, s.saved = "", false
+	return saveSettings(s, working)
+}
+
+// updateSettings handles a keypress while the Settings tab is open.
 func (m statusModel) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	s := m.settings
+	if s.loading {
+		if msg.String() == "esc" {
+			m.settings = nil
+		}
+		return m, nil
+	}
+	field := prefs.Fields[s.cursor]
 
 	if s.editing {
 		switch msg.String() {
@@ -188,16 +104,11 @@ func (m statusModel) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			s.err = ""
 			return m, nil
 		case "enter":
-			field := settingsFields[s.cursor]
-			working := s.current
-			if err := field.set(&working, s.input.Value()); err != nil {
-				s.err = err.Error()
-				return m, nil
+			cmd := s.commit(func(set *store.Settings) error { return field.Set(set, s.input.Value()) })
+			if cmd != nil {
+				s.editing = false
 			}
-			s.editing = false
-			s.err = ""
-			s.saved = false
-			return m, saveSettings(s, working)
+			return m, cmd
 		default:
 			var cmd tea.Cmd
 			s.input, cmd = s.input.Update(msg)
@@ -206,7 +117,7 @@ func (m statusModel) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	switch msg.String() {
-	case "esc":
+	case "esc", "q":
 		m.settings = nil
 		return m, nil
 	case "up", "k":
@@ -216,25 +127,39 @@ func (m statusModel) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case "down", "j":
-		if s.cursor < len(settingsFields)-1 {
+		if s.cursor < len(prefs.Fields)-1 {
 			s.cursor++
 			s.err, s.saved = "", false
 		}
 		return m, nil
+	case "home", "g":
+		s.cursor, s.err, s.saved = 0, "", false
+		return m, nil
+	case "end", "G":
+		s.cursor, s.err, s.saved = len(prefs.Fields)-1, "", false
+		return m, nil
+	case "left", "h", "right", "l":
+		if field.Kind != prefs.Choice && field.Kind != prefs.Toggle {
+			return m, nil
+		}
+		dir := 1
+		if k := msg.String(); k == "left" || k == "h" {
+			dir = -1
+		}
+		return m, s.commit(func(set *store.Settings) error { return field.Cycle(set, dir) })
+	case "r":
+		return m, s.commit(func(set *store.Settings) error { field.Reset(set); return nil })
 	case "enter", " ":
-		field := settingsFields[s.cursor]
-		if field.kind == settingsFieldBool {
-			working := s.current
-			field.toggle(&working)
-			s.err = ""
-			s.saved = false
-			return m, saveSettings(s, working)
+		if field.Kind == prefs.Choice || field.Kind == prefs.Toggle {
+			return m, s.commit(func(set *store.Settings) error { return field.Cycle(set, 1) })
 		}
 		ti := textinput.New()
-		ti.SetValue(field.get(s.current))
+		ti.SetValue(field.Get(s.current))
+		ti.CursorEnd()
 		ti.Focus()
-		ti.CharLimit = 32
-		ti.Width = 24
+		ti.CharLimit = 512
+		ti.Width = max(24, min(60, m.width-settingsLabelWidth-8))
+		ti.Placeholder = field.Unset
 		s.input = ti
 		s.editing = true
 		s.err = ""
@@ -243,46 +168,129 @@ func (m statusModel) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// settingsValue is how a field's value reads in the list, fitted to
+// width cells (0 = unlimited), with hints for the selected row: arrows
+// around a choice, and a note when an environment variable is
+// overriding the saved value.
+func settingsValue(f prefs.Field, s store.Settings, selected bool, width int) string {
+	v := format.ShortenHome(f.Display(s))
+	if selected && (f.Kind == prefs.Choice || f.Kind == prefs.Toggle) {
+		v = "‹ " + v + " ›"
+	}
+	note := ""
+	if f.Overridden() {
+		note = "  (overridden by " + f.EnvOverride + ")"
+	}
+	if width > 0 {
+		v = keepTail(v, max(width-lipgloss.Width(note), 8))
+	}
+	return v + settingsDimStyle.Render(note)
+}
+
+// keepTail shortens s to w cells by cutting from the front, since the
+// end of a path is the part that tells folders apart.
+func keepTail(s string, w int) string {
+	if lipgloss.Width(s) <= w {
+		return s
+	}
+	r := []rune(s)
+	for len(r) > 0 && lipgloss.Width(string(r))+1 > w {
+		r = r[1:]
+	}
+	return "…" + string(r)
+}
+
 func (m statusModel) viewSettings() string {
 	s := m.settings
 	var b strings.Builder
-	b.WriteString(m.wrapped(statStyle).Render("Settings"))
+	b.WriteString(m.wrapped(titleStyle).Render(brandStyle.Render("godl") + "  Settings" + settingsDimStyle.Render("  ·  changes save instantly  ·  also: godl settings")))
 	b.WriteString("\n")
 
 	if s.loading {
-		b.WriteString("loading...\n")
+		b.WriteString("\n  loading...\n")
 		b.WriteString(m.helpView("esc close"))
 		return b.String()
 	}
 
-	for i, f := range settingsFields {
-		cursor := "  "
+	// The list, one line per section header and per field, then a
+	// window of it that keeps the cursor in view on a short terminal.
+	var lines []string
+	cursorLine := 0
+	section := ""
+	for i, f := range prefs.Fields {
+		if f.Section != section {
+			if section != "" {
+				lines = append(lines, "")
+			}
+			section = f.Section
+			lines = append(lines, " "+settingsSectionStyle.Render(section))
+		}
+		label := fitCells(f.Label, settingsLabelWidth)
+		valueW := 0
+		if m.width > 0 {
+			valueW = m.width - settingsLabelWidth - 6
+		}
+		value := settingsValue(f, s.current, i == s.cursor, valueW)
 		if i == s.cursor {
-			cursor = "> "
+			cursorLine = len(lines)
+			if s.editing {
+				value = s.input.View()
+			}
+			lines = append(lines, " "+settingsCursorStyle.Render(" "+label+" ")+"  "+value)
+			continue
 		}
-		value := f.get(s.current)
-		if i == s.cursor && s.editing {
-			value = s.input.View()
-		}
-		fmt.Fprintf(&b, "%s%-28s %s\n", cursor, f.label, value)
-		if i == s.cursor {
-			b.WriteString("    " + m.helpView(f.help) + "\n")
-		}
+		lines = append(lines, "   "+label+"  "+value)
 	}
 
+	field := prefs.Fields[s.cursor]
+	var detail []string
+	detail = append(detail, m.wrapped(lipgloss.NewStyle().Padding(0, 1)).Render(field.Help))
+	cli := fmt.Sprintf("godl settings set %s <value>", field.Key)
+	if field.Kind == prefs.Choice {
+		values := make([]string, len(field.Options))
+		for i, o := range field.Options {
+			values[i] = o.Value
+		}
+		cli = fmt.Sprintf("godl settings set %s %s", field.Key, strings.Join(values, "|"))
+	}
+	detail = append(detail, m.wrapped(settingsDimStyle.Padding(0, 1)).Render("CLI: "+cli))
 	switch {
 	case s.err != "":
-		b.WriteString(m.wrapped(errStyle).Render("error: " + s.err))
-		b.WriteString("\n")
+		detail = append(detail, m.wrapped(errStyle).Render("error: "+s.err))
 	case s.saved:
-		b.WriteString(m.wrapped(statStyle).Render("saved"))
-		b.WriteString("\n")
+		detail = append(detail, m.wrapped(statStyle).Render("saved"))
 	}
+	var help string
+	switch {
+	case s.editing:
+		help = m.helpView("enter save  esc cancel  (leave empty for the default)")
+	case field.Kind == prefs.Choice || field.Kind == prefs.Toggle:
+		help = m.helpView("↑/↓ select  ←/→ or enter change  r reset to default  esc close")
+	default:
+		help = m.helpView("↑/↓ select  enter edit  r reset to default  esc close")
+	}
+	footer := "\n\n" + strings.Join(detail, "\n") + "\n" + help
 
-	if s.editing {
-		b.WriteString(m.helpView("enter save  esc cancel"))
-	} else {
-		b.WriteString(m.helpView("↑/↓ select  enter edit/toggle  esc close"))
+	avail := len(lines)
+	if m.height > 0 {
+		avail = m.height - lipgloss.Height(b.String()) - lipgloss.Height(footer) - 1
 	}
+	if avail < 3 {
+		avail = 3
+	}
+	start := 0
+	if len(lines) > avail {
+		start = min(max(cursorLine-avail/2, 0), len(lines)-avail)
+		lines = lines[start : start+avail]
+	}
+	b.WriteString(strings.Join(lines, "\n"))
+	b.WriteString(footer)
 	return b.String()
+}
+
+func boolLabel(b bool) string {
+	if b {
+		return "on"
+	}
+	return "off"
 }

@@ -85,9 +85,10 @@ type serveState struct {
 
 // newServeForm seeds the form with the same defaults "godl serve"
 // itself uses (cmd/serve.go's flag defaults), so an unedited form
-// behaves like plain "godl serve <downloads>".
-func newServeForm() *serveState {
-	dir, err := paths.DownloadsDir()
+// behaves like plain "godl serve <downloads>". downloadDir is the
+// "Download folder" setting ("" for the system one).
+func newServeForm(downloadDir string) *serveState {
+	dir, err := paths.DownloadsDirFor(downloadDir)
 	if err != nil {
 		dir = "."
 	}

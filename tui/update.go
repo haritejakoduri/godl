@@ -13,7 +13,35 @@ import (
 )
 
 func (m statusModel) Init() tea.Cmd {
-	return waitForSnapshot(m.snapCh, m.errCh)
+	return tea.Batch(waitForSnapshot(m.snapCh, m.errCh), loadPrefs())
+}
+
+func loadPrefs() tea.Cmd {
+	return func() tea.Msg {
+		if err := daemon.EnsureRunning(); err != nil {
+			return prefsMsg{err: err}
+		}
+		resp, err := daemon.Call(daemon.Request{Cmd: daemon.CmdGetSettings})
+		if err != nil || resp.Settings == nil {
+			return prefsMsg{err: err}
+		}
+		return prefsMsg{settings: *resp.Settings}
+	}
+}
+
+// setPrefs installs newly loaded or saved settings and applies the ones
+// that take effect immediately.
+func (m statusModel) setPrefs(s store.Settings) (statusModel, tea.Cmd) {
+	m.prefs = s
+	if m.anim == nil {
+		return m, nil
+	}
+	m.anim.off = reducedMotion() || s.NoAnimations
+	if m.anim.off {
+		m.anim.snap()
+		m.rebuildRows(m.table.Cursor())
+	}
+	return m, m.anim.kick(m.jobs)
 }
 
 // applyJobs installs a fresh snapshot, keeping the cursor on the job it
@@ -59,7 +87,9 @@ func (m statusModel) settingsResult(st *settingsState, s store.Settings, err err
 	m.settings.current = s
 	m.settings.err = ""
 	m.settings.saved = saved
-	return m, nil
+	// Loading counts too: settings changed with "godl settings" while
+	// the dashboard was open reach it as soon as the tab is opened.
+	return m.setPrefs(s)
 }
 
 // Update applies msg, then re-fits the table to whatever the footer now
@@ -164,6 +194,12 @@ func (m statusModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case prefsMsg:
+		if msg.err != nil {
+			return m, nil // keep the built-in defaults
+		}
+		return m.setPrefs(msg.settings)
+
 	case settingsLoadedMsg:
 		return m.settingsResult(msg.st, msg.settings, msg.err, false)
 
@@ -216,7 +252,7 @@ func (m statusModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		ti.Focus()
 		ti.CharLimit = 2048
 		ti.Width = 60
-		m.newJob = &newJobState{step: newJobPickType, input: ti}
+		m.newJob = &newJobState{step: newJobPickType, input: ti, presetIndex: presetIndex(m.prefs.SocialPreset)}
 		return m, nil
 	case "w":
 		return m.openWebDAVBrowser()
@@ -224,7 +260,7 @@ func (m statusModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.settings = &settingsState{loading: true}
 		return m, loadSettings(m.settings)
 	case "S":
-		m.serve = newServeForm()
+		m.serve = newServeForm(m.prefs.DownloadDir)
 		return m, nil
 	case " ":
 		j, idx, ok := m.cursorJob()

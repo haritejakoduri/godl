@@ -7,6 +7,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"godl/internal/daemon"
+	"godl/internal/store"
 )
 
 func newJobModel() statusModel {
@@ -151,7 +152,7 @@ func TestNewJobWizardStartsTheJob(t *testing.T) {
 // rate fields actually reach the daemon request, not just that the
 // wizard advances past them.
 func TestNewJobWizardAppliesOutputAndRate(t *testing.T) {
-	req, err := buildAddRequest(daemon.CmdAddURL, "https://example.com/a.iso", "/tmp/custom.iso")
+	req, err := buildAddRequest(daemon.CmdAddURL, "https://example.com/a.iso", "/tmp/custom.iso", store.Settings{})
 	if err != nil {
 		t.Fatal(err)
 	}

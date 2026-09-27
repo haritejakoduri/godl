@@ -30,6 +30,13 @@ var urlCmd = &cobra.Command{
 		}
 		output, _ := cmd.Flags().GetString("output")
 		concurrency, _ := cmd.Flags().GetInt("concurrency")
+		if !cmd.Flags().Changed("concurrency") {
+			s, err := appSettings()
+			if err != nil {
+				return err
+			}
+			concurrency = s.EffectiveConnections()
+		}
 		sha256Sum, _ := cmd.Flags().GetString("sha256")
 		if sha256Sum != "" && !sha256Pattern.MatchString(sha256Sum) {
 			return fmt.Errorf("--sha256 must be a 64-character hex digest, got %q", sha256Sum)
@@ -80,7 +87,7 @@ func urlOutputs(all []string, output string, nameOf func(string) string) ([]stri
 	}
 	dir := output
 	if dir == "" {
-		d, err := paths.DownloadsDir()
+		d, err := downloadsDir()
 		if err != nil {
 			return nil, err
 		}
@@ -103,7 +110,7 @@ func urlOutputs(all []string, output string, nameOf func(string) string) ([]stri
 
 func init() {
 	urlCmd.Flags().StringP("output", "o", "", "output file path (default: your Downloads folder, with a name derived from the URL or the server's Content-Disposition/Content-Type); with several links, the directory they're saved into")
-	urlCmd.Flags().IntP("concurrency", "c", 4, "number of concurrent chunks (ignored if the server can't do ranges)")
+	urlCmd.Flags().IntP("concurrency", "c", 0, `number of concurrent chunks, ignored if the server can't do ranges (default: the "connections" setting, 4 unless changed)`)
 	urlCmd.Flags().StringP("limit-rate", "R", "", "cap this download's speed, e.g. 500K or 2M (default: unlimited)")
 	urlCmd.Flags().String("sha256", "", "expected sha256 digest of the completed file; on mismatch the file is deleted and the job fails (default: no verification)")
 	addRequestFlags(urlCmd)

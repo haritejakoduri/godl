@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -69,8 +70,21 @@ Watch it while it downloads with "godl stream <job-id>" (or "o" in
 		if _, err := torrentmgr.ParseSelection(files); err != nil {
 			return err
 		}
-		seedRatio, _ := cmd.Flags().GetFloat64("seed-ratio")
-		seedTime, _ := cmd.Flags().GetDuration("seed-time")
+		settings, err := appSettings()
+		if err != nil {
+			return err
+		}
+		seedRatio := settings.SeedRatio
+		if cmd.Flags().Changed("seed-ratio") {
+			seedRatio, _ = cmd.Flags().GetFloat64("seed-ratio")
+		}
+		var seedTime time.Duration
+		if settings.SeedTime != "" {
+			seedTime, _ = time.ParseDuration(settings.SeedTime)
+		}
+		if cmd.Flags().Changed("seed-time") {
+			seedTime, _ = cmd.Flags().GetDuration("seed-time")
+		}
 		if seedRatio < 0 || seedTime < 0 {
 			return fmt.Errorf("--seed-ratio and --seed-time can't be negative")
 		}
@@ -119,7 +133,7 @@ func init() {
 	torrentCmd.Flags().StringP("limit-rate", "R", "", "cap download speed, e.g. 500K or 2M (default: unlimited). Shared across all active torrent jobs, not just this one — anacrolix/torrent's rate limiter is client-wide")
 	torrentCmd.Flags().Bool("list-files", false, "list the torrent's files (numbered for --files) and exit, without downloading")
 	torrentCmd.Flags().String("files", "", `download only these files: numbers and ranges from --list-files and/or glob patterns, e.g. "1,3-5" or "*.mkv" (default: all)`)
-	torrentCmd.Flags().Float64("seed-ratio", 0, "keep seeding after completion until uploaded/size reaches this, e.g. 1.0 (default: stop at completion)")
-	torrentCmd.Flags().Duration("seed-time", 0, "keep seeding after completion for this long, e.g. 30m or 2h (default: stop at completion)")
+	torrentCmd.Flags().Float64("seed-ratio", 0, `keep seeding after completion until uploaded/size reaches this, e.g. 1.0; 0 = stop at completion (default: the "seed_ratio" setting)`)
+	torrentCmd.Flags().Duration("seed-time", 0, `keep seeding after completion for this long, e.g. 30m or 2h; 0 = don't (default: the "seed_time" setting)`)
 	addBatchFlag(torrentCmd)
 }

@@ -4,11 +4,13 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
 	"godl/internal/daemon"
 	"godl/internal/paths"
+	"godl/internal/store"
 	"godl/internal/urlname"
 )
 
@@ -60,9 +62,9 @@ func doBulkRemove(jobIDs []string, purge bool) tea.Cmd {
 // while a user-supplied override is resolved exactly as given — the
 // same semantics "godl url/social/torrent -o ..." already has, so the
 // wizard's optional output field behaves identically to the flag.
-func resolveJobOutput(override, name string) (string, error) {
+func resolveJobOutput(override, name, downloadDir string) (string, error) {
 	if override == "" {
-		dir, err := paths.DownloadsDir()
+		dir, err := paths.DownloadsDirFor(downloadDir)
 		if err != nil {
 			return "", err
 		}
@@ -76,25 +78,28 @@ func resolveJobOutput(override, name string) (string, error) {
 // defaults as the corresponding CLI command (see url.go/social.go/
 // torrent.go's RunE) — so a download started from the TUI behaves
 // exactly like "godl url"/"godl social"/"godl torrent". outputOverride
-// is the wizard's optional output field ("" keeps the CLI default).
-func buildAddRequest(apiCmd, source, outputOverride string) (daemon.Request, error) {
+// is the wizard's optional output field ("" keeps the CLI default), and
+// prefs supplies the same setting-based defaults the CLI applies.
+func buildAddRequest(apiCmd, source, outputOverride string, prefs store.Settings) (daemon.Request, error) {
 	switch apiCmd {
 	case daemon.CmdAddURL:
-		output, err := resolveJobOutput(outputOverride, urlname.FromURL(source, nil))
+		output, err := resolveJobOutput(outputOverride, urlname.FromURL(source, nil), prefs.DownloadDir)
 		if err != nil {
 			return daemon.Request{}, err
 		}
-		return daemon.Request{Cmd: apiCmd, Source: source, Output: output, Concurrency: 4}, nil
+		return daemon.Request{Cmd: apiCmd, Source: source, Output: output, Concurrency: prefs.EffectiveConnections()}, nil
 
 	case daemon.CmdAddSocial:
-		output, err := resolveJobOutput(outputOverride, "")
+		output, err := resolveJobOutput(outputOverride, "", prefs.DownloadDir)
 		if err != nil {
 			return daemon.Request{}, err
 		}
-		return daemon.Request{Cmd: apiCmd, Source: source, Output: output}, nil
+		req := daemon.Request{Cmd: apiCmd, Source: source, Output: output}
+		req.Options.CookiesFromBrowser = prefs.CookiesFromBrowser
+		return req, nil
 
 	case daemon.CmdAddTorrent:
-		output, err := resolveJobOutput(outputOverride, "")
+		output, err := resolveJobOutput(outputOverride, "", prefs.DownloadDir)
 		if err != nil {
 			return daemon.Request{}, err
 		}
@@ -105,7 +110,12 @@ func buildAddRequest(apiCmd, source, outputOverride string) (daemon.Request, err
 			}
 			source = abs
 		}
-		return daemon.Request{Cmd: apiCmd, Source: source, Output: output}, nil
+		req := daemon.Request{Cmd: apiCmd, Source: source, Output: output}
+		req.Options.SeedRatio = prefs.SeedRatio
+		if d, err := time.ParseDuration(prefs.SeedTime); err == nil {
+			req.Options.SeedTimeSec = int64(d.Seconds())
+		}
+		return req, nil
 
 	default:
 		return daemon.Request{}, fmt.Errorf("unknown job type %q", apiCmd)
@@ -119,12 +129,12 @@ func buildAddRequest(apiCmd, source, outputOverride string) (daemon.Request, err
 // through unconditionally is harmless for them. outputOverride and
 // limitRate are the wizard's optional output/rate-limit fields ("" and
 // 0 meaning "use the same default the CLI would").
-func startNewJob(apiCmd, source, format, outputOverride string, limitRate int64) tea.Cmd {
+func startNewJob(apiCmd, source, format, outputOverride string, limitRate int64, prefs store.Settings) tea.Cmd {
 	return func() tea.Msg {
 		if err := daemon.EnsureRunning(); err != nil {
 			return actionDoneMsg{err}
 		}
-		req, err := buildAddRequest(apiCmd, source, outputOverride)
+		req, err := buildAddRequest(apiCmd, source, outputOverride, prefs)
 		if err != nil {
 			return actionDoneMsg{err}
 		}

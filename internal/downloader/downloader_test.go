@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"golang.org/x/time/rate"
+
+	"godl/internal/reqhdr"
 )
 
 func digestHex(body []byte) string {
@@ -276,5 +278,38 @@ func TestSidecarSurvivesATruncatedWrite(t *testing.T) {
 	}
 	if !bytes.Equal(got, body) {
 		t.Errorf("output differs from source after recovering from a truncated sidecar")
+	}
+}
+
+// Every request a download makes — the probe and each ranged chunk —
+// must carry the job's headers and cookies, or a login-gated file
+// downloads as its login page.
+func TestRunSendsHeadersAndCookiesOnEveryRequest(t *testing.T) {
+	body := bytes.Repeat([]byte("godl"), 64*1024)
+	var bad []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer tok" || r.Header.Get("Cookie") != "session=abc" {
+			bad = append(bad, fmt.Sprintf("%s %s auth=%q cookie=%q", r.Method, r.Header.Get("Range"), r.Header.Get("Authorization"), r.Header.Get("Cookie")))
+			http.Error(w, "login required", http.StatusForbidden)
+			return
+		}
+		http.ServeContent(w, r, "f.bin", time.Time{}, bytes.NewReader(body))
+	}))
+	defer srv.Close()
+
+	hdr, err := reqhdr.Build([]string{"Authorization: Bearer tok", "Cookie: session=abc"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(t.TempDir(), "out.bin")
+	res, err := Run(context.Background(), Options{URL: srv.URL, OutputPath: out, Concurrency: 4, Headers: hdr})
+	if err != nil || !res.Completed {
+		t.Fatalf("Run = %+v, %v", res, err)
+	}
+	if len(bad) > 0 {
+		t.Errorf("requests without the job's headers: %q", bad)
+	}
+	if got, _ := os.ReadFile(out); !bytes.Equal(got, body) {
+		t.Error("downloaded content doesn't match")
 	}
 }

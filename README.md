@@ -93,8 +93,14 @@ resume automatically on your next install.
 godl url https://example.com/big-file.iso -o out.iso -c 8
 godl url https://example.com/big-file.iso -o out.iso -R 2M   # cap at 2MiB/s
 godl url https://example.com/big-file.iso -o out.iso --sha256 <64-char-hex>   # verify on completion
+godl url https://example.com/private.zip --cookies cookies.txt -H "Authorization: Bearer <token>"
+godl url -i links.txt -o ~/Downloads/batch   # one job per line ("-" reads stdin)
 godl social https://example.com/watch?v=xyz -o ~/Videos -p 1080p
+godl social <link> --cookies-from-browser firefox   # login-only / age-restricted videos
 godl torrent "magnet:?xt=urn:btih:..." -o ~/Downloads
+godl torrent "magnet:?..." --list-files      # see what's inside first
+godl torrent "magnet:?..." --files "*.mkv" --seed-ratio 1.0
+godl stream <job-id>                          # watch a torrent while it downloads
 godl connection add mynas --url https://dav.example.com/remote.php/dav/files/alice/ --username alice
 godl webdav mynas /Photos -o ~/Photos     # a file or a whole folder, recursively
 godl serve ~/Public -p 8080 --username alice   # share a folder, over WebDAV + browser
@@ -152,11 +158,50 @@ there's no way to know which part was bad, so `godl retry` has to
 redownload the whole thing rather than repairing just the bad bytes (the
 same tradeoff `curl`/`wget`/`aria2` make with whole-file checksums).
 
+#### Headers and cookies
+
+For downloads behind a login, a token or a picky CDN:
+
+```sh
+godl url <link> -H "Authorization: Bearer abc"     # any header; repeatable
+godl url <link> --user-agent "Mozilla/5.0 ..." --referer https://example.com/
+godl url <link> --cookie "session=abc; theme=dark"
+godl url <link> --cookies cookies.txt              # a browser's cookies.txt export
+```
+
+`--cookies` takes the Netscape `cookies.txt` format that browser
+"export cookies" extensions, curl and yt-dlp all use. A whole-browser
+export is safe to pass: each request only gets the cookies whose
+domain, path and `Secure` flag match it, and expired ones are skipped.
+Headers and cookies go on every request the job makes — the size
+probe, the filename lookup and each chunk — and are saved with the job,
+so pause/resume/retry keep sending them (the cookies file is re-read on
+each start, so refreshing it and retrying just works). A redirect to a
+different domain drops `Cookie`/`Authorization`, as Go's HTTP client
+always does, so they can't leak to a third-party host.
+
+#### Many links at once
+
+`-i`/`--input-file` reads links from a file, one per line (blank lines
+and `#` comments are skipped), or from stdin with `-i -`. Each link
+becomes its own job, and one bad link doesn't stop the rest. With
+several links `-o` is the directory they're saved into, and two links
+that would produce the same filename get `name (2).ext` instead of
+overwriting each other. `godl social` and `godl torrent` take `-i` too.
+
 ### `godl social` — yt-dlp-supported sites
 
 Runs in the background like `url`/`torrent` and returns immediately, with
 live progress/speed/ETA in `status`/`list`. Pass `--wait`/`-w` to instead
 stay attached and stream yt-dlp's own output.
+
+Login-only, private, members-only and age-restricted videos usually just
+need your browser's cookies: `--cookies-from-browser firefox` (or
+`chrome`, `edge`, `brave`, `safari`, ... — anything yt-dlp's own flag
+accepts) reads them straight from the browser, and `--cookies
+cookies.txt` takes an exported file. `-H`, `--user-agent` and
+`--referer` work the same as on `godl url`. `--list-formats` uses them
+too, so you can see what a logged-in account gets before downloading.
 
 `-p`/`--preset` picks a video/audio quality by name — the easiest way
 to pick a resolution without knowing yt-dlp's format-selector syntax:
@@ -204,6 +249,42 @@ url`, `godl torrent`, and job management all work without either.
 ### `godl torrent` — BitTorrent downloads
 
 Takes a magnet link or `.torrent` file.
+
+**Pick files.** `--list-files` shows what's inside, numbered, without
+downloading any content (for a magnet link godl first fetches the file
+list from peers, which can take a few seconds). `--files` then takes
+numbers, ranges and glob patterns, comma-separated — patterns match
+either the full path inside the torrent or just the file name:
+
+```sh
+godl torrent <magnet> --list-files
+godl torrent <magnet> --files 2,5-7
+godl torrent <magnet> --files "*.mkv,Extras/*"
+```
+
+Progress, ETA and completion then count only the selected files. (Data
+at the very edge of a selected file can share a piece with its
+neighbour, so a sliver of an unselected file may still land on disk —
+that's how BitTorrent pieces work, not a bug.)
+
+**Seed.** By default a torrent stops sharing the moment it finishes.
+`--seed-ratio 1.5` keeps uploading until you've sent 1.5x its size,
+`--seed-time 2h` for two hours — with both, whichever comes first. The
+job shows as `seeding` (with its live upload speed and ratio) and then
+settles to `completed`. Seeding doesn't take up one of the Settings
+tab's "max concurrent downloads" slots. Pausing or canceling a seeding
+job just stops the seeding; the download stays completed. Seeding
+doesn't survive a daemon restart — the job is marked completed.
+
+**Stream while downloading.** `godl stream <job-id>` (or `o` in `godl
+status`) plays a running torrent in mpv/VLC before it's finished. godl
+serves the file to the player over a loopback-only HTTP address with a
+random per-session token, and fetches the pieces just ahead of wherever
+the player is reading first — including after you seek — so playback
+starts after a few MB rather than after the whole file. With several
+files it picks the largest video/audio file; `--file N` picks another
+(numbered as in `--list-files`), and `--url` just prints the address
+for another player. A finished job plays from disk.
 
 ### `godl connection` / `godl webdav` — WebDAV
 
@@ -316,13 +397,28 @@ Lists every job with progress bars, speed, ETA, its download destination
 first, so whatever you just started is right at the top instead of
 pushed to the bottom behind everything already running. `Status` is
 color-coded (gray for queued/canceled, amber for paused, yellow for
-active, green for completed, red for failed) so a long list reads at a
+active, cyan for seeding, green for completed, red for failed) and
+led by an icon, so a long list reads at a
 glance instead of requiring you to read every word; the row your
 cursor is on shows it in plain text instead, since that row is already
 unambiguous from its own highlight. The `Path` and `Source` columns
 are responsive — they take up whatever room is left over after the
 other columns, so widening your terminal shows more of a long URL or
 destination path instead of it staying hard-truncated.
+
+It's animated, so you can tell at a glance what's alive. Progress bars
+glide to each new value on a spring instead of jumping twice a second,
+drawn to an eighth of a character so even a slow download visibly
+creeps forward, with a highlight sweeping along any bar that's actively
+moving. A download whose size isn't known yet shows a bouncing bar
+instead of sitting at 0%. Running jobs spin, the Speed column draws the
+last few seconds as a sparkline, and a job that finishes sparkles for a
+moment. The header line sums it all up: jobs by state, the combined
+download speed with its own sparkline, and one color bar for everything
+still in flight. Frames only run while something is actually moving —
+an idle dashboard uses no CPU. Set `GODL_NO_ANIMATION=1` to turn all of
+it off (values then update in place, nothing spins); it's also off
+when `TERM=dumb`.
 
 Keybinds: `space` toggles a job for multi-select (its checkbox shows
 `[x]`, and the title bar shows the running count), `p` pause, `r`
@@ -350,10 +446,9 @@ while something's still downloading). Either player handles all three:
 a `webdav` file's credentials go to mpv as an HTTP header and to VLC
 through its own `--http-user`/`--http-pwd`, and a `social` link is
 resolved to a direct stream with yt-dlp first when VLC is the one
-running, since only mpv can follow such a link by itself. `torrent`
-jobs only ever support the local file, and only once complete, since
-true streaming-while-downloading would need piece-sequencing
-anacrolix/torrent doesn't do.
+running, since only mpv can follow such a link by itself. A running
+`torrent` job streams through godl's own loopback server, fetching the
+pieces the player needs next first — see `godl torrent` above.
 
 `w` opens a file browser for one of your saved `godl connection`s. The
 first screen picks a connection — `a` opens a form to add a new one
@@ -489,7 +584,8 @@ internal/
                    settings, and the socket protocol
   store/           sqlite persistence for jobs and settings
   downloader/      chunked HTTP(S) transfers, resume, checksums
-  torrentmgr/      BitTorrent, wrapping anacrolix/torrent
+  torrentmgr/      BitTorrent, wrapping anacrolix/torrent: file
+                   selection, seeding stats, readers for streaming
   ytdlp/ ffmpeg/   the yt-dlp and ffmpeg binaries godl manages itself
   webdav/          WebDAV client: PROPFIND, recursive walk, download
   fileserver/      `godl serve` — the other direction: serve a local
@@ -499,6 +595,8 @@ internal/
   urlname/ paths/
   httpx/           HTTP clients, with the timeouts and pooling that
                    transfers and metadata fetches each need
+  reqhdr/          a job's extra headers and cookies.txt cookies,
+                   matched to each request's URL
   ratelimit/ mpv/ notify/ ghrelease/ selfupdate/ version/
 ```
 

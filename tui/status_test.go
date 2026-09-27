@@ -6,7 +6,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/charmbracelet/bubbles/progress"
 	"github.com/charmbracelet/bubbles/table"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-runewidth"
@@ -108,7 +107,6 @@ func TestRebuildRowsShowsPathAndSource(t *testing.T) {
 	source := "https://example.com/watch?v=abcdefghijklmnopqrstuvwxyz0123456789"
 
 	m := statusModel{
-		bar:  progress.New(progress.WithColorProfile(termenv.Ascii), progress.WithWidth(18)),
 		jobs: []*daemon.JobView{{Job: &store.Job{ID: "job1", Type: store.JobURL, Status: store.StatusActive, Output: output, Source: source}, ETASeconds: -1}},
 	}
 	m.rebuildRows(-1)
@@ -163,7 +161,6 @@ func TestNewestFirst(t *testing.T) {
 // actually reflect m.selected, not just always show unchecked.
 func TestRebuildRowsShowsSelectionCheckbox(t *testing.T) {
 	m := statusModel{
-		bar:      progress.New(progress.WithColorProfile(termenv.Ascii), progress.WithWidth(18)),
 		jobs:     []*daemon.JobView{jobView("job1"), jobView("job2")},
 		selected: map[string]bool{"job2": true},
 	}
@@ -245,7 +242,6 @@ func TestPruneSelectedDropsStaleIDs(t *testing.T) {
 func TestJobsMsgKeepsCursorOnSameJobAcrossReorder(t *testing.T) {
 	m := statusModel{
 		table: table.New(table.WithColumns(columnsForWidth(0))),
-		bar:   progress.New(progress.WithColorProfile(termenv.Ascii), progress.WithWidth(18)),
 	}
 
 	next, _ := m.Update(jobsMsg([]*daemon.JobView{jobView("job1"), jobView("job2")}))
@@ -290,10 +286,10 @@ func TestRenderStatusFitsStatusColumn(t *testing.T) {
 
 	statuses := []store.JobStatus{
 		store.StatusQueued, store.StatusActive, store.StatusPaused,
-		store.StatusCompleted, store.StatusFailed, store.StatusCanceled,
+		store.StatusCompleted, store.StatusSeeding, store.StatusFailed, store.StatusCanceled,
 	}
 	for _, s := range statuses {
-		rendered := renderStatus(s)
+		rendered := renderStatus(s, statusLabel(s, 0, true))
 		if w := runewidth.StringWidth(rendered); w > statusColWidth {
 			t.Errorf("renderStatus(%s) has StringWidth %d, want <= statusColWidth (%d) — bubbles/table will truncate mid-escape-sequence and corrupt this row", s, w, statusColWidth)
 		}
@@ -320,7 +316,6 @@ func TestRebuildRowsSkipsStatusColorOnCursorRow(t *testing.T) {
 	defer lipgloss.SetColorProfile(orig)
 
 	m := statusModel{
-		bar:  progress.New(progress.WithColorProfile(termenv.Ascii), progress.WithWidth(18)),
 		jobs: []*daemon.JobView{jobView("job1"), jobView("job2")},
 	}
 	m.jobs[0].Status = store.StatusCompleted
@@ -329,10 +324,11 @@ func TestRebuildRowsSkipsStatusColorOnCursorRow(t *testing.T) {
 
 	rows := m.table.Rows()
 	statusCol := 3 // check, ID, Type, Status
-	if rows[0][statusCol] != renderStatus(store.StatusCompleted) {
+	label := statusLabel(store.StatusCompleted, 0, false)
+	if rows[0][statusCol] != renderStatus(store.StatusCompleted, label) {
 		t.Errorf("non-cursor row's Status cell = %q, want the colored rendering", rows[0][statusCol])
 	}
-	if rows[1][statusCol] != string(store.StatusCompleted) {
-		t.Errorf("cursor row's Status cell = %q, want plain %q (colored would break the Selected row style's own nesting)", rows[1][statusCol], string(store.StatusCompleted))
+	if rows[1][statusCol] != label {
+		t.Errorf("cursor row's Status cell = %q, want plain %q (colored would break the Selected row style's own nesting)", rows[1][statusCol], label)
 	}
 }

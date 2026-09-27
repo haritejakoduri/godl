@@ -4,7 +4,11 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/progress"
 	"github.com/charmbracelet/lipgloss"
+
+	"godl/internal/format"
+	"godl/internal/store"
 )
 
 // View renders the job table (the default screen) unless a full-screen
@@ -41,12 +45,81 @@ const dashboardHelp = "space select  p pause  r resume  x cancel  R retry  d rem
 // one appears.
 const dashboardMessageLines = 2
 
+var (
+	brandStyle      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#0B0B0B")).Background(lipgloss.Color("#5FD6C9")).Padding(0, 1)
+	headerDimStyle  = lipgloss.NewStyle().Faint(true)
+	headerSpinStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#5FD6C9")).Bold(true)
+	headerRateStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#5FD6C9"))
+)
+
+// overallBar is the header's combined progress bar. It's outside the
+// table, so unlike the per-row bars it can be drawn in color.
+var overallBar = progress.New(progress.WithGradient("#5FD6C9", "#7B61FF"), progress.WithWidth(20))
+
+// dashboardHeader is the live title line: a spinner while anything
+// runs, counts by state, the combined download speed with its recent
+// history, and one bar for everything still in flight.
 func (m statusModel) dashboardHeader() string {
-	title := fmt.Sprintf("godl status — %d job(s)", len(m.jobs))
-	if len(m.selected) > 0 {
-		title += fmt.Sprintf("  (%d selected)", len(m.selected))
+	counts := map[store.JobStatus]int{}
+	for _, j := range m.jobs {
+		counts[j.Status]++
 	}
-	return m.wrapped(titleStyle).Render(title)
+	frame := m.anim.frameNo()
+
+	parts := []string{brandStyle.Render("godl")}
+	if counts[store.StatusActive] > 0 {
+		parts = append(parts, headerSpinStyle.Render(spinnerFrames[frame%len(spinnerFrames)]))
+	}
+	stats := []string{fmt.Sprintf("%d job(s)", len(m.jobs))}
+	for _, s := range []store.JobStatus{store.StatusActive, store.StatusQueued, store.StatusSeeding, store.StatusPaused, store.StatusFailed, store.StatusCompleted} {
+		if n := counts[s]; n > 0 {
+			stats = append(stats, jobStatusStyles[s].Render(fmt.Sprintf("%d %s", n, s)))
+		}
+	}
+	parts = append(parts, strings.Join(stats, headerDimStyle.Render(" · ")))
+
+	if speed := m.headerSpeed(); speed > 0 {
+		rate := "↓ " + format.Speed(speed)
+		if m.anim != nil {
+			if spark := sparkline(m.anim.totalSpeeds, 8); spark != "" {
+				rate = spark + " " + rate
+			}
+		}
+		parts = append(parts, headerRateStyle.Render(rate))
+	}
+	if frac, ok := m.overallProgress(); ok {
+		parts = append(parts, overallBar.ViewAs(frac))
+	}
+	if len(m.selected) > 0 {
+		parts = append(parts, fmt.Sprintf("(%d selected)", len(m.selected)))
+	}
+	return m.wrapped(titleStyle).Render(strings.Join(parts, "  "))
+}
+
+// headerSpeed is the combined download speed, eased when animating.
+func (m statusModel) headerSpeed() float64 {
+	if m.anim != nil && !m.anim.off {
+		return m.anim.speedShown
+	}
+	return totalSpeed(m.jobs)
+}
+
+// overallProgress is how far along everything still in flight is,
+// weighted by size, using each bar's animated position so the header
+// moves in step with the rows. ok is false when nothing is in flight.
+func (m statusModel) overallProgress() (float64, bool) {
+	var done, total float64
+	for _, j := range m.jobs {
+		if j.Status != store.StatusActive && j.Status != store.StatusQueued || j.BytesTotal <= 0 {
+			continue
+		}
+		total += float64(j.BytesTotal)
+		done += m.anim.shownFraction(j) * float64(j.BytesTotal)
+	}
+	if total == 0 {
+		return 0, false
+	}
+	return done / total, true
 }
 
 // dashboardFooter is everything under the table: the connection error,

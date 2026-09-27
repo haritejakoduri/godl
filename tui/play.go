@@ -19,7 +19,7 @@ import (
 )
 
 // localPlaybackTarget returns the local file already on disk for j, if
-// it's done downloading — preferred over streaming from source
+// it's done downloading (or seeding) — preferred over streaming from source
 // whenever it's available. The source (a direct HTTP link, a WebDAV
 // file behind a saved connection) can need auth or a time-limited
 // token that's gone stale by the time playback is actually requested
@@ -28,10 +28,9 @@ import (
 // already on disk needs nothing further from the network and is
 // guaranteed to exist. ok is false when the job isn't done yet, or
 // (torrent) nothing was ever resolved — callers fall back to streaming
-// in that case, which for torrent jobs is unconditionally rejected
-// instead (no piece-sequencing here — see doPlay).
+// in that case.
 func localPlaybackTarget(j *store.Job) (target string, ok bool) {
-	if j.Status != store.StatusCompleted {
+	if j.Status != store.StatusCompleted && j.Status != store.StatusSeeding {
 		return "", false
 	}
 	switch j.Type {
@@ -65,10 +64,8 @@ func localPlaybackTarget(j *store.Job) (target string, ok bool) {
 // way, authenticated via an HTTP header rather than a URL-embedded
 // password. Both are genuinely useful for a job that's still actively
 // downloading — a preview while it finishes — which is the only case
-// they're still reachable for now. torrent jobs only ever support the
-// local file, and only once the job has completed — true
-// streaming-while-downloading needs piece-sequencing anacrolix/torrent
-// doesn't do here.
+// they're still reachable for now. A running torrent job streams through
+// the daemon's loopback server (see daemon.streamTorrent).
 func doPlay(j *daemon.JobView) tea.Cmd {
 	return func() tea.Msg {
 		if target, ok := localPlaybackTarget(j.Job); ok {
@@ -105,7 +102,13 @@ func doPlay(j *daemon.JobView) tea.Cmd {
 			return playedMsg{target: target, err: mpv.Play(target, auth)}
 
 		case store.JobTorrent:
-			return playedMsg{err: fmt.Errorf("streaming isn't available for torrents until the job completes (playback order isn't sequential mid-download)")}
+			// The daemon serves the file over loopback HTTP, fetching
+			// the pieces just ahead of the player first.
+			resp, err := daemon.Call(daemon.Request{Cmd: daemon.CmdStreamTorrent, JobID: j.ID})
+			if err != nil {
+				return playedMsg{err: err}
+			}
+			return playedMsg{target: resp.StreamURL, err: mpv.Play(resp.StreamURL, nil)}
 
 		default:
 			return playedMsg{err: fmt.Errorf("streaming isn't supported for %s jobs", j.Type)}

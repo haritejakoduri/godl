@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"math"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/table"
@@ -15,7 +16,7 @@ import (
 // statusColWidth is wider than the Status column strictly needs to be
 // for its longest plain word ("completed", 9 chars) — see renderStatus's
 // doc comment for why the extra room is load-bearing, not cosmetic.
-const statusColWidth = 16
+const statusColWidth = 19
 
 // fixedColumns are every table column except Path and Source, which grow
 // or shrink with the terminal width instead of holding a constant size —
@@ -27,9 +28,9 @@ var fixedColumns = []table.Column{
 	{Title: "ID", Width: 9},
 	{Title: "Type", Width: 8},
 	{Title: "Status", Width: statusColWidth},
-	{Title: "Progress", Width: 24},
-	{Title: "Speed", Width: 12},
-	{Title: "ETA", Width: 8},
+	{Title: "Progress", Width: barWidth + 5},
+	{Title: "Speed", Width: sparkWidth + 1 + 11},
+	{Title: "ETA", Width: 10},
 }
 
 // minPathWidth/minSourceWidth are floors for the two variable-width
@@ -176,25 +177,25 @@ func (m statusModel) actionTargets() []string {
 // costs nothing and sidesteps the corruption entirely rather than
 // fighting raw ANSI nesting to preserve it.
 func (m *statusModel) rebuildRows(cursorIdx int) {
+	frame := m.anim.frameNo()
 	rows := make([]table.Row, 0, len(m.jobs))
 	for i, j := range m.jobs {
-		bar := m.bar.ViewAs(format.Percent(j.BytesDone, j.BytesTotal))
 		check := "[ ]"
 		if m.selected[j.ID] {
 			check = "[x]"
 		}
-		status := string(j.Status)
+		status := statusLabel(j.Status, frame, m.anim.flashing(j.ID))
 		if i != cursorIdx {
-			status = renderStatus(j.Status)
+			status = renderStatus(j.Status, status)
 		}
 		rows = append(rows, table.Row{
 			check,
 			j.ID,
 			string(j.Type),
 			status,
-			bar,
-			format.Speed(j.SpeedBps),
-			format.ETA(j.ETASeconds, j.Status),
+			m.progressCell(j, frame),
+			m.speedCell(j),
+			etaCell(j),
 			format.ShortenHome(j.Output),
 			format.ShortenHome(j.Source),
 		})
@@ -202,17 +203,54 @@ func (m *statusModel) rebuildRows(cursorIdx int) {
 	m.table.SetRows(rows)
 }
 
+// sparkWidth is how many speed samples the Speed column draws.
+const sparkWidth = 6
+
+// progressCell is the animated bar plus its percentage, which counts up
+// with the bar rather than jumping ahead of it.
+func (m statusModel) progressCell(j *daemon.JobView, frame int) string {
+	frac := m.anim.shownFraction(j)
+	sizeKnown := j.BytesTotal > 0 || j.Status == store.StatusCompleted
+	bar := renderBar(frac, barWidth, frame, j.Status, sizeKnown)
+	if !sizeKnown {
+		return bar + "   --"
+	}
+	return fmt.Sprintf("%s %3.0f%%", bar, math.Floor(frac*100))
+}
+
+// speedCell is recent speed history as a sparkline, then the current
+// speed — or, for a seeding torrent, its upload speed.
+func (m statusModel) speedCell(j *daemon.JobView) string {
+	switch j.Status {
+	case store.StatusSeeding:
+		return "up " + format.Speed(j.UploadBps)
+	case store.StatusActive:
+		if spark := sparkline(m.anim.speeds(j.ID), sparkWidth); spark != "" {
+			return spark + " " + format.Speed(j.SpeedBps)
+		}
+	}
+	return format.Speed(j.SpeedBps)
+}
+
+// etaCell is the time left, or a seeding torrent's share ratio.
+func etaCell(j *daemon.JobView) string {
+	if j.Status == store.StatusSeeding {
+		return fmt.Sprintf("ratio %.2f", j.Ratio)
+	}
+	return format.ETA(j.ETASeconds, j.Status)
+}
+
 // renderStatus color-codes the Status cell. bubbles/table truncates via
 // go-runewidth, which isn't ANSI-aware and counts escape sequences
 // toward the width — truncate mid-sequence and the row is corrupted.
 // statusColWidth is sized to clear that overcount (see
 // TestRenderStatusFitsStatusColumn).
-func renderStatus(status store.JobStatus) string {
+func renderStatus(status store.JobStatus, label string) string {
 	style, ok := jobStatusStyles[status]
 	if !ok {
-		return string(status)
+		return label
 	}
-	return style.Render(string(status))
+	return style.Render(label)
 }
 
 // fitCells truncates or pads s to exactly w terminal cells, marking a cut

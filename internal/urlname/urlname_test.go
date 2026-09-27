@@ -100,7 +100,7 @@ func TestFilenameFromURLSniffsExtensionWhenContentTypeIsGeneric(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	got := FromURL(srv.URL + "/dld/opaque-id-with-no-extension")
+	got := FromURL(srv.URL+"/dld/opaque-id-with-no-extension", nil)
 	if got != "opaque-id-with-no-extension.png" {
 		t.Errorf("filenameFromURL = %q, want %q", got, "opaque-id-with-no-extension.png")
 	}
@@ -108,7 +108,7 @@ func TestFilenameFromURLSniffsExtensionWhenContentTypeIsGeneric(t *testing.T) {
 
 func TestFilenameFromURLKeepsExistingExtension(t *testing.T) {
 	// Path already has an extension, so no network probe should be needed.
-	got := FromURL("https://example.com/files/report.pdf?x=1")
+	got := FromURL("https://example.com/files/report.pdf?x=1", nil)
 	if got != "report.pdf" {
 		t.Errorf("filenameFromURL = %q, want %q", got, "report.pdf")
 	}

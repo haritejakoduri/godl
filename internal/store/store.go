@@ -33,9 +33,33 @@ const (
 	StatusActive    JobStatus = "active"
 	StatusPaused    JobStatus = "paused"
 	StatusCompleted JobStatus = "completed"
-	StatusFailed    JobStatus = "failed"
-	StatusCanceled  JobStatus = "canceled"
+	// StatusSeeding is a finished torrent still uploading until its
+	// seed ratio/time limit is reached. It holds no concurrency slot.
+	StatusSeeding  JobStatus = "seeding"
+	StatusFailed   JobStatus = "failed"
+	StatusCanceled JobStatus = "canceled"
 )
+
+// JobOptions holds the less common per-job settings, persisted as one
+// JSON column so each new option doesn't need its own migration.
+type JobOptions struct {
+	// Headers are extra "Name: value" request headers (url, social).
+	Headers []string `json:"headers,omitempty"`
+	// CookiesFile is a Netscape-format cookies.txt (url, social).
+	CookiesFile string `json:"cookies_file,omitempty"`
+	// CookiesFromBrowser is passed to yt-dlp's --cookies-from-browser.
+	CookiesFromBrowser string `json:"cookies_from_browser,omitempty"`
+	// TorrentFiles picks which files of a torrent to download: 1-based
+	// indices, ranges and glob patterns, comma-separated. Empty = all.
+	TorrentFiles string `json:"torrent_files,omitempty"`
+	// SeedRatio and SeedTimeSec keep a finished torrent uploading until
+	// either limit is reached. Both zero means stop at completion.
+	SeedRatio   float64 `json:"seed_ratio,omitempty"`
+	SeedTimeSec int64   `json:"seed_time_sec,omitempty"`
+}
+
+// Seeds reports whether a finished torrent should keep uploading.
+func (o JobOptions) Seeds() bool { return o.SeedRatio > 0 || o.SeedTimeSec > 0 }
 
 // Job is one download task, of whatever type. Fields not relevant to a
 // given type are left zero (e.g. Format only applies to social jobs).
@@ -73,6 +97,7 @@ type Job struct {
 	// Auto-retries since the last success. A manual retry resets it: it
 	// tracks the backoff streak, not a lifetime total.
 	RetryCount int
+	Options    JobOptions
 	CreatedAt  time.Time
 	UpdatedAt  time.Time
 }
@@ -206,6 +231,16 @@ CREATE TABLE IF NOT EXISTS jobs (
 		}
 	}
 
+	hasCol, err = s.hasColumn("jobs", "options")
+	if err != nil {
+		return err
+	}
+	if !hasCol {
+		if _, err := s.db.Exec(`ALTER TABLE jobs ADD COLUMN options TEXT NOT NULL DEFAULT '{}'`); err != nil {
+			return err
+		}
+	}
+
 	if _, err := s.db.Exec(`
 CREATE TABLE IF NOT EXISTS settings (
 	key   TEXT PRIMARY KEY,
@@ -269,12 +304,16 @@ func (s *Store) CreateJob(ctx context.Context, j *Job) error {
 	if err != nil {
 		return err
 	}
+	opts, err := json.Marshal(j.Options)
+	if err != nil {
+		return err
+	}
 	_, err = s.db.ExecContext(ctx, `
 INSERT INTO jobs (id, type, source, output, format, concurrency, status,
-	bytes_done, bytes_total, resume_offset, info_hash, resolved_paths, error_msg, limit_rate, sha256, retry_count, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	bytes_done, bytes_total, resume_offset, info_hash, resolved_paths, error_msg, limit_rate, sha256, retry_count, options, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		j.ID, j.Type, j.Source, j.Output, j.Format, j.Concurrency, j.Status,
-		j.BytesDone, j.BytesTotal, j.ResumeOffset, j.InfoHash, string(resolved), j.ErrorMsg, j.LimitRate, j.Sha256, j.RetryCount,
+		j.BytesDone, j.BytesTotal, j.ResumeOffset, j.InfoHash, string(resolved), j.ErrorMsg, j.LimitRate, j.Sha256, j.RetryCount, string(opts),
 		j.CreatedAt.Unix(), j.UpdatedAt.Unix())
 	return err
 }
@@ -285,12 +324,16 @@ func (s *Store) UpdateJob(ctx context.Context, j *Job) error {
 	if err != nil {
 		return err
 	}
+	opts, err := json.Marshal(j.Options)
+	if err != nil {
+		return err
+	}
 	_, err = s.db.ExecContext(ctx, `
 UPDATE jobs SET type=?, source=?, output=?, format=?, concurrency=?, status=?,
-	bytes_done=?, bytes_total=?, resume_offset=?, info_hash=?, resolved_paths=?, error_msg=?, limit_rate=?, sha256=?, retry_count=?, updated_at=?
+	bytes_done=?, bytes_total=?, resume_offset=?, info_hash=?, resolved_paths=?, error_msg=?, limit_rate=?, sha256=?, retry_count=?, options=?, updated_at=?
 WHERE id=?`,
 		j.Type, j.Source, j.Output, j.Format, j.Concurrency, j.Status,
-		j.BytesDone, j.BytesTotal, j.ResumeOffset, j.InfoHash, string(resolved), j.ErrorMsg, j.LimitRate, j.Sha256, j.RetryCount,
+		j.BytesDone, j.BytesTotal, j.ResumeOffset, j.InfoHash, string(resolved), j.ErrorMsg, j.LimitRate, j.Sha256, j.RetryCount, string(opts),
 		j.UpdatedAt.Unix(), j.ID)
 	return err
 }
@@ -360,7 +403,7 @@ func (s *Store) DeleteJob(ctx context.Context, id string) error {
 // exactly this, so the two stay in step by construction.
 const jobColumns = `id, type, source, output, format, concurrency, status,
 	bytes_done, bytes_total, resume_offset, info_hash, resolved_paths,
-	error_msg, limit_rate, sha256, retry_count, created_at, updated_at`
+	error_msg, limit_rate, sha256, retry_count, options, created_at, updated_at`
 
 func (s *Store) GetJob(ctx context.Context, id string) (*Job, error) {
 	return scanJob(s.db.QueryRowContext(ctx, `SELECT `+jobColumns+` FROM jobs WHERE id=?`, id))
@@ -404,10 +447,10 @@ type scanner interface {
 func scanJob(row scanner) (*Job, error) {
 	var j Job
 	var created, updated int64
-	var resolved string
+	var resolved, opts string
 	if err := row.Scan(&j.ID, &j.Type, &j.Source, &j.Output, &j.Format, &j.Concurrency,
 		&j.Status, &j.BytesDone, &j.BytesTotal, &j.ResumeOffset, &j.InfoHash, &resolved, &j.ErrorMsg, &j.LimitRate, &j.Sha256, &j.RetryCount,
-		&created, &updated); err != nil {
+		&opts, &created, &updated); err != nil {
 		return nil, err
 	}
 	j.CreatedAt = time.Unix(created, 0)
@@ -415,6 +458,11 @@ func scanJob(row scanner) (*Job, error) {
 	if resolved != "" {
 		if err := json.Unmarshal([]byte(resolved), &j.ResolvedPaths); err != nil {
 			return nil, fmt.Errorf("decoding resolved_paths: %w", err)
+		}
+	}
+	if opts != "" {
+		if err := json.Unmarshal([]byte(opts), &j.Options); err != nil {
+			return nil, fmt.Errorf("decoding options: %w", err)
 		}
 	}
 	return &j, nil

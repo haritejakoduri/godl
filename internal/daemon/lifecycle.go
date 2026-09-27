@@ -27,7 +27,7 @@ var (
 	progressPersistBytes    = int64(8 << 20)
 )
 
-func (d *Daemon) createJob(ctx context.Context, typ store.JobType, source, output, format string, concurrency int, limitRate int64, sha256 string) (*store.Job, error) {
+func (d *Daemon) createJob(ctx context.Context, typ store.JobType, source, output, format string, concurrency int, limitRate int64, sha256 string, opts store.JobOptions) (*store.Job, error) {
 	if source == "" {
 		return nil, fmt.Errorf("source is required")
 	}
@@ -59,6 +59,7 @@ func (d *Daemon) createJob(ctx context.Context, typ store.JobType, source, outpu
 		Concurrency: concurrency,
 		LimitRate:   limitRate,
 		Sha256:      sha256,
+		Options:     opts,
 		Status:      store.StatusQueued,
 	}
 	if err := d.st.CreateJob(ctx, j); err != nil {
@@ -224,6 +225,12 @@ func (d *Daemon) pause(ctx context.Context, id string) (*store.Job, error) {
 	if err != nil {
 		return nil, fmt.Errorf("job %s not found", id)
 	}
+	// Pausing a seeding torrent just stops the seeding: the download
+	// itself is already complete.
+	if job.Status == store.StatusSeeding {
+		d.stopSeeding(id)
+		return d.st.GetJob(ctx, id)
+	}
 	if job.Status != store.StatusActive && job.Status != store.StatusQueued {
 		return nil, fmt.Errorf("job %s is %s, not active", id, job.Status)
 	}
@@ -319,6 +326,11 @@ func (d *Daemon) retry(ctx context.Context, id string) (*store.Job, error) {
 	if err != nil {
 		return nil, fmt.Errorf("job %s not found", id)
 	}
+	if d.stopSeeding(id) {
+		if job, err = d.st.GetJob(ctx, id); err != nil {
+			return nil, err
+		}
+	}
 	if job.Status == store.StatusActive || job.Status == store.StatusQueued {
 		return nil, fmt.Errorf("job %s is already %s", id, job.Status)
 	}
@@ -341,6 +353,12 @@ func (d *Daemon) cancel(ctx context.Context, id string) (*store.Job, error) {
 	job, err := d.st.GetJob(ctx, id)
 	if err != nil {
 		return nil, fmt.Errorf("job %s not found", id)
+	}
+	// Canceling a seeding torrent stops the upload but the download
+	// stays completed — there's nothing left to cancel.
+	if job.Status == store.StatusSeeding {
+		d.stopSeeding(id)
+		return d.st.GetJob(ctx, id)
 	}
 	rt := d.getRuntime(id)
 	if job.Type == store.JobTorrent {
@@ -372,6 +390,7 @@ func (d *Daemon) remove(ctx context.Context, id string, purge bool) (*store.Job,
 	if err != nil {
 		return nil, fmt.Errorf("job %s not found", id)
 	}
+	d.stopSeeding(id)
 	rt := d.getRuntime(id)
 	if job.Type == store.JobTorrent {
 		d.tm.Cancel(id)

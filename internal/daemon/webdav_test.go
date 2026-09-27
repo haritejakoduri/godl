@@ -159,7 +159,7 @@ func newEmptyWebDAVFixture(t *testing.T) webdavFixture {
 // run creates a WebDAV job for source and waits for it to settle.
 func (f webdavFixture) run(t *testing.T, source string) *store.Job {
 	t.Helper()
-	j, err := f.d.createJob(context.Background(), store.JobWebDAV, source, f.output, "", 0, 0, "")
+	j, err := f.d.createJob(context.Background(), store.JobWebDAV, source, f.output, "", 0, 0, "", store.JobOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}

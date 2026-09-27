@@ -51,6 +51,15 @@ type Daemon struct {
 	// than letting one fire after the store it writes to is closed.
 	retryMu     sync.Mutex
 	retryTimers map[string]*time.Timer
+
+	// Finished torrents still uploading; see startSeeding. nil once
+	// shutting down.
+	seedMu  sync.Mutex
+	seeders map[string]*seeder
+
+	// Loopback HTTP server for streaming torrents, started on first use.
+	streamMu  sync.Mutex
+	streamSrv *streamServer
 }
 
 func NewDaemon() (*Daemon, error) {
@@ -89,6 +98,7 @@ func NewDaemon() (*Daemon, error) {
 		logSubs:     map[chan logMsg]struct{}{},
 		settings:    settings,
 		retryTimers: map[string]*time.Timer{},
+		seeders:     map[string]*seeder{},
 	}
 	d.rebuildGlobalLimiter(settings)
 	return d, nil
@@ -143,6 +153,15 @@ func (d *Daemon) resumeInterruptedJobs() {
 		return
 	}
 	for _, j := range jobs {
+		if j.Status == store.StatusSeeding {
+			// Seeding doesn't survive a restart: the download itself
+			// finished, so settle it rather than leave it "seeding"
+			// with nothing uploading.
+			if err := d.st.UpdateStatus(ctx, j.ID, store.StatusCompleted, ""); err != nil {
+				log.Printf("resume scan: settling seeding job %s: %v", j.ID, err)
+			}
+			continue
+		}
 		if j.Status != store.StatusActive && j.Status != store.StatusQueued {
 			continue
 		}
@@ -170,6 +189,8 @@ func (d *Daemon) Close() {
 	}
 	d.retryTimers = nil
 	d.retryMu.Unlock()
+	d.stopAllSeeding()
+	d.closeStreamServer()
 	d.tm.Close()
 	d.st.Close()
 }

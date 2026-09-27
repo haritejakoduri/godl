@@ -7,10 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/charmbracelet/bubbles/progress"
 	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/muesli/termenv"
 
 	"godl/internal/daemon"
 	"godl/internal/store"
@@ -21,7 +19,6 @@ func dashboardModel(jobs ...*daemon.JobView) statusModel {
 	m := statusModel{
 		cancel:   cancel,
 		table:    table.New(table.WithColumns(columnsForWidth(0)), table.WithFocused(true)),
-		bar:      progress.New(progress.WithColorProfile(termenv.Ascii), progress.WithWidth(18)),
 		selected: map[string]bool{},
 		jobs:     jobs,
 	}

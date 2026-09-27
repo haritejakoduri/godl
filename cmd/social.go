@@ -12,6 +12,7 @@ import (
 
 	"godl/internal/daemon"
 	"godl/internal/social"
+	"godl/internal/store"
 	"godl/internal/ytdlp"
 )
 
@@ -31,7 +32,7 @@ func printSocialPresets() error {
 }
 
 var socialCmd = &cobra.Command{
-	Use:   "social <link>",
+	Use:   "social <link> | -i <links-file>",
 	Short: "Download from a social/media site via yt-dlp, in the background like other jobs",
 	Long: `Download from a social/media site via yt-dlp.
 
@@ -63,6 +64,16 @@ first without downloading anything:
 
 then pass whichever format code or filter you want via -f.
 
+Login-only, private or age-restricted videos usually just need your
+browser's cookies:
+
+  godl social <link> --cookies-from-browser firefox
+  godl social <link> --cookies cookies.txt
+
+Several links at once, one job each:
+
+  godl social -i links.txt -p 720p
+
 If yt-dlp isn't found on PATH, godl downloads a standalone copy from its
 GitHub releases the first time it's needed (saved under godl's data dir
 for reuse) — no separate install step required, though a system install
@@ -76,22 +87,36 @@ ffmpeg, needed to merge separately-downloaded video+audio streams.`,
 		if listPresets, _ := cmd.Flags().GetBool("list-presets"); listPresets {
 			return cobra.MaximumNArgs(1)(cmd, args)
 		}
-		return cobra.ExactArgs(1)(cmd, args)
+		return batchArgs(cmd, args)
 	},
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if listPresets, _ := cmd.Flags().GetBool("list-presets"); listPresets {
 			return printSocialPresets()
 		}
-		link := args[0]
+		all, err := links(cmd, args)
+		if err != nil {
+			return err
+		}
+		opts, err := requestOptions(cmd)
+		if err != nil {
+			return err
+		}
+		opts.CookiesFromBrowser, _ = cmd.Flags().GetString("cookies-from-browser")
 
 		if listFormats, _ := cmd.Flags().GetBool("list-formats"); listFormats {
-			return runListFormats(link)
+			if len(all) != 1 {
+				return fmt.Errorf("--list-formats takes exactly one link")
+			}
+			return runListFormats(all[0], opts)
 		}
 
 		output, _ := cmd.Flags().GetString("output")
 		format, _ := cmd.Flags().GetString("format")
 		preset, _ := cmd.Flags().GetString("preset")
 		wait, _ := cmd.Flags().GetBool("wait")
+		if wait && len(all) > 1 {
+			return fmt.Errorf("--wait streams one download's output; it can't be used with several links")
+		}
 		limitRate, err := limitRateFlag(cmd)
 		if err != nil {
 			return err
@@ -115,19 +140,16 @@ ffmpeg, needed to merge separately-downloaded video+audio streams.`,
 			return err
 		}
 
+		reqs := make([]daemon.Request, len(all))
+		for i, link := range all {
+			reqs[i] = daemon.Request{Cmd: daemon.CmdAddSocial, Source: link, Output: output, Format: format, LimitRate: limitRate, Options: opts}
+		}
+		if !wait {
+			return startJobs(reqs)
+		}
+		req := reqs[0]
 		if err := daemon.EnsureRunning(); err != nil {
 			return err
-		}
-
-		req := daemon.Request{Cmd: daemon.CmdAddSocial, Source: link, Output: output, Format: format, LimitRate: limitRate}
-
-		if !wait {
-			resp, err := daemon.Call(req)
-			if err != nil {
-				return err
-			}
-			announceJob(resp.Job.ID, output)
-			return nil
 		}
 
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -159,7 +181,7 @@ ffmpeg, needed to merge separately-downloaded video+audio streams.`,
 // resolution, codec, filesize, ...) without downloading anything or
 // creating a daemon job — a quick, synchronous, read-only lookup so the
 // user has real format codes/heights to hand -f, rather than guessing.
-func runListFormats(link string) error {
+func runListFormats(link string, opts store.JobOptions) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -168,7 +190,8 @@ func runListFormats(link string) error {
 		return err
 	}
 
-	c := exec.CommandContext(ctx, ytDlpPath, "-F", link)
+	args := append(daemon.YtdlpAuthArgs(opts), "-F", link)
+	c := exec.CommandContext(ctx, ytDlpPath, args...)
 	c.Stdout = os.Stdout
 	c.Stderr = os.Stderr
 	return c.Run()
@@ -182,4 +205,7 @@ func init() {
 	socialCmd.Flags().BoolP("list-formats", "F", false, "list available formats/resolutions for <link> and exit, without downloading")
 	socialCmd.Flags().Bool("list-presets", false, "list available quality presets and exit")
 	socialCmd.Flags().StringP("limit-rate", "R", "", "cap this download's speed, e.g. 500K or 2M (default: unlimited) — passed straight through to yt-dlp's own --limit-rate")
+	socialCmd.Flags().String("cookies-from-browser", "", `use your browser's logged-in cookies, e.g. "firefox" or "chrome" (yt-dlp's --cookies-from-browser) — fixes login-only, private and age-restricted videos`)
+	addRequestFlags(socialCmd)
+	addBatchFlag(socialCmd)
 }

@@ -3,11 +3,9 @@ package tui
 import (
 	"context"
 
-	"github.com/charmbracelet/bubbles/progress"
 	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/muesli/termenv"
 
 	"godl/internal/daemon"
 	"godl/internal/store"
@@ -26,6 +24,7 @@ var (
 		store.StatusActive:    lipgloss.NewStyle().Foreground(lipgloss.Color("11")),
 		store.StatusPaused:    lipgloss.NewStyle().Foreground(lipgloss.Color("3")),
 		store.StatusCompleted: lipgloss.NewStyle().Foreground(lipgloss.Color("10")),
+		store.StatusSeeding:   lipgloss.NewStyle().Foreground(lipgloss.Color("14")),
 		store.StatusFailed:    lipgloss.NewStyle().Foreground(lipgloss.Color("9")),
 		store.StatusCanceled:  lipgloss.NewStyle().Foreground(lipgloss.Color("8")),
 	}
@@ -79,7 +78,7 @@ type statusModel struct {
 	errCh  <-chan error
 
 	table       table.Model
-	bar         progress.Model
+	anim        *animState
 	jobs        []*daemon.JobView
 	err         error
 	statusMsg   string
@@ -123,15 +122,10 @@ func newStatusModel() statusModel {
 	styles.Selected = styles.Selected.Bold(true).Foreground(lipgloss.Color("#0B0B0B")).Background(lipgloss.Color("#5FD6C9"))
 	t.SetStyles(styles)
 
-	// bubbles/table truncates cells with go-runewidth, which doesn't parse
-	// ANSI escapes — a colored bar gets sliced mid-escape-sequence and
-	// corrupts the whole row. Force plain ASCII rendering for the bar.
-	bar := progress.New(progress.WithColorProfile(termenv.Ascii), progress.WithWidth(18))
-
 	return statusModel{
 		ctx: ctx, cancel: cancel,
 		snapCh: snapCh, errCh: errCh,
-		table: t, bar: bar,
+		table: t, anim: newAnimState(),
 		selected: map[string]bool{},
 	}
 }

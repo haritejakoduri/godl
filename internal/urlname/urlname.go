@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"godl/internal/httpx"
+	"godl/internal/reqhdr"
 )
 
 // probeTimeout bounds the whole "ask the server what this file is
@@ -36,7 +37,10 @@ const probeTimeout = 10 * time.Second
 // serving /dld/<uuid>?token=...), it asks the server via a HEAD request
 // and reads Content-Disposition / Content-Type instead of silently saving
 // as a bare, extension-less UUID.
-func FromURL(link string) string {
+//
+// hdr carries the job's extra headers/cookies, since a link that needs
+// them to download usually needs them to be probed too. nil is fine.
+func FromURL(link string, hdr *reqhdr.Set) string {
 	base := "download"
 	if u, err := url.Parse(link); err == nil {
 		if b := filepath.Base(u.Path); b != "" && b != "." && b != "/" {
@@ -47,7 +51,7 @@ func FromURL(link string) string {
 		return base
 	}
 
-	name, ext, ok := probeFilename(link)
+	name, ext, ok := probeFilename(link, hdr)
 	if !ok {
 		return base
 	}
@@ -70,18 +74,18 @@ func FromURL(link string) string {
 // Content-Type — a last-resort magic-byte sniff of the first bytes of
 // the body is tried before giving up, rather than saving the file with
 // no extension at all.
-func probeFilename(link string) (name, ext string, ok bool) {
+func probeFilename(link string, hdr *reqhdr.Set) (name, ext string, ok bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
 	defer cancel()
 
 	client := httpx.Client(httpx.MetadataTimeout)
-	resp, err := doProbeRequest(ctx, client, http.MethodHead, link)
+	resp, err := doProbeRequest(ctx, client, http.MethodHead, link, hdr)
 	usedGet := false
 	if err != nil || resp.StatusCode >= 400 {
 		if resp != nil {
 			resp.Body.Close()
 		}
-		resp, err = doProbeRequest(ctx, client, http.MethodGet, link)
+		resp, err = doProbeRequest(ctx, client, http.MethodGet, link, hdr)
 		usedGet = true
 	}
 	if err != nil {
@@ -107,7 +111,7 @@ func probeFilename(link string) (name, ext string, ok bool) {
 	if ext == "" {
 		if usedGet {
 			ext = sniffExt(resp.Body)
-		} else if sniffResp, serr := doProbeRequest(ctx, client, http.MethodGet, link); serr == nil {
+		} else if sniffResp, serr := doProbeRequest(ctx, client, http.MethodGet, link, hdr); serr == nil {
 			defer sniffResp.Body.Close()
 			if sniffResp.StatusCode < 400 {
 				ext = sniffExt(sniffResp.Body)
@@ -117,11 +121,12 @@ func probeFilename(link string) (name, ext string, ok bool) {
 	return name, ext, true
 }
 
-func doProbeRequest(ctx context.Context, client *http.Client, method, link string) (*http.Response, error) {
+func doProbeRequest(ctx context.Context, client *http.Client, method, link string, hdr *reqhdr.Set) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, method, link, nil)
 	if err != nil {
 		return nil, err
 	}
+	hdr.Apply(req)
 	if method == http.MethodGet {
 		// 512 bytes is enough for http.DetectContentType's magic-byte
 		// sniffing (see sniffExt) while still asking for far less than

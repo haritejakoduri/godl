@@ -25,6 +25,7 @@ import (
 
 	"godl/internal/httpx"
 	"godl/internal/ratelimit"
+	"godl/internal/reqhdr"
 )
 
 // ProgressFunc is called periodically (roughly every 250ms) with the bytes
@@ -54,6 +55,9 @@ type Options struct {
 	// see verifyChecksum for why a mismatch means starting over rather
 	// than a partial repair). Empty means no verification.
 	Sha256 string
+	// Headers adds the job's extra headers and matching cookies to every
+	// request, probe included. nil means none.
+	Headers *reqhdr.Set
 }
 
 // Result reports how much was written and whether the download reached
@@ -84,7 +88,7 @@ func Run(ctx context.Context, opt Options) (Result, error) {
 	}
 	// See internal/httpx: pooled, no whole-request deadline.
 	client := httpx.TransferClient(false)
-	supportsRange, total, err := probe(ctx, client, opt.URL)
+	supportsRange, total, err := probe(ctx, client, opt.URL, opt.Headers)
 	if err != nil {
 		return Result{}, err
 	}
@@ -145,8 +149,9 @@ func verifyChecksum(path, wantHex string) error {
 // probe determines whether the server honors byte ranges and, if possible,
 // the total content length, via HEAD first and a 1-byte ranged GET as a
 // fallback for servers that mishandle HEAD.
-func probe(ctx context.Context, client *http.Client, url string) (supportsRange bool, total int64, err error) {
+func probe(ctx context.Context, client *http.Client, url string, hdr *reqhdr.Set) (supportsRange bool, total int64, err error) {
 	if req, herr := http.NewRequestWithContext(ctx, http.MethodHead, url, nil); herr == nil {
+		hdr.Apply(req)
 		if resp, derr := client.Do(req); derr == nil {
 			resp.Body.Close()
 			if resp.StatusCode >= 200 && resp.StatusCode < 400 {
@@ -159,6 +164,7 @@ func probe(ctx context.Context, client *http.Client, url string) (supportsRange 
 	if err != nil {
 		return false, -1, err
 	}
+	hdr.Apply(req)
 	req.Header.Set("Range", "bytes=0-0")
 	resp, err := client.Do(req)
 	if err != nil {
@@ -212,6 +218,7 @@ func runSingle(ctx context.Context, client *http.Client, opt Options, supportsRa
 	if err != nil {
 		return Result{}, err
 	}
+	opt.Headers.Apply(req)
 	if start > 0 {
 		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", start))
 	}
@@ -298,6 +305,7 @@ func fetchChunk(ctx context.Context, client *http.Client, opt Options, f *os.Fil
 	if err != nil {
 		return err
 	}
+	opt.Headers.Apply(req)
 	req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", rangeStart, c.End-1))
 	resp, err := client.Do(req)
 	if err != nil {

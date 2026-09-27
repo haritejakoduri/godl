@@ -5,6 +5,7 @@ import (
 
 	"godl/internal/downloader"
 	"godl/internal/ratelimit"
+	"godl/internal/reqhdr"
 	"godl/internal/store"
 )
 
@@ -15,7 +16,15 @@ func (d *Daemon) startURL(j *store.Job) {
 	single := j.Concurrency <= 1
 
 	d.launch(j, func(ctx context.Context, rt *runtime) {
+		// Parsed at start, not creation, so an updated cookies file is
+		// picked up by a resume or retry.
+		hdr, err := reqhdr.Build(j.Options.Headers, j.Options.CookiesFile)
+		if err != nil {
+			d.finishJob(j.ID, j.BytesDone, false, err)
+			return
+		}
 		res, err := downloader.Run(ctx, downloader.Options{
+			Headers:       hdr,
 			URL:           j.Source,
 			OutputPath:    j.Output,
 			Concurrency:   j.Concurrency,

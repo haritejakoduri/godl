@@ -7,6 +7,7 @@ import (
 
 	"godl/internal/daemon"
 	"godl/internal/format"
+	"godl/internal/store"
 )
 
 func jobActionCmd(use, short, apiCmd, verb string) *cobra.Command {
@@ -23,6 +24,11 @@ func jobActionCmd(use, short, apiCmd, verb string) *cobra.Command {
 				return err
 			}
 			j := resp.Job
+			// Pausing or canceling a seeding torrent only stops the
+			// upload; the download itself stays completed.
+			if (apiCmd == daemon.CmdPause || apiCmd == daemon.CmdCancel) && j.Status == store.StatusCompleted {
+				verb = "stopped seeding"
+			}
 			fmt.Printf("%s %s (%s, %s/%s)\n", j.ID, verb, j.Status, format.Bytes(j.BytesDone), format.Bytes(j.BytesTotal))
 			return nil
 		},

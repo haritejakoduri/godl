@@ -63,16 +63,16 @@ func (d *Daemon) dispatch(conn net.Conn, req Request) {
 		writeResp(conn, Response{Type: "result", OK: true})
 
 	case CmdAddURL:
-		startAndReport(d.createJob(ctx, store.JobURL, req.Source, req.Output, "", req.Concurrency, req.LimitRate, req.Sha256))
+		startAndReport(d.createJob(ctx, store.JobURL, req.Source, req.Output, "", req.Concurrency, req.LimitRate, req.Sha256, req.Options))
 
 	case CmdAddTorrent:
-		startAndReport(d.createJob(ctx, store.JobTorrent, req.Source, req.Output, "", 0, req.LimitRate, ""))
+		startAndReport(d.createJob(ctx, store.JobTorrent, req.Source, req.Output, "", 0, req.LimitRate, "", req.Options))
 
 	case CmdAddWebDAV:
-		startAndReport(d.createJob(ctx, store.JobWebDAV, req.Source, req.Output, "", 0, req.LimitRate, ""))
+		startAndReport(d.createJob(ctx, store.JobWebDAV, req.Source, req.Output, "", 0, req.LimitRate, "", store.JobOptions{}))
 
 	case CmdAddSocial:
-		j, err := d.createJob(ctx, store.JobSocial, req.Source, req.Output, req.Format, 0, req.LimitRate, "")
+		j, err := d.createJob(ctx, store.JobSocial, req.Source, req.Output, req.Format, 0, req.LimitRate, "", req.Options)
 		if err != nil {
 			writeResp(conn, errResp(err))
 			return
@@ -104,6 +104,26 @@ func (d *Daemon) dispatch(conn net.Conn, req Request) {
 	case CmdRemove:
 		j, err := d.remove(ctx, req.JobID, req.Purge)
 		writeResult(conn, j, err)
+
+	case CmdTorrentFiles:
+		name, files, err := d.tm.ListFiles(req.Source, torrentInfoTimeout)
+		if err != nil {
+			writeResp(conn, errResp(err))
+			return
+		}
+		out := make([]TorrentFile, len(files))
+		for i, f := range files {
+			out[i] = TorrentFile{Index: f.Index, Path: f.Path, Length: f.Length}
+		}
+		writeResp(conn, Response{Type: "result", OK: true, Name: name, Files: out})
+
+	case CmdStreamTorrent:
+		url, files, err := d.streamTorrent(req.JobID, req.FileIndex-1)
+		if err != nil {
+			writeResp(conn, errResp(err))
+			return
+		}
+		writeResp(conn, Response{Type: "result", OK: true, StreamURL: url, Files: files})
 
 	case CmdList:
 		writeResp(conn, Response{Type: "result", OK: true, Jobs: d.snapshot()})
@@ -149,7 +169,7 @@ func (d *Daemon) view(id string) *JobView {
 	if err != nil {
 		return nil
 	}
-	return viewOf(job, d.getRuntime(id))
+	return d.withSeedStats(viewOf(job, d.getRuntime(id)))
 }
 
 func viewOf(job *store.Job, rt *runtime) *JobView {
@@ -179,7 +199,7 @@ func (d *Daemon) snapshot() []*JobView {
 	}
 	views := make([]*JobView, 0, len(jobs))
 	for _, j := range jobs {
-		views = append(views, viewOf(j, d.getRuntime(j.ID)))
+		views = append(views, d.withSeedStats(viewOf(j, d.getRuntime(j.ID))))
 	}
 	return views
 }

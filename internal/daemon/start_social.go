@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"godl/internal/ffmpeg"
+	"godl/internal/reqhdr"
 	"godl/internal/store"
 	"godl/internal/ytdlp"
 )
@@ -51,6 +52,7 @@ func (d *Daemon) ytdlpArgs(ctx context.Context, j *store.Job) []string {
 	if j.Format != "" {
 		args = append(args, "-f", j.Format)
 	}
+	args = append(args, YtdlpAuthArgs(j.Options)...)
 	// yt-dlp has its own native rate limiter — no need to
 	// reimplement one for a subprocess we don't read the bytes of
 	// ourselves. Same clamp-not-share treatment as torrent's global
@@ -68,6 +70,24 @@ func (d *Daemon) ytdlpArgs(ctx context.Context, j *store.Job) []string {
 		args = append(args, "--ffmpeg-location", ffmpegDir)
 	} else {
 		d.publishLog(j.ID, "warning: "+err.Error()+" — separately downloaded video/audio streams won't be merged", false)
+	}
+	return args
+}
+
+// YtdlpAuthArgs maps a job's headers and cookies onto yt-dlp's own
+// flags — the usual fix for login-only, age-gated or rate-limited sites.
+func YtdlpAuthArgs(o store.JobOptions) []string {
+	var args []string
+	for _, h := range o.Headers {
+		if name, value, err := reqhdr.ParseHeader(h); err == nil {
+			args = append(args, "--add-headers", name+":"+value)
+		}
+	}
+	if o.CookiesFile != "" {
+		args = append(args, "--cookies", o.CookiesFile)
+	}
+	if o.CookiesFromBrowser != "" {
+		args = append(args, "--cookies-from-browser", o.CookiesFromBrowser)
 	}
 	return args
 }

@@ -65,7 +65,7 @@ func TestDashboardFitsAndKeepsHelpOnNarrowTerminals(t *testing.T) {
 			// footer is what must wrap.
 			assertHeight(t, view, w, h)
 			assertWidth(t, m.dashboardFooter(), w, h)
-			if !strings.Contains(view, "godl status") {
+			if !strings.Contains(view, "60 job(s)") {
 				t.Error("title scrolled off the top")
 			}
 			// Wrapping may split "q quit" across lines, so compare without whitespace.

@@ -80,7 +80,7 @@ func resolveJobOutput(override, name string) (string, error) {
 func buildAddRequest(apiCmd, source, outputOverride string) (daemon.Request, error) {
 	switch apiCmd {
 	case daemon.CmdAddURL:
-		output, err := resolveJobOutput(outputOverride, urlname.FromURL(source))
+		output, err := resolveJobOutput(outputOverride, urlname.FromURL(source, nil))
 		if err != nil {
 			return daemon.Request{}, err
 		}

@@ -2,13 +2,25 @@ package daemon
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"godl/internal/store"
+	"godl/internal/torrentmgr"
 )
+
+// torrentInfoTimeout bounds how long "godl torrent --list-files" waits
+// for a magnet link's metadata to arrive from peers.
+const torrentInfoTimeout = 90 * time.Second
 
 func (d *Daemon) startTorrent(j *store.Job) {
 	d.launch(j, func(ctx context.Context, rt *runtime) {
+		sel, err := torrentmgr.ParseSelection(j.Options.TorrentFiles)
+		if err != nil {
+			d.finishJob(j.ID, j.BytesDone, false, err)
+			return
+		}
+
 		// anacrolix/torrent takes one client-wide limiter, not a
 		// per-torrent one, so the most recently started torrent job's
 		// limit wins for all of them. For the same reason the global cap
@@ -27,6 +39,15 @@ func (d *Daemon) startTorrent(j *store.Job) {
 
 		select {
 		case <-t.GotInfo():
+			n, err := d.tm.Select(j.ID, sel)
+			if err == nil && n == 0 {
+				err = fmt.Errorf("--files %q matched none of the torrent's %d file(s) — see \"godl torrent --list-files\"", j.Options.TorrentFiles, len(t.Files()))
+			}
+			if err != nil {
+				d.tm.Cancel(j.ID)
+				d.finishJob(j.ID, j.BytesDone, false, err)
+				return
+			}
 			if job, gerr := d.st.GetJob(context.Background(), j.ID); gerr == nil {
 				if hex, ok := d.tm.InfoHash(j.ID); ok {
 					job.InfoHash = hex
@@ -54,15 +75,24 @@ func (d *Daemon) startTorrent(j *store.Job) {
 			select {
 			case <-ctx.Done():
 				return
-			case <-t.Complete().On():
-				done, _, _ := d.tm.Progress(j.ID)
-				d.finishJob(j.ID, done, true, nil)
-				return
 			case <-ticker.C:
 				done, total, ok := d.tm.Progress(j.ID)
-				if ok {
-					d.reportProgress(j.ID, done, total, nil)
+				if !ok {
+					continue
 				}
+				d.reportProgress(j.ID, done, total, nil)
+				if !d.tm.Done(j.ID) {
+					continue
+				}
+				d.finishJob(j.ID, done, true, nil)
+				if j.Options.Seeds() {
+					d.startSeeding(j.ID, j.Options)
+				} else {
+					// Nothing more to do with it; leaving it in the
+					// client would keep its peer connections open.
+					d.tm.Pause(j.ID)
+				}
+				return
 			}
 		}
 	})

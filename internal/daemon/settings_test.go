@@ -64,7 +64,7 @@ func TestDefaultRateLimitAppliedWhenJobOmitsOwn(t *testing.T) {
 	}
 
 	// limitRate=0 (no -R passed) picks up the 1M default.
-	j, err := d.createJob(ctx, store.JobURL, "http://example.com/f", t.TempDir(), "", 1, 0, "")
+	j, err := d.createJob(ctx, store.JobURL, "http://example.com/f", t.TempDir(), "", 1, 0, "", store.JobOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,7 +75,7 @@ func TestDefaultRateLimitAppliedWhenJobOmitsOwn(t *testing.T) {
 
 	// An explicit -R still wins over the default.
 	const explicit = int64(500 * 1024)
-	j2, err := d.createJob(ctx, store.JobURL, "http://example.com/f2", t.TempDir(), "", 1, explicit, "")
+	j2, err := d.createJob(ctx, store.JobURL, "http://example.com/f2", t.TempDir(), "", 1, explicit, "", store.JobOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,7 +145,7 @@ func TestMaxConcurrentQueuesExtraJobs(t *testing.T) {
 
 	ids := make([]string, 3)
 	for i := range ids {
-		j, err := d.createJob(ctx, store.JobURL, srv.URL+"/f?job="+string(rune('1'+i)), filepath.Join(t.TempDir(), "f"), "", 1, 0, "")
+		j, err := d.createJob(ctx, store.JobURL, srv.URL+"/f?job="+string(rune('1'+i)), filepath.Join(t.TempDir(), "f"), "", 1, 0, "", store.JobOptions{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -218,7 +218,7 @@ func TestAutoRetryReschedulesFailedJobUpToMaxAttempts(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	j, err := d.createJob(ctx, store.JobURL, badURL, filepath.Join(t.TempDir(), "f"), "", 1, 0, "")
+	j, err := d.createJob(ctx, store.JobURL, badURL, filepath.Join(t.TempDir(), "f"), "", 1, 0, "", store.JobOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}

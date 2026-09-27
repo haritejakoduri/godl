@@ -28,6 +28,7 @@ func (m statusModel) applyJobs(msg jobsMsg) statusModel {
 	m.jobs = newestFirst(msg)
 	m.err = nil
 	m.pruneSelected()
+	m.anim.observe(m.jobs)
 
 	cursor := 0
 	if prevID != "" {
@@ -82,7 +83,20 @@ func (m statusModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case jobsMsg:
-		return m.applyJobs(msg), waitForSnapshot(m.snapCh, m.errCh)
+		m = m.applyJobs(msg)
+		return m, tea.Batch(waitForSnapshot(m.snapCh, m.errCh), m.anim.kick(m.jobs))
+
+	case animTickMsg:
+		if m.anim == nil {
+			return m, nil
+		}
+		m.anim.step(m.jobs)
+		m.rebuildRows(m.table.Cursor())
+		if m.anim.needsFrames(m.jobs) {
+			return m, animTick()
+		}
+		m.anim.ticking = false
+		return m, nil
 
 	case subErrMsg:
 		// SubscribeRetrying reconnects by itself; keep listening so the

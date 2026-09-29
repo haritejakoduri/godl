@@ -557,7 +557,7 @@ func (m statusModel) viewWebDAVBrowse() string {
 			} else if e.Size >= 0 {
 				size = format.Bytes(e.Size)
 			}
-			b.WriteString(cursor + check + " " + fitCells(name, m.browseNameWidth()) + " " + size + "\n")
+			b.WriteString(cursor + check + " " + fitCells(name, m.browseNameWidth()) + " " + fmt.Sprintf("%*s", browseSizeCells, size) + "\n")
 		}
 		if len(visible) > visibleRows {
 			b.WriteString(m.helpView(browsePosition(start+1, end, len(visible))))
@@ -570,19 +570,24 @@ func (m statusModel) viewWebDAVBrowse() string {
 }
 
 // browseNameWidth is the width, in terminal cells, of the name column:
-// up to browseNameMax, shrinking on a narrow terminal so the size column
-// isn't pushed off the edge.
+// whatever the terminal has left once the cursor, checkbox and size
+// column are laid out, so long release names use a wide window instead
+// of being cut at a fixed width. It never shrinks below browseNameMin,
+// so on a very narrow terminal the name stays readable.
 func (m statusModel) browseNameWidth() int {
 	if m.width <= 0 {
-		return browseNameMax
+		return browseNameDefault
 	}
-	// cursor (2) + checkbox and its space (4) + the gap and a size like
-	// "1023.9 MiB" (11) are what share the line with the name.
-	const otherCells = 2 + 4 + 11
-	return min(max(m.width-otherCells, browseNameMin), browseNameMax)
+	// cursor (2) + checkbox and its space (4) + the gap and the size
+	// column are what share the line with the name.
+	const otherCells = 2 + 4 + 1 + browseSizeCells
+	return max(m.width-otherCells, browseNameMin)
 }
 
 const (
-	browseNameMax = 40
-	browseNameMin = 12
+	browseNameDefault = 40
+	browseNameMin     = 12
+	// browseSizeCells fits a size like "1023.9 MiB", right-aligned so
+	// the column lines up whatever the unit.
+	browseSizeCells = 10
 )

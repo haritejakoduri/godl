@@ -114,6 +114,30 @@ func TestBrowseFitsTheTerminal(t *testing.T) {
 	}
 }
 
+// TestBrowseNamesUseTheTerminalWidth: the name column used to stop at
+// 40 cells however wide the window, cutting long release names on a
+// wide terminal. It now grows to fill the line.
+func TestBrowseNamesUseTheTerminalWidth(t *testing.T) {
+	name := "Avatar.Fire.And.Ash.2025.2160p.AMZN.WEB-DL.DDP5.1.Atmos.H.265.mkv"
+	for _, w := range []int{200, 120, 60, 30} {
+		t.Run(fmt.Sprint(w), func(t *testing.T) {
+			m := statusModel{width: w, height: 20, webdavBrowse: &webdavBrowseState{
+				step: webdavBrowsing, connName: "nas", path: "/",
+				entries:  []webdav.Entry{{Path: "/" + name, Size: 1 << 30}},
+				selected: map[string]bool{},
+			}}
+			view := m.viewWebDAVBrowse()
+			assertWidth(t, view, w, 20)
+			if full := w >= len(name)+17; full != strings.Contains(view, name) {
+				t.Errorf("width %d: full name shown = %v, want %v", w, !full, full)
+			}
+			if !strings.Contains(view, "1.0 GiB") {
+				t.Error("size column missing")
+			}
+		})
+	}
+}
+
 // TestFitCellsAlignsWideCharacters: names in CJK or with emoji take two
 // cells a character, so both the pad and the cut have to count cells.
 func TestFitCellsAlignsWideCharacters(t *testing.T) {

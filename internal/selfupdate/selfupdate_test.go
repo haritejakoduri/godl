@@ -25,8 +25,8 @@ func TestAssetName(t *testing.T) {
 
 // TestPackageManaged covers both package formats that install to
 // /usr/bin/godl (.deb and .rpm) — the check can't tell them apart by
-// path alone, and doesn't need to, since either way self-update should
-// refuse to touch it.
+// path alone (rpmOwned does that), only that some package owns it and
+// the binary must never be swapped directly.
 func TestPackageManaged(t *testing.T) {
 	cases := []struct {
 		path string
@@ -49,5 +49,18 @@ func TestReleaseBase(t *testing.T) {
 	want := "https://github.com/haritejakoduri/godl/releases/download/v0.3.0/"
 	if got != want {
 		t.Errorf("releaseBase(v0.3.0) = %q, want %q", got, want)
+	}
+}
+
+func TestRPMAssetName(t *testing.T) {
+	name, ok := rpmAssetName("0.3.0")
+	if runtime.GOARCH != "amd64" {
+		if ok {
+			t.Errorf("rpmAssetName(0.3.0) on %s = (%q, true), want ok=false", runtime.GOARCH, name)
+		}
+		return
+	}
+	if !ok || name != "godl-0.3.0-1.x86_64.rpm" {
+		t.Errorf("rpmAssetName(0.3.0) = (%q, %v), want (\"godl-0.3.0-1.x86_64.rpm\", true)", name, ok)
 	}
 }

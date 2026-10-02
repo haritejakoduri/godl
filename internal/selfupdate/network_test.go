@@ -4,11 +4,13 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"godl/internal/version"
@@ -171,5 +173,129 @@ func TestForceUpdateUnsupportedStillReportsLatestVersion(t *testing.T) {
 	}
 	if latestVersion != "9.9.9" {
 		t.Fatalf("ForceUpdate latestVersion = %q, want %q (must still be looked up on an unsupported platform)", latestVersion, "9.9.9")
+	}
+}
+
+// fakePackageInstall makes ForceUpdate believe it's running as the
+// package-installed /usr/bin/godl, owned by the .rpm (or not, per
+// isRPM), and swaps the real package manager for install. Nothing is
+// ever written to that path: the rpm branch only downloads into a temp
+// dir and calls installRPM.
+func fakePackageInstall(t *testing.T, isRPM bool, install func(rpmPath string) error) {
+	t.Helper()
+	if runtime.GOOS != "linux" {
+		t.Skip("package-managed installs only exist on Linux")
+	}
+	origExe, origOwned, origInstall := osExecutable, rpmOwned, installRPM
+	osExecutable = func() (string, error) { return packageManagedPath, nil }
+	rpmOwned = func(context.Context, string) bool { return isRPM }
+	installRPM = func(_ context.Context, rpmPath string) error { return install(rpmPath) }
+	t.Cleanup(func() { osExecutable, rpmOwned, installRPM = origExe, origOwned, origInstall })
+}
+
+func TestForceUpdateRPMDownloadsVerifiesAndInstalls(t *testing.T) {
+	assetFileName, ok := rpmAssetName("9.9.9")
+	if !ok {
+		t.Skip("no published .rpm for this architecture")
+	}
+	rpmContent := []byte("fake-rpm-contents-v9.9.9\n")
+	fakeRelease(t, "v9.9.9", assetFileName, rpmContent)
+
+	var installedPath string
+	var installed []byte
+	fakePackageInstall(t, true, func(rpmPath string) error {
+		installedPath = rpmPath
+		var err error
+		installed, err = os.ReadFile(rpmPath)
+		return err
+	})
+
+	result, latestVersion, err := ForceUpdate(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("ForceUpdate error: %v", err)
+	}
+	if result != Updated || latestVersion != "9.9.9" {
+		t.Fatalf("ForceUpdate = (%v, %q), want (Updated, \"9.9.9\")", result, latestVersion)
+	}
+	if filepath.Base(installedPath) != assetFileName {
+		t.Fatalf("installRPM got %q, want a file named %q", installedPath, assetFileName)
+	}
+	if string(installed) != string(rpmContent) {
+		t.Fatalf("installRPM saw %q, want the downloaded release asset %q", installed, rpmContent)
+	}
+	if _, err := os.Stat(installedPath); !os.IsNotExist(err) {
+		t.Fatalf("downloaded rpm %s still exists after the update (stat err: %v)", installedPath, err)
+	}
+}
+
+func TestForceUpdateRPMRejectsChecksumMismatch(t *testing.T) {
+	assetFileName, ok := rpmAssetName("9.9.9")
+	if !ok {
+		t.Skip("no published .rpm for this architecture")
+	}
+	fakeRelease(t, "v9.9.9", assetFileName, []byte("legit content"))
+	mux := http.NewServeMux()
+	mux.HandleFunc("/tampered/", func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("tampered content"))
+	})
+	tamperSrv := httptest.NewServer(mux)
+	defer tamperSrv.Close()
+	releaseBase = func(string) string { return tamperSrv.URL + "/tampered/" }
+
+	fakePackageInstall(t, true, func(rpmPath string) error {
+		t.Errorf("installRPM called with %s; a package that failed verification must never reach the package manager", rpmPath)
+		return nil
+	})
+
+	if result, _, err := ForceUpdate(context.Background(), nil); err == nil {
+		t.Fatalf("ForceUpdate result = %v, err = nil; want a checksum-mismatch error", result)
+	}
+}
+
+// A failed install (wrong sudo password, dnf refusing the transaction)
+// has to surface as an error, not as a silent "updated".
+func TestForceUpdateRPMInstallFailure(t *testing.T) {
+	assetFileName, ok := rpmAssetName("9.9.9")
+	if !ok {
+		t.Skip("no published .rpm for this architecture")
+	}
+	fakeRelease(t, "v9.9.9", assetFileName, []byte("fake-rpm"))
+	fakePackageInstall(t, true, func(string) error { return errors.New("sudo: 3 incorrect password attempts") })
+
+	result, latestVersion, err := ForceUpdate(context.Background(), nil)
+	if err == nil || result == Updated {
+		t.Fatalf("ForceUpdate = (%v, err %v); want an error and no Updated result", result, err)
+	}
+	if latestVersion != "9.9.9" {
+		t.Fatalf("ForceUpdate latestVersion = %q, want %q", latestVersion, "9.9.9")
+	}
+}
+
+func TestForceUpdateRPMAlreadyLatest(t *testing.T) {
+	fakeRelease(t, "v"+version.Version, "unused", nil)
+	fakePackageInstall(t, true, func(rpmPath string) error {
+		t.Errorf("installRPM called with %s on an already-current install", rpmPath)
+		return nil
+	})
+
+	result, _, err := ForceUpdate(context.Background(), nil)
+	if err != nil || result != AlreadyLatest {
+		t.Fatalf("ForceUpdate = (%v, err %v), want (AlreadyLatest, nil)", result, err)
+	}
+}
+
+// A .deb install shares /usr/bin/godl with the .rpm one but isn't in
+// any rpm database: still left entirely to apt, without so much as a
+// release lookup.
+func TestForceUpdateDebInstallLeftToApt(t *testing.T) {
+	fakeRelease(t, "v9.9.9", "unused", nil)
+	fakePackageInstall(t, false, func(rpmPath string) error {
+		t.Errorf("installRPM called with %s on a non-rpm install", rpmPath)
+		return nil
+	})
+
+	result, latestVersion, err := ForceUpdate(context.Background(), nil)
+	if err != nil || result != ManagedInstall || latestVersion != "" {
+		t.Fatalf("ForceUpdate = (%v, %q, err %v), want (ManagedInstall, \"\", nil)", result, latestVersion, err)
 	}
 }

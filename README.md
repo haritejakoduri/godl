@@ -58,7 +58,9 @@ Double-click `godl-<version>-1.x86_64.rpm` in your file manager, or:
 sudo dnf install ./godl-<version>-1.x86_64.rpm
 ```
 
-Installs to `/usr/bin/godl`. To uninstall: `sudo dnf remove godl`.
+Installs to `/usr/bin/godl`. To update later: `godl update` (it
+downloads the newer `.rpm` and runs `dnf` for you). To uninstall:
+`sudo dnf remove godl`.
 Unlike `apt purge`, `dnf` has no separate "also wipe application data"
 step — job history and cached yt-dlp/ffmpeg under
 `~/.local/share/godl` are always left in place; remove that directory
@@ -555,11 +557,16 @@ works where there's a raw binary to swap in, though:
   not a standalone binary — grab the newer installer from the
   [Releases page](https://github.com/haritejakoduri/godl/releases/latest)
   instead, same as a first install.
-- **Installed via `apt` or `dnf`** (the `.deb`/`.rpm` package) is left
-  alone deliberately: dpkg/rpm owns `/usr/bin/godl`, and self-replacing
-  it would desync the package database from what's actually on disk.
-  Run `sudo apt update && sudo apt upgrade` (Debian/Ubuntu) or
-  `sudo dnf upgrade godl` (Fedora/RHEL) instead.
+- **Installed from the `.rpm`** (Fedora/RHEL) updates through the
+  package manager rather than by swapping the file: rpm owns
+  `/usr/bin/godl`, and self-replacing it would desync the package
+  database from what's actually on disk. `godl update` downloads and
+  verifies the release's `.rpm` the same way, then runs
+  `sudo dnf install` on it (`rpm -U` where there's no `dnf`), so expect
+  a sudo password prompt.
+- **Installed from the `.deb`** (Debian/Ubuntu) is left alone for the
+  same reason, with no automatic path yet: run
+  `sudo apt update && sudo apt upgrade` instead.
 - Any other platform without a published raw binary (currently just
   linux/amd64 and darwin/arm64 are built — see `scripts/build-all.sh`)
   falls back to pointing you at the Releases page too.

@@ -44,120 +44,124 @@ func writeResp(w io.Writer, r Response) error {
 	return err
 }
 
+// dispatch answers one request on a socket connection. Two commands
+// hold the connection open and stream — add_social follows its result
+// with the job's log lines, subscribe never sends a single result at
+// all — and everything else is one request, one response (see do).
 func (d *Daemon) dispatch(conn net.Conn, req Request) {
-	ctx := context.Background()
-
-	// Takes createJob's two results directly, so each add_* case below
-	// is a single line and the three that are identical look it.
-	startAndReport := func(j *store.Job, err error) {
-		if err != nil {
-			writeResp(conn, errResp(err))
-			return
-		}
-		d.start(j)
-		writeResp(conn, Response{Type: "result", OK: true, Job: d.view(j.ID)})
-	}
-
 	switch req.Cmd {
-	case CmdPing:
-		writeResp(conn, Response{Type: "result", OK: true})
-
-	case CmdAddURL:
-		startAndReport(d.createJob(ctx, store.JobURL, req.Source, req.Output, "", req.Concurrency, req.LimitRate, req.Sha256, req.Options))
-
-	case CmdAddTorrent:
-		startAndReport(d.createJob(ctx, store.JobTorrent, req.Source, req.Output, "", 0, req.LimitRate, "", req.Options))
-
-	case CmdAddWebDAV:
-		startAndReport(d.createJob(ctx, store.JobWebDAV, req.Source, req.Output, "", 0, req.LimitRate, "", store.JobOptions{}))
-
 	case CmdAddSocial:
-		j, err := d.createJob(ctx, store.JobSocial, req.Source, req.Output, req.Format, 0, req.LimitRate, "", req.Options)
-		if err != nil {
-			writeResp(conn, errResp(err))
-			return
-		}
 		// Subscribe before starting, not after: startSocial can publish
 		// log lines almost immediately, and subscribing afterwards would
 		// lose the ones sent before this connection registers.
 		logCh := d.subscribeLogs()
+		resp := d.do(context.Background(), req)
+		writeResp(conn, resp)
+		if !resp.OK || resp.Job == nil {
+			d.unsubscribeLogs(logCh)
+			return
+		}
+		d.pumpLogs(conn, resp.Job.ID, logCh)
+
+	case CmdSubscribe:
+		d.streamSnapshots(conn)
+
+	default:
+		writeResp(conn, d.do(context.Background(), req))
+	}
+}
+
+// do carries out one request and returns its single response. It's the
+// whole command surface minus the two streaming ones, shared by the
+// socket (dispatch) and the web interface (see webui.go), so the two
+// front ends can't drift apart in what a command means.
+func (d *Daemon) do(ctx context.Context, req Request) Response {
+	// Takes createJob's two results directly, so each add_* case below
+	// is a single line and the four that are identical look it.
+	startAndReport := func(j *store.Job, err error) Response {
+		if err != nil {
+			return errResp(err)
+		}
 		d.start(j)
-		writeResp(conn, Response{Type: "result", OK: true, Job: d.view(j.ID)})
-		d.pumpLogs(conn, j.ID, logCh)
+		return Response{Type: "result", OK: true, Job: d.view(j.ID)}
+	}
+
+	switch req.Cmd {
+	case CmdPing:
+		return Response{Type: "result", OK: true}
+
+	case CmdAddURL:
+		return startAndReport(d.createJob(ctx, store.JobURL, req.Source, req.Output, "", req.Concurrency, req.LimitRate, req.Sha256, req.Options))
+
+	case CmdAddTorrent:
+		return startAndReport(d.createJob(ctx, store.JobTorrent, req.Source, req.Output, "", 0, req.LimitRate, "", req.Options))
+
+	case CmdAddWebDAV:
+		return startAndReport(d.createJob(ctx, store.JobWebDAV, req.Source, req.Output, "", 0, req.LimitRate, "", store.JobOptions{}))
+
+	case CmdAddSocial:
+		return startAndReport(d.createJob(ctx, store.JobSocial, req.Source, req.Output, req.Format, 0, req.LimitRate, "", req.Options))
 
 	case CmdPause:
-		j, err := d.pause(ctx, req.JobID)
-		writeResult(conn, j, err)
+		return jobResult(d.pause(ctx, req.JobID))
 
 	case CmdResume:
-		j, err := d.resume(ctx, req.JobID)
-		writeResult(conn, j, err)
+		return jobResult(d.resume(ctx, req.JobID))
 
 	case CmdRetry:
-		j, err := d.retry(ctx, req.JobID)
-		writeResult(conn, j, err)
+		return jobResult(d.retry(ctx, req.JobID))
 
 	case CmdCancel:
-		j, err := d.cancel(ctx, req.JobID)
-		writeResult(conn, j, err)
+		return jobResult(d.cancel(ctx, req.JobID))
 
 	case CmdRemove:
-		j, err := d.remove(ctx, req.JobID, req.Purge)
-		writeResult(conn, j, err)
+		return jobResult(d.remove(ctx, req.JobID, req.Purge))
 
 	case CmdTorrentFiles:
 		name, files, err := d.tm.ListFiles(req.Source, torrentInfoTimeout)
 		if err != nil {
-			writeResp(conn, errResp(err))
-			return
+			return errResp(err)
 		}
 		out := make([]TorrentFile, len(files))
 		for i, f := range files {
 			out[i] = TorrentFile{Index: f.Index, Path: f.Path, Length: f.Length}
 		}
-		writeResp(conn, Response{Type: "result", OK: true, Name: name, Files: out})
+		return Response{Type: "result", OK: true, Name: name, Files: out}
 
 	case CmdStreamTorrent:
 		url, files, err := d.streamTorrent(req.JobID, req.FileIndex-1)
 		if err != nil {
-			writeResp(conn, errResp(err))
-			return
+			return errResp(err)
 		}
-		writeResp(conn, Response{Type: "result", OK: true, StreamURL: url, Files: files})
+		return Response{Type: "result", OK: true, StreamURL: url, Files: files}
 
 	case CmdList:
-		writeResp(conn, Response{Type: "result", OK: true, Jobs: d.snapshot()})
-
-	case CmdSubscribe:
-		d.streamSnapshots(conn)
+		return Response{Type: "result", OK: true, Jobs: d.snapshot()}
 
 	case CmdGetSettings:
 		s := d.cachedSettings()
-		writeResp(conn, Response{Type: "result", OK: true, Settings: &s})
+		return Response{Type: "result", OK: true, Settings: &s}
 
 	case CmdSetSettings:
 		if req.Settings == nil {
-			writeResp(conn, errResp(fmt.Errorf("settings is required")))
-			return
+			return errResp(fmt.Errorf("settings is required"))
 		}
 		applied, err := d.applySettings(ctx, *req.Settings)
 		if err != nil {
-			writeResp(conn, errResp(err))
-			return
+			return errResp(err)
 		}
-		writeResp(conn, Response{Type: "result", OK: true, Settings: &applied})
+		return Response{Type: "result", OK: true, Settings: &applied}
 
 	default:
-		writeResp(conn, Response{Type: "error", Error: "unknown command: " + req.Cmd})
+		return Response{Type: "error", Error: "unknown command: " + req.Cmd}
 	}
 }
 
-func writeResult(conn net.Conn, j *store.Job, err error) {
+func jobResult(j *store.Job, err error) Response {
 	if err != nil {
-		writeResp(conn, errResp(err))
-		return
+		return errResp(err)
 	}
-	writeResp(conn, Response{Type: "result", OK: true, Job: viewOf(j, nil)})
+	return Response{Type: "result", OK: true, Job: viewOf(j, nil)}
 }
 
 func errResp(err error) Response {
@@ -270,12 +274,14 @@ func (d *Daemon) subscribeLogs() chan logMsg {
 	return ch
 }
 
+func (d *Daemon) unsubscribeLogs(ch chan logMsg) {
+	d.logMu.Lock()
+	delete(d.logSubs, ch)
+	d.logMu.Unlock()
+}
+
 func (d *Daemon) pumpLogs(conn net.Conn, jobID string, ch chan logMsg) {
-	defer func() {
-		d.logMu.Lock()
-		delete(d.logSubs, ch)
-		d.logMu.Unlock()
-	}()
+	defer d.unsubscribeLogs(ch)
 
 	for msg := range ch {
 		if msg.jobID != jobID {

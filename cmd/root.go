@@ -43,6 +43,7 @@ func init() {
 		socialCmd,
 		torrentCmd,
 		streamCmd,
+		playCmd,
 		webdavCmd,
 		connectionCmd,
 		serveCmd,

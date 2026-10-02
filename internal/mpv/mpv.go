@@ -1,6 +1,6 @@
 // Package mpv launches mpv (https://mpv.io), or VLC as a fallback, to
 // stream or play a URL or local file, for godl's "o" (open/play)
-// action on a job or a WebDAV browse entry.
+// action on a job or a WebDAV browse entry, and for "godl play".
 //
 // Unlike internal/ytdlp and internal/ffmpeg, this package never
 // auto-downloads either player: those two have a single trusted source
@@ -125,9 +125,7 @@ func (a *Auth) empty() bool {
 }
 
 // Name reports which player Play would launch — "mpv" or "vlc" —
-// without launching it, for a caller that has to prepare its target
-// differently for each (see the TUI's social playback, where only mpv
-// can resolve a yt-dlp link by itself).
+// without launching it, for a caller that wants to say which.
 func Name() (string, error) {
 	_, kind, err := findPlayer()
 	if err != nil {
@@ -156,14 +154,18 @@ func Play(target string, auth *Auth) error {
 		return err
 	}
 
-	args := append(authArgs(kind, auth), target)
+	return launch(playerPath, append(authArgs(kind, auth), target))
+}
+
+// launch starts the player detached (see Play).
+func launch(playerPath string, args []string) error {
 	cmd := exec.Command(playerPath, args...)
 	cmd.SysProcAttr = detachedSysProcAttr()
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("starting %s: %w", filepath.Base(playerPath), err)
 	}
-	// Detached on purpose (see doc comment): release rather than Wait,
-	// so godl's own process exiting doesn't reap/signal the player.
+	// Detached on purpose (see Play's doc comment): release rather than
+	// Wait, so godl's own process exiting doesn't reap/signal the player.
 	return cmd.Process.Release()
 }
 

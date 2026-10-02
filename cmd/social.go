@@ -111,8 +111,10 @@ ffmpeg, needed to merge separately-downloaded video+audio streams.`,
 		}
 
 		output, _ := cmd.Flags().GetString("output")
-		format, _ := cmd.Flags().GetString("format")
-		preset, _ := cmd.Flags().GetString("preset")
+		format, err := formatFlags(cmd)
+		if err != nil {
+			return err
+		}
 		wait, _ := cmd.Flags().GetBool("wait")
 		if wait && len(all) > 1 {
 			return fmt.Errorf("--wait streams one download's output; it can't be used with several links")
@@ -122,16 +124,6 @@ ffmpeg, needed to merge separately-downloaded video+audio streams.`,
 			return err
 		}
 
-		if preset != "" {
-			if format != "" {
-				return fmt.Errorf("pass either -p/--preset or -f/--format, not both")
-			}
-			p, ok := social.Lookup(preset)
-			if !ok {
-				return fmt.Errorf("unknown preset %q — see \"godl social --list-presets\"", preset)
-			}
-			format = p.Format
-		}
 		output, err = outputPath(output, "")
 		if err != nil {
 			return err
@@ -175,6 +167,25 @@ ffmpeg, needed to merge separately-downloaded video+audio streams.`,
 		}
 		return nil
 	},
+}
+
+// formatFlags resolves -p/--preset and -f/--format (shared by "godl
+// social" and "godl play") to the one yt-dlp format selector they stand
+// for; "" means yt-dlp's own default.
+func formatFlags(cmd *cobra.Command) (string, error) {
+	format, _ := cmd.Flags().GetString("format")
+	preset, _ := cmd.Flags().GetString("preset")
+	if preset == "" {
+		return format, nil
+	}
+	if format != "" {
+		return "", fmt.Errorf("pass either -p/--preset or -f/--format, not both")
+	}
+	p, ok := social.Lookup(preset)
+	if !ok {
+		return "", fmt.Errorf("unknown preset %q — see \"godl social --list-presets\"", preset)
+	}
+	return p.Format, nil
 }
 
 // runListFormats prints every format yt-dlp can see for link (id,

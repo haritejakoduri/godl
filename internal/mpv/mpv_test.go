@@ -1,6 +1,7 @@
 package mpv
 
 import (
+	"context"
 	"encoding/base64"
 	"strings"
 	"testing"
@@ -127,5 +128,57 @@ func TestNameReportsNoPlayer(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 	if name, err := Name(); err == nil {
 		t.Errorf("Name() = %q with no player installed, want an error", name)
+	}
+}
+
+func TestMPVLinkArgs(t *testing.T) {
+	// A comma in the path is why this is --script-opts-append: plain
+	// --script-opts would split the value there.
+	got := mpvLinkArgs("/home/a,b/bin/yt-dlp", "")
+	want := []string{"--script-opts-append=ytdl_hook-ytdl_path=/home/a,b/bin/yt-dlp", "--force-window=immediate"}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("mpvLinkArgs(no format) = %q, want %q", got, want)
+	}
+
+	got = mpvLinkArgs("/bin/yt-dlp", "bv*[height<=720]+ba/b[height<=720]")
+	if last := got[len(got)-1]; last != "--ytdl-format=bv*[height<=720]+ba/b[height<=720]" {
+		t.Errorf("mpvLinkArgs(format) ends with %q, want the --ytdl-format flag", last)
+	}
+}
+
+func TestVLCLinkArgs(t *testing.T) {
+	cases := []struct {
+		name string
+		urls []string
+		want []string
+	}{
+		{"one pre-merged stream", []string{"https://cdn/av"}, []string{"https://cdn/av"}},
+		{"separate video and audio", []string{"https://cdn/v", "https://cdn/a"}, []string{"https://cdn/v", "--input-slave=https://cdn/a"}},
+	}
+	for _, c := range cases {
+		got := vlcLinkArgs(c.urls)
+		if strings.Join(got, "\n") != strings.Join(c.want, "\n") {
+			t.Errorf("%s: vlcLinkArgs(%q) = %q, want %q", c.name, c.urls, got, c.want)
+		}
+	}
+}
+
+// TestPlayLinkChecksForAPlayerFirst: with no player installed there's
+// nothing to resolve a link for, so yt-dlp (a download, on first use)
+// must not even be asked for.
+func TestPlayLinkChecksForAPlayerFirst(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	for _, k := range []string{"ProgramFiles", "ProgramFiles(x86)"} {
+		t.Setenv(k, "")
+	}
+	orig := ensureYtdlp
+	ensureYtdlp = func(context.Context, func(string)) (string, error) {
+		t.Error("yt-dlp was fetched although no player is installed")
+		return "", nil
+	}
+	t.Cleanup(func() { ensureYtdlp = orig })
+
+	if err := PlayLink(context.Background(), "https://example.com/watch?v=xyz", "", nil); err == nil {
+		t.Fatal("PlayLink with no player installed succeeded, want an error")
 	}
 }

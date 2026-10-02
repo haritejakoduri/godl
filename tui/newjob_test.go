@@ -7,6 +7,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"godl/internal/daemon"
+	"godl/internal/social"
 )
 
 func newJobModel() statusModel {
@@ -157,5 +158,44 @@ func TestNewJobWizardAppliesOutputAndRate(t *testing.T) {
 	}
 	if req.Output != "/tmp/custom.iso" {
 		t.Errorf("Output = %q, want the override honored verbatim", req.Output)
+	}
+}
+
+// TestNewJobWizardPlayStreamsInsteadOfDownloading: the Play type picks
+// a quality like a social job, then plays straight from the link
+// prompt — the output and rate steps are about a saved file, and there
+// isn't one.
+func TestNewJobWizardPlayStreamsInsteadOfDownloading(t *testing.T) {
+	m := newJobModel()
+	m.newJob.typeIndex = typeIndexOf(t, newJobPlay)
+	m = press(m, "enter")
+	if m.newJob.step != newJobPickPreset {
+		t.Fatalf("play should pick a preset first, got step %d", m.newJob.step)
+	}
+	m = press(m, "down", "enter")
+	if got, want := m.newJob.selectedFormat(), social.Presets[1].Format; got != want {
+		t.Fatalf("selectedFormat() = %q, want preset 1's %q", got, want)
+	}
+
+	m = press(m, "https://example.com/watch?v=xyz")
+	next, cmd := m.updateNewJob(tea.KeyMsg{Type: tea.KeyEnter})
+	m = next.(statusModel)
+	if cmd == nil {
+		t.Fatal("enter on the link should return the play command")
+	}
+	if m.newJob != nil {
+		t.Error("the wizard should close once the player is being opened")
+	}
+	if m.statusMsg != "opening player..." {
+		t.Errorf("statusMsg = %q, want the in-progress note", m.statusMsg)
+	}
+}
+
+func TestNewJobSelectedFormatIsEmptyWithoutPresets(t *testing.T) {
+	m := newJobModel()
+	m.newJob.typeIndex = typeIndexOf(t, daemon.CmdAddTorrent)
+	m.newJob.presetIndex = 1
+	if got := m.newJob.selectedFormat(); got != "" {
+		t.Errorf("selectedFormat() for a torrent = %q, want empty", got)
 	}
 }

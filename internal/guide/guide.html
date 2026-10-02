@@ -1,0 +1,551 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>godl User Guide</title>
+<style>
+/* Layout: a fixed contents rail beside one reading column of task-first
+   sections; every command sits in its own copyable terminal block. */
+:root {
+  --bg: #f5f7f9;
+  --surface: #ffffff;
+  --fg: #18212c;
+  --muted: #586675;
+  --line: #d6dde5;
+  --accent: #0a6c93;
+  --accent-soft: #e2f1f7;
+  --term-bg: #121a23;
+  --term-fg: #dbe4ee;
+  --term-dim: #8496a8;
+  --st-queued: #8a96a3;
+  --st-paused: #c98a12;
+  --st-active: #d6b21c;
+  --st-seeding: #1ea7c4;
+  --st-done: #2f9e5b;
+  --st-failed: #d24b4b;
+  --mono: ui-monospace, "JetBrains Mono", "Cascadia Code", "SF Mono", Menlo, Consolas, "DejaVu Sans Mono", monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", "Noto Sans", Cantarell, "Helvetica Neue", Arial, sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f151c;
+    --surface: #161e28;
+    --fg: #dde5ee;
+    --muted: #94a3b3;
+    --line: #283442;
+    --accent: #5fc4ea;
+    --accent-soft: #15303d;
+    --term-bg: #0a0f15;
+    --term-fg: #dbe4ee;
+    --term-dim: #7f91a3;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0f151c;
+  --surface: #161e28;
+  --fg: #dde5ee;
+  --muted: #94a3b3;
+  --line: #283442;
+  --accent: #5fc4ea;
+  --accent-soft: #15303d;
+  --term-bg: #0a0f15;
+  --term-fg: #dbe4ee;
+  --term-dim: #7f91a3;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; scroll-padding-top: 1rem; }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 16px/1.6 var(--sans);
+}
+a { color: var(--accent); }
+a:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.page {
+  display: grid;
+  grid-template-columns: 15rem minmax(0, 1fr);
+  gap: 3rem;
+  max-width: 68rem;
+  margin: 0 auto;
+  padding-block: 2.5rem 5rem;
+  padding-inline: 1.5rem;
+}
+nav.toc {
+  position: sticky;
+  top: 1.5rem;
+  align-self: start;
+  max-height: calc(100vh - 3rem);
+  overflow-y: auto;
+  font-size: 0.9rem;
+}
+nav.toc .brand {
+  font: 700 1.5rem/1 var(--mono);
+  color: var(--fg);
+  text-decoration: none;
+  display: block;
+  margin-bottom: 0.35rem;
+}
+nav.toc .tag { color: var(--muted); margin: 0 0 1.25rem; }
+nav.toc ol { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.1rem; }
+nav.toc li a {
+  display: block;
+  padding: 0.3rem 0.6rem;
+  border-left: 2px solid var(--line);
+  color: var(--muted);
+  text-decoration: none;
+}
+nav.toc li a:hover { color: var(--fg); border-left-color: var(--accent); }
+
+main { min-width: 0; display: flex; flex-direction: column; gap: 3.25rem; }
+section { display: flex; flex-direction: column; gap: 0.9rem; }
+section > *, header.intro > * { margin: 0; }
+header.intro { display: flex; flex-direction: column; gap: 0.9rem; }
+h1 { font: 700 2.1rem/1.15 var(--mono); letter-spacing: -0.02em; text-wrap: balance; }
+h2 {
+  font: 700 1.3rem/1.25 var(--mono);
+  text-wrap: balance;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid var(--line);
+}
+h3 { font: 600 1rem/1.3 var(--sans); margin-top: 0.6rem; }
+p, li { max-width: 68ch; }
+.lead { font-size: 1.1rem; color: var(--muted); }
+ul { margin: 0; padding-left: 1.2rem; display: flex; flex-direction: column; gap: 0.35rem; }
+code, kbd { font-family: var(--mono); font-size: 0.88em; }
+p code, li code, td code {
+  background: var(--accent-soft);
+  padding: 0.08em 0.35em;
+  border-radius: 3px;
+  overflow-wrap: anywhere;
+}
+kbd {
+  display: inline-block;
+  min-width: 1.6em;
+  padding: 0.05em 0.4em;
+  text-align: center;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+/* A command block: what you'd type, with a copy button. */
+.term { position: relative; background: var(--term-bg); border-radius: 6px; }
+.term pre {
+  margin: 0;
+  padding: 0.9rem 4.5rem 0.9rem 1rem;
+  overflow-x: auto;
+  color: var(--term-fg);
+  font: 0.86rem/1.65 var(--mono);
+}
+.term .c { color: var(--term-dim); }
+.term button {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.5rem;
+  font: 0.72rem/1 var(--sans);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--term-dim);
+  background: var(--term-bg);
+  box-shadow: 0 0 0 0.4rem var(--term-bg);
+  border: 1px solid var(--term-dim);
+  border-radius: 4px;
+  padding: 0.35rem 0.5rem;
+  cursor: pointer;
+}
+.term button:hover { color: var(--term-fg); border-color: var(--term-fg); }
+
+.note {
+  border-left: 3px solid var(--accent);
+  background: var(--accent-soft);
+  padding: 0.7rem 0.9rem;
+  max-width: 68ch;
+}
+
+/* The job-type picker at the top. */
+.pick { display: grid; grid-template-columns: repeat(auto-fit, minmax(13.5rem, 1fr)); gap: 0.6rem; }
+.pick a {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  padding: 0.75rem 0.9rem;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  text-decoration: none;
+  color: var(--fg);
+}
+.pick a:hover { border-color: var(--accent); }
+.pick a span { color: var(--muted); font-size: 0.9rem; }
+.pick a code { color: var(--accent); font-size: 0.9rem; }
+
+/* A still of the dashboard, in the terminal's own colours. */
+.dash { background: var(--term-bg); border-radius: 6px; overflow-x: auto; }
+.dash pre { margin: 0; padding: 1rem; color: var(--term-fg); font: 0.8rem/1.7 var(--mono); min-width: 44rem; }
+.dash .dim { color: var(--term-dim); }
+.dash .sel { background: #24364a; }
+.q { color: var(--st-queued); } .pa { color: var(--st-paused); } .ac { color: var(--st-active); }
+.se { color: var(--st-seeding); } .ok { color: var(--st-done); } .fa { color: var(--st-failed); }
+.legend { display: flex; flex-wrap: wrap; gap: 0.4rem 1.2rem; list-style: none; padding: 0; font-size: 0.9rem; }
+.legend li { display: flex; align-items: center; gap: 0.45rem; }
+.legend i { width: 0.7rem; height: 0.7rem; border-radius: 50%; background: currentColor; }
+
+.tablewrap { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 0.94rem; }
+th, td { text-align: left; vertical-align: top; padding: 0.5rem 0.75rem 0.5rem 0; border-bottom: 1px solid var(--line); }
+th { color: var(--muted); font-weight: 600; font-size: 0.8rem; letter-spacing: 0.05em; text-transform: uppercase; }
+td:first-child { white-space: nowrap; }
+
+footer { color: var(--muted); font-size: 0.9rem; border-top: 1px solid var(--line); padding-top: 1rem; }
+
+@media (max-width: 52rem) {
+  .page { grid-template-columns: minmax(0, 1fr); gap: 1.5rem; padding-block: 1.5rem 3rem; padding-inline: 1rem; }
+  nav.toc { position: static; max-height: none; }
+  nav.toc ol { flex-direction: row; flex-wrap: wrap; gap: 0.3rem; }
+  nav.toc li a { border: 1px solid var(--line); border-radius: 999px; padding: 0.2rem 0.7rem; }
+  h1 { font-size: 1.6rem; }
+  td:first-child { white-space: normal; }
+}
+</style>
+</head>
+<body>
+<div class="page">
+
+<nav class="toc" aria-label="Contents">
+  <a class="brand" href="#top">godl</a>
+  <p class="tag">User guide</p>
+  <ol>
+    <li><a href="#start">Start here</a></li>
+    <li><a href="#url">Download a file</a></li>
+    <li><a href="#social">Save a video or audio</a></li>
+    <li><a href="#play">Watch without saving</a></li>
+    <li><a href="#torrent">Torrents</a></li>
+    <li><a href="#webdav">Remote storage</a></li>
+    <li><a href="#serve">Share a folder</a></li>
+    <li><a href="#jobs">Manage downloads</a></li>
+    <li><a href="#dashboard">The dashboard</a></li>
+    <li><a href="#settings">Settings</a></li>
+    <li><a href="#update">Stay up to date</a></li>
+    <li><a href="#know">Good to know</a></li>
+  </ol>
+</nav>
+
+<main id="top">
+
+<header class="intro">
+  <h1>What you can do with godl</h1>
+  <p class="lead">godl downloads things from the terminal: plain links, videos from sites like YouTube, torrents, and files on a WebDAV server. Downloads run in the background, so they keep going after you close the terminal.</p>
+  <div class="pick">
+    <a href="#url"><strong>A file from a link</strong><span>Any direct http(s) address</span><code>godl url</code></a>
+    <a href="#social"><strong>A video or its audio</strong><span>YouTube and other sites</span><code>godl social</code></a>
+    <a href="#play"><strong>Just watch it</strong><span>Stream it, save nothing</span><code>godl play</code></a>
+    <a href="#torrent"><strong>A torrent</strong><span>Magnet link or .torrent file</span><code>godl torrent</code></a>
+    <a href="#webdav"><strong>Files on a server</strong><span>Your NAS or cloud over WebDAV</span><code>godl webdav</code></a>
+    <a href="#serve"><strong>Share a folder</strong><span>To other devices on your network</span><code>godl serve</code></a>
+  </div>
+</header>
+
+<section id="start">
+  <h2>Start here</h2>
+  <p>Run <code>godl</code> with nothing after it. That opens the dashboard: a full-screen list of your downloads with live progress. Press <kbd>n</kbd> to start a download, <kbd>q</kbd> to leave. Leaving does not stop anything.</p>
+  <div class="term"><pre>godl</pre></div>
+  <p>Everything the dashboard does also exists as a command, which is what the rest of this guide shows. Three things hold for every kind of download:</p>
+  <ul>
+    <li><strong>It runs in the background.</strong> The command returns at once and prints a job ID. Check on it with <code>godl</code> or <code>godl list</code>.</li>
+    <li><strong>It lands in your Downloads folder</strong> unless you pass <code>-o</code> with another place.</li>
+    <li><strong>It can be paused, resumed and retried</strong> by its job ID. See <a href="#jobs">Manage downloads</a>.</li>
+  </ul>
+  <p class="note">Stuck on a command? Add <code>--help</code> to it, for example <code>godl torrent --help</code>, for the full list of options.</p>
+</section>
+
+<section id="url">
+  <h2>Download a file from a link</h2>
+  <p>For any direct http(s) address. A download that gets interrupted resumes where it stopped, and large files are fetched in several pieces at once when the server allows it.</p>
+  <div class="term"><pre>godl url https://example.com/big-file.iso
+godl url https://example.com/big-file.iso -o ~/isos/big.iso   <span class="c"># choose where it is saved</span>
+godl url https://example.com/big-file.iso -c 8                <span class="c"># 8 pieces at once (default 4)</span>
+godl url https://example.com/big-file.iso -R 2M               <span class="c"># cap the speed at 2 MiB/s</span></pre></div>
+
+  <h3>Check the file is intact</h3>
+  <p>If the site publishes a SHA-256 checksum, pass it. godl compares it once the download finishes, and deletes the file and fails the job if it does not match.</p>
+  <div class="term"><pre>godl url https://example.com/big-file.iso --sha256 &lt;64-character-checksum&gt;</pre></div>
+
+  <h3>Files behind a login</h3>
+  <p>Send a token, a cookie, or the cookies exported from your browser. They are saved with the job, so resume and retry keep working.</p>
+  <div class="term"><pre>godl url &lt;link&gt; -H "Authorization: Bearer abc"
+godl url &lt;link&gt; --cookie "session=abc"
+godl url &lt;link&gt; --cookies cookies.txt                         <span class="c"># a browser's cookies.txt export</span>
+godl url &lt;link&gt; --user-agent "Mozilla/5.0" --referer https://example.com/</pre></div>
+
+  <h3>Many links at once</h3>
+  <p>Put one link per line in a text file. Each becomes its own download, and one bad link does not stop the others. With several links, <code>-o</code> is the folder they go into.</p>
+  <div class="term"><pre>godl url -i links.txt -o ~/Downloads/batch</pre></div>
+</section>
+
+<section id="social">
+  <h2>Save a video or its audio</h2>
+  <p>For YouTube and the many other sites <a href="https://github.com/yt-dlp/yt-dlp">yt-dlp</a> supports. godl fetches and maintains its own copy of yt-dlp and ffmpeg the first time they are needed. You install nothing.</p>
+  <div class="term"><pre>godl social &lt;link&gt;                 <span class="c"># best quality</span>
+godl social &lt;link&gt; -p 1080p        <span class="c"># at most 1080p</span>
+godl social &lt;link&gt; -p 720p
+godl social &lt;link&gt; -p audio        <span class="c"># audio only</span>
+godl social &lt;link&gt; -o ~/Videos</pre></div>
+  <p>The quality names are <code>best</code>, <code>1080p</code>, <code>720p</code>, <code>480p</code>, <code>worst</code> and <code>audio</code>. To see exactly what a link offers before downloading:</p>
+  <div class="term"><pre>godl social &lt;link&gt; --list-formats</pre></div>
+
+  <h3>Private, members-only or age-restricted videos</h3>
+  <p>These usually just need the cookies of a browser where you are logged in.</p>
+  <div class="term"><pre>godl social &lt;link&gt; --cookies-from-browser firefox</pre></div>
+
+  <h3>A whole list</h3>
+  <div class="term"><pre>godl social -i links.txt -p 720p</pre></div>
+</section>
+
+<section id="play">
+  <h2>Watch without saving</h2>
+  <p>Streams the link straight into a player window. No download is created and nothing is written to disk. The quality names are the same as above.</p>
+  <div class="term"><pre>godl play &lt;link&gt;
+godl play &lt;link&gt; -p 720p
+godl play &lt;link&gt; -p audio</pre></div>
+  <p class="note">This needs <a href="https://mpv.io">mpv</a> or <a href="https://www.videolan.org/vlc/">VLC</a> installed. godl uses mpv when both are present. It does not install a player for you.</p>
+</section>
+
+<section id="torrent">
+  <h2>Torrents</h2>
+  <p>Give it a magnet link or the path to a <code>.torrent</code> file. Quote magnet links, because they contain characters the shell would otherwise interpret.</p>
+  <div class="term"><pre>godl torrent "magnet:?xt=urn:btih:..."
+godl torrent ~/Downloads/ubuntu.torrent -o ~/isos</pre></div>
+
+  <h3>Take only some of the files</h3>
+  <p>List what is inside first, then choose by number, by range, or by name pattern.</p>
+  <div class="term"><pre>godl torrent &lt;magnet&gt; --list-files
+godl torrent &lt;magnet&gt; --files 2,5-7
+godl torrent &lt;magnet&gt; --files "*.mkv"</pre></div>
+
+  <h3>Watch while it downloads</h3>
+  <p>godl fetches the part you are about to watch first, so playback starts within seconds. Use the job ID printed when the torrent started. This also needs mpv or VLC.</p>
+  <div class="term"><pre>godl stream &lt;job-id&gt;
+godl stream &lt;job-id&gt; --file 3      <span class="c"># a specific file, numbered as in --list-files</span></pre></div>
+
+  <h3>Keep sharing afterwards</h3>
+  <p>By default a torrent stops uploading the moment it finishes. To seed, set a ratio, a time, or both; whichever is reached first ends it.</p>
+  <div class="term"><pre>godl torrent &lt;magnet&gt; --seed-ratio 1.5
+godl torrent &lt;magnet&gt; --seed-time 2h</pre></div>
+
+  <ul>
+    <li>Keep a <code>.torrent</code> file where it is until the download finishes. godl reads it again when a job resumes.</li>
+    <li>A web address that points to a <code>.torrent</code> does not work directly. Save the file first, then pass its path.</li>
+    <li>A speed limit (<code>-R</code>) on one torrent applies to all running torrents together.</li>
+  </ul>
+</section>
+
+<section id="webdav">
+  <h2>Files on your own server</h2>
+  <p>For a NAS, Nextcloud, or any storage that speaks WebDAV. Save the server once under a short name. You are asked for the password, and it is stored readable only by your user account.</p>
+  <div class="term"><pre>godl connection add mynas --url https://dav.example.com/files/alice/ --username alice
+godl connection list
+godl connection remove mynas</pre></div>
+  <p>Then download a single file, or a whole folder with everything inside it:</p>
+  <div class="term"><pre>godl webdav mynas /Photos/2024/beach.jpg
+godl webdav mynas /Photos -o ~/Pictures     <span class="c"># the whole folder, structure kept</span></pre></div>
+  <p>Browsing is easier in the dashboard: press <kbd>w</kbd> there to walk through the server's folders, tick what you want, and download it. See <a href="#dashboard">The dashboard</a>.</p>
+</section>
+
+<section id="serve">
+  <h2>Share a folder with other devices</h2>
+  <p>The other direction: turn a folder on this machine into a small server, so a phone or another computer on your network can fetch files from it.</p>
+  <div class="term"><pre>godl serve ~/Public --username alice         <span class="c"># asks for a password, then prints the addresses</span>
+godl serve ~/Public --host 127.0.0.1         <span class="c"># this machine only, no password needed</span>
+godl serve ~/Public --self-signed --username alice   <span class="c"># https</span></pre></div>
+  <p>godl prints the addresses other devices can use. Each one offers two things:</p>
+  <ul>
+    <li><strong>A web page.</strong> Open the address in any browser, tick files or folders, and download them as one zip.</li>
+    <li><strong>A network drive.</strong> The same address with <code>/dav/</code> on the end can be mounted in Windows Explorer, macOS Finder or a Linux file manager.</li>
+  </ul>
+  <ul>
+    <li>It is read-only unless you add <code>--allow-write</code>.</li>
+    <li>It refuses to start on your network without a username and password, so nobody can browse the folder by accident.</li>
+    <li>It runs until you press <kbd>Ctrl</kbd>+<kbd>C</kbd>.</li>
+  </ul>
+</section>
+
+<section id="jobs">
+  <h2>Manage downloads</h2>
+  <p>Every download is a job with a short ID. <code>godl list</code> shows them all.</p>
+  <div class="term"><pre>godl list                   <span class="c"># every job, its state and its ID</span>
+godl pause &lt;job-id&gt;
+godl resume &lt;job-id&gt;        <span class="c"># continue from where it stopped</span>
+godl retry &lt;job-id&gt;         <span class="c"># start over from scratch</span>
+godl cancel &lt;job-id&gt;
+godl remove &lt;job-id&gt;        <span class="c"># take it off the list, keep the file</span>
+godl remove &lt;job-id&gt; --purge   <span class="c"># take it off the list and delete the file</span></pre></div>
+  <p>A job is always in one of these states. The dashboard uses the same colours:</p>
+  <ul class="legend">
+    <li class="q"><i></i>queued</li>
+    <li class="ac"><i></i>active</li>
+    <li class="pa"><i></i>paused</li>
+    <li class="se"><i></i>seeding</li>
+    <li class="ok"><i></i>completed</li>
+    <li class="fa"><i></i>failed</li>
+    <li class="q"><i></i>canceled</li>
+  </ul>
+</section>
+
+<section id="dashboard">
+  <h2>The dashboard</h2>
+  <p>Open it with <code>godl</code>. It lists every job, newest first, with progress, speed, time left and where the file is going.</p>
+  <div class="dash" role="img" aria-label="Illustration of the godl dashboard with five jobs in different states"><pre><span class="dim">godl — 5 jobs   1 active  1 seeding  1 paused  1 done  1 failed        ↓ 6.4 MiB/s</span>
+
+<span class="dim">    ID        Type     Status        Progress                 Speed       ETA</span>
+<span class="sel">  [ ] 4f2a91c0  url      active        ████████████░░░░░░  68%  6.4 MiB/s   0:42 </span>
+  [ ] 1b77e3d2  torrent  <span class="se">⇅ seeding</span>     ██████████████████ 100%  ↑ 310 KiB/s  ratio 0.8
+  [x] a90c14f7  social   <span class="pa">Ⅱ paused</span>      ███████░░░░░░░░░░░  41%  —           —
+  [ ] 77d05b1e  webdav   <span class="ok">✓ completed</span>   ██████████████████ 100%  —           —
+  [ ] c3e8a652  url      <span class="fa">✗ failed</span>      ███░░░░░░░░░░░░░░░  17%  —           —
+
+<span class="dim">n new  space select  p pause  r resume  x cancel  R retry  d remove  o play  w webdav  s settings  q quit</span></pre></div>
+  <p style="color:var(--muted);font-size:0.9rem">An illustration of the layout. Your terminal shows your own jobs.</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Key</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td><kbd>↑</kbd> <kbd>↓</kbd></td><td>Move between jobs.</td></tr>
+      <tr><td><kbd>n</kbd></td><td>Start something new: a link, a video, a torrent, or just play a video link. It asks for the link, then an optional destination and speed limit.</td></tr>
+      <tr><td><kbd>space</kbd></td><td>Tick a job. With jobs ticked, the keys below act on all of them at once.</td></tr>
+      <tr><td><kbd>p</kbd> <kbd>r</kbd></td><td>Pause, resume.</td></tr>
+      <tr><td><kbd>x</kbd> <kbd>R</kbd></td><td>Cancel, retry from scratch.</td></tr>
+      <tr><td><kbd>d</kbd></td><td>Remove from the list and keep the file. Asks first.</td></tr>
+      <tr><td><kbd>D</kbd></td><td>Remove from the list and delete the file. Asks first.</td></tr>
+      <tr><td><kbd>o</kbd></td><td>Play the job in mpv or VLC. A finished job plays from disk; one still downloading is streamed.</td></tr>
+      <tr><td><kbd>w</kbd></td><td>Browse a saved WebDAV server.</td></tr>
+      <tr><td><kbd>s</kbd></td><td>Open settings.</td></tr>
+      <tr><td><kbd>S</kbd></td><td>Share a folder, like <code>godl serve</code>, for as long as that screen stays open.</td></tr>
+      <tr><td><kbd>q</kbd></td><td>Quit the dashboard. Downloads keep running.</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>Inside the WebDAV browser</h3>
+  <p>On the first screen, <kbd>a</kbd> adds a server and <kbd>d</kbd> removes one. Inside a server:</p>
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Key</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td><kbd>enter</kbd> <kbd>←</kbd></td><td>Open a folder, go back up.</td></tr>
+      <tr><td><kbd>space</kbd></td><td>Tick a file or folder.</td></tr>
+      <tr><td><kbd>/</kbd></td><td>Search the current folder by name.</td></tr>
+      <tr><td><kbd>d</kbd></td><td>Download what is ticked, or the entry under the cursor.</td></tr>
+      <tr><td><kbd>D</kbd></td><td>Download the whole folder you are in.</td></tr>
+      <tr><td><kbd>o</kbd></td><td>Play the file under the cursor straight from the server.</td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<section id="settings">
+  <h2>Settings</h2>
+  <p>Press <kbd>s</kbd> in the dashboard. Changes are saved as you make them.</p>
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Setting</th><th>What it controls</th></tr></thead>
+    <tbody>
+      <tr><td>Max concurrent downloads</td><td>How many jobs run at once. The rest wait as <em>queued</em> and start on their own, oldest first. 0 means no limit.</td></tr>
+      <tr><td>Default rate limit</td><td>The speed cap for each new job that does not set its own with <code>-R</code>, such as <code>2M</code>.</td></tr>
+      <tr><td>Global bandwidth limit</td><td>A cap on link and WebDAV downloads combined. Torrents and videos are each held to it separately.</td></tr>
+      <tr><td>Auto-retry on failure</td><td>Retries a failed job by itself after a growing wait, up to the number of attempts you set.</td></tr>
+      <tr><td>Notify on completion</td><td>Shows a desktop notification when a job finishes. Works on Linux and macOS.</td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<section id="update">
+  <h2>Stay up to date</h2>
+  <p>One command checks for a newer godl, yt-dlp and ffmpeg and installs what it finds. Try it first when video downloads start failing: video sites change often, and an old yt-dlp is the usual cause.</p>
+  <div class="term"><pre>godl update</pre></div>
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>How you installed godl</th><th>What <code>godl update</code> does for godl itself</th></tr></thead>
+    <tbody>
+      <tr><td>Fedora / RHEL package (.rpm)</td><td>Downloads the new package and installs it. Asks for your sudo password.</td></tr>
+      <tr><td>Install script, on Linux or an Apple-silicon Mac</td><td>Replaces the program in place.</td></tr>
+      <tr><td>Debian / Ubuntu package (.deb)</td><td>Leaves godl alone. Install the new .deb from the Releases page.</td></tr>
+      <tr><td>Windows installer</td><td>Tells you a new version exists. Run the new installer from the Releases page.</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p>New versions are published at <a href="https://github.com/haritejakoduri/godl/releases/latest">github.com/haritejakoduri/godl/releases</a>.</p>
+</section>
+
+<section id="know">
+  <h2>Good to know</h2>
+  <ul>
+    <li><strong>Speed limits</strong> are written as <code>500K</code> or <code>2M</code>, per second.</li>
+    <li><strong>Job history and settings</strong> live in <code>~/.local/share/godl</code>. Uninstalling godl leaves that folder alone.</li>
+    <li><strong>Playing anything</strong> (<code>godl play</code>, <code>godl stream</code>, <kbd>o</kbd>) needs mpv or VLC already installed.</li>
+    <li><strong>Closing the terminal</strong> never stops a download. Restarting the computer interrupts them; they pick up again the next time you run godl.</li>
+  </ul>
+  <h3>Environment variables</h3>
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Variable</th><th>Effect</th></tr></thead>
+    <tbody>
+      <tr><td><code>GODL_DOWNLOADS_DIR</code></td><td>Where downloads go when you do not pass <code>-o</code>.</td></tr>
+      <tr><td><code>GODL_DATA_DIR</code></td><td>Where godl keeps job history, settings and its own yt-dlp and ffmpeg.</td></tr>
+      <tr><td><code>GODL_NO_ANIMATION=1</code></td><td>Turns off the dashboard's animations.</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p>Reopen this guide any time with <code>godl guide</code>.</p>
+</section>
+
+<footer>godl is open source under the MIT licence. Source and issue tracker: <a href="https://github.com/haritejakoduri/godl">github.com/haritejakoduri/godl</a></footer>
+
+</main>
+</div>
+
+<script>
+// Add a copy button to each command block. The comments after "#" are
+// for the reader, so they are stripped from what gets copied.
+document.querySelectorAll('.term').forEach(function (block) {
+  var pre = block.querySelector('pre');
+  var btn = document.createElement('button');
+  btn.type = 'button';
+  btn.textContent = 'Copy';
+  btn.addEventListener('click', function () {
+    var clone = pre.cloneNode(true);
+    clone.querySelectorAll('.c').forEach(function (c) { c.remove(); });
+    var text = clone.textContent.split('\n').map(function (l) { return l.replace(/\s+$/, ''); }).join('\n');
+    var done = function () {
+      btn.textContent = 'Copied';
+      setTimeout(function () { btn.textContent = 'Copy'; }, 1400);
+    };
+    var select = function () {
+      var range = document.createRange();
+      range.selectNodeContents(pre);
+      var sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+      btn.textContent = 'Selected';
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done, select);
+    } else {
+      select();
+    }
+  });
+  block.appendChild(btn);
+});
+</script>
+</body>
+</html>

@@ -91,6 +91,11 @@ resume automatically on your next install.
 
 ## Usage
 
+New to godl? `godl guide` opens an illustrated, task-by-task user guide
+in your browser. It is built into the binary, so it works offline
+(`godl guide -o guide.html` saves it as a file instead). The rest of
+this section is the full reference.
+
 ```sh
 godl url https://example.com/big-file.iso -o out.iso -c 8
 godl url https://example.com/big-file.iso -o out.iso -R 2M   # cap at 2MiB/s

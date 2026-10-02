@@ -9,17 +9,22 @@
 // self-update this way. Windows ships only an installer .exe (no
 // standalone binary asset to swap in), so a Windows install has to go
 // back to the Releases page instead; the same is true for any other
-// unbuilt platform (darwin/amd64, linux/arm64). A godl installed from
-// the .deb or .rpm package also refuses to self-replace: dpkg/rpm owns
-// that file, and silently swapping it out from under apt/dnf would
-// leave the package database out of sync with what's actually on disk
-// — `apt upgrade`/`dnf upgrade` is the correct path there.
+// unbuilt platform (darwin/amd64, linux/arm64).
+//
+// A godl installed from the .deb or .rpm package never has its binary
+// swapped directly: dpkg/rpm owns that file, and silently replacing it
+// out from under apt/dnf would leave the package database out of sync
+// with what's actually on disk. An .rpm install updates through the
+// package manager instead — the release's .rpm is downloaded and
+// verified the same way, then handed to dnf (see updateRPM) — while a
+// .deb install is still just pointed at apt.
 package selfupdate
 
 import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -60,15 +65,69 @@ var assetName = func(ver string) (string, bool) {
 // packageManagedPath is the fixed location both godl's .deb and .rpm
 // packages install to (see scripts/build-deb.sh, scripts/build-rpm.sh,
 // and the README's Linux install/uninstall instructions) — the one
-// path self-update refuses to touch. The two package formats can't be
-// told apart by path alone (both use /usr/bin/godl), but they don't
-// need to be: either way, some system package manager owns this file,
-// and `apt upgrade`/`dnf upgrade` is the correct path forward, not a
-// self-update.
+// path self-update never replaces directly. The two package formats
+// can't be told apart by path alone (both use /usr/bin/godl); rpmOwned
+// below is what separates them.
 const packageManagedPath = "/usr/bin/godl"
 
 func packageManaged(exePath string) bool {
 	return runtime.GOOS == "linux" && exePath == packageManagedPath
+}
+
+// rpmPackageName is the Name field in packaging/rpm/godl.spec.
+const rpmPackageName = "godl"
+
+// rpmAssetName returns the .rpm asset name scripts/build-rpm.sh
+// publishes at the given version, or false on an architecture it isn't
+// built for (the spec is BuildArch: x86_64 only).
+var rpmAssetName = func(ver string) (string, bool) {
+	if runtime.GOARCH != "amd64" {
+		return "", false
+	}
+	return fmt.Sprintf("godl-%s-1.x86_64.rpm", ver), true
+}
+
+// rpmOwned reports whether exePath belongs to godl's installed .rpm
+// package, by asking the rpm database itself. Anything else — no rpm
+// tool at all, or one that doesn't know the file (a Debian box that
+// merely has rpm installed) — is a .deb install as far as ForceUpdate
+// is concerned. A var so a test can stand in for the rpm database.
+var rpmOwned = func(ctx context.Context, exePath string) bool {
+	out, err := exec.CommandContext(ctx, "rpm", "-qf", "--queryformat", "%{NAME}", exePath).Output()
+	return err == nil && string(out) == rpmPackageName
+}
+
+// installRPM hands a downloaded, already-verified .rpm to the system
+// package manager, so the upgrade lands in the rpm database like any
+// other. dnf where there is one, plain `rpm -U` otherwise; run through
+// sudo (or pkexec, on a desktop without sudo) unless godl is already
+// root. The child gets godl's own terminal, so sudo can prompt for a
+// password and dnf's transaction output shows as it happens. A var so
+// tests never touch the real package manager.
+var installRPM = func(ctx context.Context, rpmPath string) error {
+	argv := []string{"rpm", "-U", rpmPath}
+	if _, err := exec.LookPath("dnf"); err == nil {
+		argv = []string{"dnf", "install", "-y", rpmPath}
+	}
+	if os.Geteuid() != 0 {
+		elevate := ""
+		for _, tool := range []string{"sudo", "pkexec"} {
+			if _, err := exec.LookPath(tool); err == nil {
+				elevate = tool
+				break
+			}
+		}
+		if elevate == "" {
+			return fmt.Errorf("installing a package needs root, and neither sudo nor pkexec is available — re-run \"godl update\" as root")
+		}
+		argv = append([]string{elevate}, argv...)
+	}
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("%s: %w", strings.Join(argv, " "), err)
+	}
+	return nil
 }
 
 // Result describes what ForceUpdate did, for callers (godl update) to
@@ -102,8 +161,8 @@ var osExecutable = os.Executable
 // ForceUpdate's second return value is the latest published version
 // (e.g. "0.4.0"), whenever it was actually looked up — every outcome
 // except the two that return before ever calling the GitHub API
-// (osExecutable failing, or a package-managed install refusing to touch
-// itself at all). Callers use it to tell a genuinely unsupported
+// (osExecutable failing, or a .deb install, which is left to apt
+// entirely). Callers use it to tell a genuinely unsupported
 // platform/install ("here's what's new, go get it yourself") apart
 // from one that's already current, even though both currently print
 // through the same Unsupported/AlreadyLatest split — see cmd/update.go.
@@ -116,7 +175,8 @@ func ForceUpdate(ctx context.Context, progress func(string)) (result Result, lat
 		exePath = resolved
 	}
 
-	if packageManaged(exePath) {
+	managed := packageManaged(exePath)
+	if managed && !rpmOwned(ctx, exePath) {
 		return ManagedInstall, "", nil
 	}
 
@@ -127,6 +187,10 @@ func ForceUpdate(ctx context.Context, progress func(string)) (result Result, lat
 	latestVersion = strings.TrimPrefix(latestTag, "v")
 	if latestVersion == version.Version {
 		return AlreadyLatest, latestVersion, nil
+	}
+
+	if managed {
+		return updateRPM(ctx, latestTag, latestVersion, progress)
 	}
 
 	asset, ok := assetName(latestVersion)
@@ -144,8 +208,51 @@ func ForceUpdate(ctx context.Context, progress func(string)) (result Result, lat
 	if err := ghrelease.DownloadVerified(ctx, httpClient, releaseBase(latestTag)+asset, exePath, ".new", wantHex); err != nil {
 		return Unsupported, latestVersion, fmt.Errorf("updating godl: %w", err)
 	}
-	report(progress, "godl updated to "+latestVersion+" — already-running commands (godl status, godl serve, ...) keep using the old binary until restarted")
+	report(progress, updatedMessage(latestVersion))
 	return Updated, latestVersion, nil
+}
+
+// updateRPM is ForceUpdate's path for an .rpm install: the release's
+// .rpm is downloaded into a throwaway directory, verified against
+// GitHub's published digest exactly like the raw binary is, and only
+// then given to the package manager. The same holds for the running
+// process as in the raw-binary case — rpm replaces /usr/bin/godl by
+// rename too, and the spec's %preun leaves the daemon alone on an
+// upgrade.
+func updateRPM(ctx context.Context, latestTag, latestVersion string, progress func(string)) (Result, string, error) {
+	asset, ok := rpmAssetName(latestVersion)
+	if !ok {
+		return Unsupported, latestVersion, nil
+	}
+
+	report(progress, "fetching godl "+latestVersion+" release checksum...")
+	wantHex, err := ghrelease.AssetDigest(ctx, releaseAPI, asset)
+	if err != nil {
+		return Unsupported, latestVersion, fmt.Errorf("looking up godl's published checksum (refusing to update unverified): %w", err)
+	}
+
+	dir, err := os.MkdirTemp("", "godl-update-")
+	if err != nil {
+		return Unsupported, latestVersion, fmt.Errorf("updating godl: %w", err)
+	}
+	defer os.RemoveAll(dir)
+	rpmPath := filepath.Join(dir, asset)
+
+	report(progress, "downloading "+asset+"...")
+	if err := ghrelease.DownloadVerified(ctx, httpClient, releaseBase(latestTag)+asset, rpmPath, ".part", wantHex); err != nil {
+		return Unsupported, latestVersion, fmt.Errorf("updating godl: %w", err)
+	}
+
+	report(progress, "installing "+asset+" (needs root)...")
+	if err := installRPM(ctx, rpmPath); err != nil {
+		return Unsupported, latestVersion, fmt.Errorf("updating godl: %w", err)
+	}
+	report(progress, updatedMessage(latestVersion))
+	return Updated, latestVersion, nil
+}
+
+func updatedMessage(latestVersion string) string {
+	return "godl updated to " + latestVersion + " — already-running commands (godl status, godl serve, ...) keep using the old binary until restarted"
 }
 
 func report(progress func(string), msg string) {

@@ -3,10 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
-	"os/exec"
 	"path/filepath"
-	"strings"
-	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -15,7 +12,6 @@ import (
 	"godl/internal/mpv"
 	"godl/internal/store"
 	"godl/internal/webdav"
-	"godl/internal/ytdlp"
 )
 
 // localPlaybackTarget returns the local file already on disk for j, if
@@ -57,9 +53,9 @@ func localPlaybackTarget(j *store.Job) (target string, ok bool) {
 // doPlay streams or plays j with mpv (or VLC, if mpv isn't installed).
 // A completed job always plays its local file (see
 // localPlaybackTarget) rather than re-streaming — url/social jobs
-// otherwise hand mpv the original source URL directly (true streaming,
-// no local download needed, since mpv's own network stack — plus its
-// bundled yt-dlp hook for social links — handles it), and webdav jobs
+// otherwise hand the player the original source directly (true
+// streaming, no local download needed — see mpv.PlayLink for how a
+// social link gets resolved, at the job's own quality), and webdav jobs
 // resolve the saved connection and stream the remote file the same
 // way, authenticated via an HTTP header rather than a URL-embedded
 // password. Both are genuinely useful for a job that's still actively
@@ -76,13 +72,7 @@ func doPlay(j *daemon.JobView) tea.Cmd {
 			return playedMsg{target: j.Source, err: mpv.Play(j.Source, nil)}
 
 		case store.JobSocial:
-			// target stays the link the user knows, not the resolved
-			// stream, in both the success and failure replies.
-			target, err := socialTarget(j.Source)
-			if err != nil {
-				return playedMsg{target: j.Source, err: err}
-			}
-			return playedMsg{target: j.Source, err: mpv.Play(target, nil)}
+			return playLink(j.Source, j.Format)()
 
 		case store.JobWebDAV:
 			connName, remotePath, ok := daemon.SplitWebDAVSource(j.Source)
@@ -116,45 +106,12 @@ func doPlay(j *daemon.JobView) tea.Cmd {
 	}
 }
 
-// socialResolveTimeout bounds the yt-dlp call below. It only fetches
-// the page's stream metadata, not media, so a slow answer means the
-// site is unhappy rather than that the work is large.
-const socialResolveTimeout = 30 * time.Second
-
-// socialTarget returns what to hand the player for a yt-dlp-supported
-// link. mpv resolves such a link itself through its bundled yt-dlp
-// hook, so it gets the link untouched. VLC has no equivalent, and
-// handed the page URL it plays nothing, so godl resolves a direct
-// stream URL with yt-dlp first.
-//
-// -f best asks for a single pre-merged stream specifically: yt-dlp's
-// default picks the best video and best audio separately for an
-// adaptive site, which is two URLs, and VLC won't mux those back
-// together the way mpv's hook does. That costs some quality on sites
-// that only offer their highest resolutions split, which beats handing
-// VLC a video track with no sound.
-func socialTarget(link string) (string, error) {
-	name, err := mpv.Name()
-	if err != nil {
-		return "", err
+// playLink streams a yt-dlp-supported link in the player without
+// creating a job — the new-download wizard's "Play" type, and what "o"
+// does for a social job that's still downloading. The reported target
+// stays the link the user knows, not whatever stream it resolves to.
+func playLink(link, format string) tea.Cmd {
+	return func() tea.Msg {
+		return playedMsg{target: link, err: mpv.PlayLink(context.Background(), link, format, nil)}
 	}
-	if name != "vlc" {
-		return link, nil
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), socialResolveTimeout)
-	defer cancel()
-	ytDlpPath, err := ytdlp.Ensure(ctx, nil)
-	if err != nil {
-		return "", fmt.Errorf("resolving a stream URL for VLC: %w", err)
-	}
-	out, err := exec.CommandContext(ctx, ytDlpPath, "-g", "-f", "best", link).Output()
-	if err != nil {
-		return "", fmt.Errorf("resolving a stream URL for VLC: %w", err)
-	}
-	resolved := strings.TrimSpace(strings.SplitN(string(out), "\n", 2)[0])
-	if resolved == "" {
-		return "", fmt.Errorf("resolving a stream URL for VLC: yt-dlp returned no URL")
-	}
-	return resolved, nil
 }

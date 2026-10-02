@@ -103,6 +103,7 @@ godl torrent "magnet:?xt=urn:btih:..." -o ~/Downloads
 godl torrent "magnet:?..." --list-files      # see what's inside first
 godl torrent "magnet:?..." --files "*.mkv" --seed-ratio 1.0
 godl stream <job-id>                          # watch a torrent while it downloads
+godl play <link> -p 720p                      # watch a YouTube/social link, no download
 godl connection add mynas --url https://dav.example.com/remote.php/dav/files/alice/ --username alice
 godl webdav mynas /Photos -o ~/Photos     # a file or a whole folder, recursively
 godl serve ~/Public -p 8080 --username alice   # share a folder, over WebDAV + browser
@@ -240,6 +241,21 @@ an optional output path/directory and an optional rate limit (`2M`,
 `500K`, ...) — leaving either blank keeps the same default the CLI
 flags would (Downloads folder, unlimited), so a plain `n` → link →
 enter → enter behaves exactly like the CLI with no `-o`/`-R`.
+
+**Just watch it.** `godl play <link>` streams the link straight in
+[mpv](https://mpv.io) (or [VLC](https://www.videolan.org/vlc/) if mpv
+isn't installed) without creating a job or saving anything. `-p` and
+`-f` pick the quality exactly as above:
+
+```sh
+godl play <link>              # best quality
+godl play <link> -p 720p
+godl play <link> -p audio     # audio only
+```
+
+One of the two players has to be installed already; yt-dlp doesn't —
+godl hands the player its own copy. In `godl status`, the `n` wizard's
+"Play" type does the same thing.
 
 [yt-dlp](https://github.com/yt-dlp/yt-dlp) and, if a format needs muxing
 separate video/audio streams, [ffmpeg](https://ffmpeg.org) are both
@@ -426,7 +442,8 @@ Keybinds: `space` toggles a job for multi-select (its checkbox shows
 `[x]`, and the title bar shows the running count), `p` pause, `r`
 resume, `x` cancel, `R` retry, `d` remove, `D` remove + delete
 downloaded file (both ask for confirmation), `o` play/stream a job (see
-below), `n` start a new url/social/torrent download, `w` browse a
+below), `n` start a new url/social/torrent download (or just play a
+link, without downloading it), `w` browse a
 saved WebDAV connection, `s` settings, `S` serve a local folder,
 `↑`/`↓` navigate, `q` quit (jobs keep running
 in the background). With one or more jobs checked, `p`/`r`/`x`/`R`/`d`/`D`
@@ -446,9 +463,10 @@ an in-progress `url`/`social`/`webdav` job instead streams straight
 from its source (no local download needed — useful as a live preview
 while something's still downloading). Either player handles all three:
 a `webdav` file's credentials go to mpv as an HTTP header and to VLC
-through its own `--http-user`/`--http-pwd`, and a `social` link is
-resolved to a direct stream with yt-dlp first when VLC is the one
-running, since only mpv can follow such a link by itself. A running
+through its own `--http-user`/`--http-pwd`, and a `social` link plays
+the way `godl play` plays it, at the job's own quality — mpv follows
+the link itself using godl's yt-dlp, while for VLC godl resolves the
+direct stream(s) with yt-dlp first. A running
 `torrent` job streams through godl's own loopback server, fetching the
 pieces the player needs next first — see `godl torrent` above.
 

@@ -32,8 +32,12 @@ type newJobState struct {
 	err         string // set on an invalid rate limit, cleared on the next edit
 }
 
+// newJobPlay is the wizard's one entry that isn't a daemon command:
+// stream the link in a player (see playLink) instead of downloading it.
+const newJobPlay = "play"
+
 // newJobTypes are the job types the TUI can start directly, in the
-// order they're offered — mirroring the CLI's url/social/torrent
+// order they're offered — mirroring the CLI's url/social/torrent/play
 // subcommands.
 var newJobTypes = []struct {
 	label string
@@ -42,6 +46,22 @@ var newJobTypes = []struct {
 	{"URL — direct HTTP(S) link", daemon.CmdAddURL},
 	{"Social/media — yt-dlp link", daemon.CmdAddSocial},
 	{"Torrent — magnet link or .torrent file", daemon.CmdAddTorrent},
+	{"Play — stream a yt-dlp link in mpv/VLC, no download", newJobPlay},
+}
+
+// newJobHasPresets reports whether apiCmd's wizard path starts with
+// the quality-preset menu: the two yt-dlp-backed types.
+func newJobHasPresets(apiCmd string) bool {
+	return apiCmd == daemon.CmdAddSocial || apiCmd == newJobPlay
+}
+
+// selectedFormat is the chosen preset's yt-dlp format selector, or ""
+// for a type that has none.
+func (s *newJobState) selectedFormat() string {
+	if !newJobHasPresets(newJobTypes[s.typeIndex].cmd) {
+		return ""
+	}
+	return social.Presets[s.presetIndex].Format
 }
 
 // newJobOutputLabel returns the wizard's output-step prompt, worded to
@@ -68,7 +88,7 @@ func (m statusModel) updateNewJob(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.newJob.typeIndex++
 			}
 		case "enter":
-			if newJobTypes[m.newJob.typeIndex].cmd == daemon.CmdAddSocial {
+			if newJobHasPresets(newJobTypes[m.newJob.typeIndex].cmd) {
 				m.newJob.step = newJobPickPreset
 			} else {
 				m.newJob.step = newJobEnterLink
@@ -98,15 +118,24 @@ func (m statusModel) updateNewJob(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case newJobEnterLink:
 		switch msg.String() {
 		case "esc":
-			if newJobTypes[m.newJob.typeIndex].cmd == daemon.CmdAddSocial {
+			if newJobHasPresets(newJobTypes[m.newJob.typeIndex].cmd) {
 				m.newJob.step = newJobPickPreset
 			} else {
 				m.newJob.step = newJobPickType
 			}
 			return m, nil
 		case "enter":
-			if strings.TrimSpace(m.newJob.input.Value()) == "" {
+			link := strings.TrimSpace(m.newJob.input.Value())
+			if link == "" {
 				return m, nil
+			}
+			// Nothing is saved or rate-limited when only playing, so
+			// the two steps after this one don't apply.
+			if newJobTypes[m.newJob.typeIndex].cmd == newJobPlay {
+				format := m.newJob.selectedFormat()
+				m.newJob = nil
+				m.statusMsg = "opening player..."
+				return m, playLink(link, format)
 			}
 			ti := textinput.New()
 			ti.Placeholder = "default"
@@ -162,10 +191,7 @@ func (m statusModel) updateNewJob(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			link := strings.TrimSpace(m.newJob.input.Value())
 			output := strings.TrimSpace(m.newJob.outputInput.Value())
 			apiCmd := newJobTypes[m.newJob.typeIndex].cmd
-			format := ""
-			if apiCmd == daemon.CmdAddSocial {
-				format = social.Presets[m.newJob.presetIndex].Format
-			}
+			format := m.newJob.selectedFormat()
 			m.newJob = nil
 			m.statusMsg = "starting..."
 			return m, startNewJob(apiCmd, link, format, output, limitRate)
@@ -196,7 +222,11 @@ func (m statusModel) viewNewJob() string {
 
 	case newJobPickPreset:
 		var b strings.Builder
-		b.WriteString(m.wrapped(statStyle).Render("Social/media — pick a quality preset:"))
+		title := "Social/media — pick a quality preset:"
+		if newJobTypes[m.newJob.typeIndex].cmd == newJobPlay {
+			title = "Play — pick a quality preset:"
+		}
+		b.WriteString(m.wrapped(statStyle).Render(title))
 		b.WriteString("\n")
 		for i, p := range social.Presets {
 			cursor := "  "
@@ -209,16 +239,21 @@ func (m statusModel) viewNewJob() string {
 		return b.String()
 
 	case newJobEnterLink:
+		apiCmd := newJobTypes[m.newJob.typeIndex].cmd
 		label := newJobTypes[m.newJob.typeIndex].label
-		if newJobTypes[m.newJob.typeIndex].cmd == daemon.CmdAddSocial {
+		if newJobHasPresets(apiCmd) {
 			label += " [" + social.Presets[m.newJob.presetIndex].Name + "]"
+		}
+		help := "enter next  esc back"
+		if apiCmd == newJobPlay {
+			help = "enter play  esc back"
 		}
 		var b strings.Builder
 		b.WriteString(m.wrapped(statStyle).Render(fmt.Sprintf("%s — paste the link:", label)))
 		b.WriteString("\n")
 		b.WriteString(m.newJob.input.View())
 		b.WriteString("\n")
-		b.WriteString(m.helpView("enter next  esc back"))
+		b.WriteString(m.helpView(help))
 		return b.String()
 
 	case newJobEnterOutput:

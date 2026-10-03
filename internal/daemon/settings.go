@@ -89,6 +89,15 @@ func (d *Daemon) applySettings(ctx context.Context, s store.Settings) (store.Set
 	if s.AutoRetryMaxAttempts < 1 {
 		return store.Settings{}, fmt.Errorf("auto-retry max attempts must be at least 1")
 	}
+	if err := validateWebSettings(s); err != nil {
+		return store.Settings{}, err
+	}
+	// Before saving: a web interface that can't start (the port is
+	// taken) is reported as the reason the settings weren't accepted,
+	// instead of being saved as "on" while nothing is listening.
+	if err := d.syncWebUI(s); err != nil {
+		return store.Settings{}, err
+	}
 	if err := d.st.SaveSettings(ctx, s); err != nil {
 		return store.Settings{}, err
 	}

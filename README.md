@@ -114,6 +114,7 @@ godl webdav mynas /Photos -o ~/Photos     # a file or a whole folder, recursivel
 godl serve ~/Public -p 8080 --username alice   # share a folder, over WebDAV + browser
 
 godl status                 # live TUI dashboard
+godl web                    # the same, plus a video player, in your browser
 godl list                   # one-shot table, for scripts
 godl pause <job-id>
 godl resume <job-id>
@@ -557,6 +558,61 @@ running, the tab shows the same reachable-address/WebDAV/auth banner
 returns to the dashboard — leaving the tab always stops it, since
 there's no dashboard indicator for "a server is still running
 unattended" that would make it safe to forget about.
+
+### `godl web` — the web interface
+
+Everything the dashboard does, in a browser: the live download list
+with bulk pause/resume/retry/cancel/remove, new downloads (links,
+videos, torrents with a file picker, `.torrent` upload), the WebDAV
+browser, sharing a folder, and settings — plus a video player built
+into the page.
+
+```sh
+godl web                                  # turn it on if needed, and open it
+godl web --off                            # turn it off
+godl web --network --username alice       # also from your phone/other computers (asks for a password)
+godl web --local                          # back to this machine only
+```
+
+It's **off by default**. When on, godl's background daemon serves it
+(port 8787, `--port` to change), so it stays available after the
+command returns and after a restart — the "Web interface" rows in the
+Settings tab (`s` in the dashboard, or the page's own Settings) switch
+it too. While it's off nothing is listening and nothing runs for it.
+
+**Who can use it.** By default only this machine: the page is served on
+`127.0.0.1`, and `godl web` opens it with a private token (stored in
+godl's data directory, readable only by you) that the browser then
+keeps as a cookie — loopback alone isn't enough, since other users of
+the machine and other websites can reach a loopback port. With
+`--network` it's served on every interface and every device signs in
+with the username and password you set; godl refuses network mode
+without both. Either way it only answers to an IP address or
+`localhost` in the address bar and refuses requests sent by other
+websites. Network mode is plain http, like `godl serve` — use it on a
+home network you trust, not across the internet.
+
+**The player** plays finished downloads, torrents that are still
+downloading (the pieces you're watching are fetched first), files on a
+WebDAV server, and web links (YouTube and other yt-dlp sites) without
+saving anything — with a menu of the audio languages the file or site
+offers, and subtitles. godl never re-encodes the picture: files the
+browser can read as they are are handed to it directly; anything else
+(an MKV, a choice of audio track, a web link) is repackaged on the fly
+by godl's own ffmpeg — picture copied, sound converted to AAC only when
+it isn't already — and streamed straight to the page with no temporary
+files. Changing language or seeking restarts that stream at the current
+position. When the browser can't decode the picture (HEVC in some
+browsers, or iPhone/iPad Safari), the player says so and offers a
+**stream link** to paste into VLC or another app (the original file,
+with every language and subtitle in it; for a web link, a Matroska
+stream carrying every audio language) and a **download link**. Those
+links work for 12 hours.
+
+It's a control panel, not part of the download path: with nobody
+looking at the page it does no work at all, one shared feed serves
+every open tab, and a video playing in it costs one ffmpeg process
+copying data, capped at a few at a time.
 
 ### `godl update` — update everything godl manages, including itself
 

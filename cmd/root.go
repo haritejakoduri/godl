@@ -48,6 +48,7 @@ func init() {
 		streamCmd,
 		playCmd,
 		guideCmd,
+		webCmd,
 		webdavCmd,
 		connectionCmd,
 		serveCmd,

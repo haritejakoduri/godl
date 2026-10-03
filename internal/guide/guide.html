@@ -233,6 +233,7 @@ footer { color: var(--muted); font-size: 0.9rem; border-top: 1px solid var(--lin
     <li><a href="#serve">Share a folder</a></li>
     <li><a href="#jobs">Manage downloads</a></li>
     <li><a href="#dashboard">The dashboard</a></li>
+    <li><a href="#web">In your browser</a></li>
     <li><a href="#settings">Settings</a></li>
     <li><a href="#update">Stay up to date</a></li>
     <li><a href="#know">Good to know</a></li>
@@ -467,6 +468,21 @@ godl remove &lt;job-id&gt; --purge   <span class="c"># take it off the list and 
     </tbody>
   </table>
   </div>
+</section>
+
+<section id="web">
+  <h2>Use it from your browser</h2>
+  <p>Everything the dashboard does also works in a web page, with a video player on top: watch finished downloads, torrents while they download, files on your server, or a YouTube link, and pick the audio language.</p>
+  <div class="term"><pre>godl web                                <span class="c"># turn it on and open it</span>
+godl web --off                          <span class="c"># turn it off</span></pre></div>
+  <p>It is off until you turn it on, and only this machine can use it. To open it on your phone or another computer at home, give it a username and password:</p>
+  <div class="term"><pre>godl web --network --username alice     <span class="c"># asks for a password</span>
+godl web --local                        <span class="c"># back to this machine only</span></pre></div>
+  <ul>
+    <li>Then open <code>http://&lt;this computer's address&gt;:8787</code> on the other device. <code>godl web</code> prints the addresses.</li>
+    <li>If a video won't play in the browser, the player gives you a link to open in VLC, and a download link.</li>
+    <li>Use network mode on your home network, not across the internet: it is plain http.</li>
+  </ul>
 </section>
 
 <section id="update">

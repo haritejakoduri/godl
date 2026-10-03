@@ -2,15 +2,13 @@ package cmd
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
 	"regexp"
 	"strings"
 
 	"github.com/spf13/cobra"
 
 	"godl/internal/daemon"
-	"godl/internal/paths"
+	"godl/internal/jobreq"
 	"godl/internal/urlname"
 )
 
@@ -70,35 +68,10 @@ var urlCmd = &cobra.Command{
 	},
 }
 
-// urlOutputs picks each link's destination file. One link keeps the
-// original meaning of -o (a file path); several links treat -o as the
-// directory they all land in, each named from its own URL.
+// urlOutputs is jobreq.URLOutputs: one link keeps -o as a file path,
+// several treat it as the directory they all land in.
 func urlOutputs(all []string, output string, nameOf func(string) string) ([]string, error) {
-	if len(all) == 1 {
-		out, err := outputPath(output, nameOf(all[0]))
-		return []string{out}, err
-	}
-	dir := output
-	if dir == "" {
-		d, err := paths.DownloadsDir()
-		if err != nil {
-			return nil, err
-		}
-		dir = d
-	}
-	dir, err := paths.ResolveOutput(dir)
-	if err != nil {
-		return nil, err
-	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return nil, err
-	}
-	taken := map[string]bool{}
-	outs := make([]string, len(all))
-	for i, link := range all {
-		outs[i] = filepath.Join(dir, uniqueName(nameOf(link), taken))
-	}
-	return outs, nil
+	return jobreq.URLOutputs(all, output, nameOf)
 }
 
 func init() {

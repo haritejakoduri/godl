@@ -3,13 +3,12 @@ package cmd
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
 
 	"godl/internal/daemon"
-	"godl/internal/paths"
+	"godl/internal/jobreq"
 	"godl/internal/ratelimit"
 	"godl/internal/store"
 )
@@ -54,14 +53,7 @@ func printTable(header string, rows []string) error {
 // given, is the filename to place inside it (commands that download a
 // single file pass one, commands that download into a directory don't).
 func outputPath(flag, name string) (string, error) {
-	if flag == "" {
-		dir, err := paths.DownloadsDir()
-		if err != nil {
-			return "", err
-		}
-		flag = filepath.Join(dir, name)
-	}
-	return paths.ResolveOutput(flag)
+	return jobreq.OutputPath(flag, name)
 }
 
 // startJob hands req to the daemon, starting it first if it isn't

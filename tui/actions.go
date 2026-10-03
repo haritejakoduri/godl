@@ -2,12 +2,12 @@ package tui
 
 import (
 	"fmt"
-	"path/filepath"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 
 	"godl/internal/daemon"
+	"godl/internal/jobreq"
 	"godl/internal/paths"
 	"godl/internal/urlname"
 )
@@ -61,14 +61,7 @@ func doBulkRemove(jobIDs []string, purge bool) tea.Cmd {
 // same semantics "godl url/social/torrent -o ..." already has, so the
 // wizard's optional output field behaves identically to the flag.
 func resolveJobOutput(override, name string) (string, error) {
-	if override == "" {
-		dir, err := paths.DownloadsDir()
-		if err != nil {
-			return "", err
-		}
-		override = filepath.Join(dir, name)
-	}
-	return paths.ResolveOutput(override)
+	return jobreq.OutputPath(override, name)
 }
 
 // buildAddRequest fills in a daemon.Request for apiCmd (CmdAddURL/

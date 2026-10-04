@@ -165,14 +165,74 @@ function renderSummary() {
   $('summary').textContent = parts.join(' · ');
 }
 
+// ---------- sorting ----------
+//
+// Remembered per browser (a convenience, so it's fine if storage is
+// unavailable). Each order starts in the direction usually wanted —
+// biggest, fastest, furthest along first; the arrow button flips it.
+
+const prefs = (() => { try { return JSON.parse(localStorage.getItem('godl-sort') || '{}'); } catch { return {}; } })();
+function savePrefs() { try { localStorage.setItem('godl-sort', JSON.stringify(prefs)); } catch { /* not kept */ } }
+const sortState = { jobs: prefs.jobs || 'newest', jobsRev: !!prefs.jobsRev, entries: prefs.entries || 'name', entriesRev: !!prefs.entriesRev };
+
+const STATUS_RANK = { active: 0, queued: 1, seeding: 2, paused: 3, failed: 4, canceled: 5, completed: 6 };
+const fraction = (j) => (j.total > 0 ? j.done / j.total : (j.status === 'completed' ? 1 : 0));
+const byText = (a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
+const JOB_ORDER = {
+  newest: (a, b) => b.created - a.created,
+  name: (a, b) => byText(jobName(a), jobName(b)),
+  status: (a, b) => STATUS_RANK[a.status] - STATUS_RANK[b.status],
+  progress: (a, b) => fraction(b) - fraction(a),
+  size: (a, b) => b.total - a.total,
+  speed: (a, b) => (b.speed || 0) - (a.speed || 0),
+  // No estimate sorts after every known one.
+  eta: (a, b) => ((a.eta < 0) - (b.eta < 0)) || (a.eta - b.eta),
+};
+
+function sortJobs(list) {
+  const cmp = JOB_ORDER[sortState.jobs] || JOB_ORDER.newest;
+  const pos = new Map(state.order.map((id, i) => [id, i]));
+  // Ties keep newest first, so equal rows don't swap places on every update.
+  return list.slice().sort((a, b) => (sortState.jobsRev ? cmp(b, a) : cmp(a, b)) || (pos.get(b.id) - pos.get(a.id)));
+}
+
+function showSort() {
+  $('job-sort').value = sortState.jobs;
+  $('job-sort-dir').textContent = sortState.jobsRev ? '↑' : '↓';
+  $('job-sort-dir').title = sortState.jobsRev ? 'Reversed — click for the usual order' : 'Click to reverse';
+  document.querySelectorAll('.th-sort').forEach((b) => {
+    const on = b.dataset.sort === sortState.jobs;
+    b.classList.toggle('on', on);
+    b.dataset.dir = on ? (sortState.jobsRev ? '↑' : '↓') : '';
+  });
+  $('browse-sort').value = sortState.entries;
+  $('browse-sort-dir').textContent = sortState.entriesRev ? '↑' : '↓';
+}
+
+function setJobSort(by, rev) {
+  sortState.jobs = by;
+  sortState.jobsRev = rev;
+  Object.assign(prefs, { jobs: by, jobsRev: rev });
+  savePrefs();
+  showSort();
+  renderJobs();
+}
+
+$('job-sort').addEventListener('change', (e) => setJobSort(e.target.value, false));
+$('job-sort-dir').addEventListener('click', () => setJobSort(sortState.jobs, !sortState.jobsRev));
+document.querySelectorAll('.th-sort').forEach((b) => b.addEventListener('click', () => {
+  // A second click on the same column reverses it.
+  setJobSort(b.dataset.sort, b.dataset.sort === sortState.jobs ? !sortState.jobsRev : false);
+}));
+
 function filtered() {
   const q = $('job-filter').value.trim().toLowerCase();
   const st = $('job-state').value;
-  return state.order.map((id) => state.jobs.get(id)).filter((j) => {
+  return sortJobs(state.order.map((id) => state.jobs.get(id)).filter((j) => {
     if (st && j.status !== st) return false;
     if (!q) return true;
     return (jobName(j) + ' ' + j.source + ' ' + j.output).toLowerCase().includes(q);
-  });
+  }));
 }
 
 function makeRow(j) {
@@ -564,7 +624,7 @@ function renderBrowser() {
   parts.forEach((p, i) => crumbs.push(el('button', { type: 'button', text: p + '/', onclick: () => openBrowser(browse.conn, '/' + parts.slice(0, i + 1).join('/') + '/') })));
   $('crumbs').replaceChildren(...crumbs);
   const q = $('browse-filter').value.trim().toLowerCase();
-  const list = browse.entries.filter((e) => !q || e.name.toLowerCase().includes(q));
+  const list = sortEntries(browse.entries.filter((e) => !q || e.name.toLowerCase().includes(q)));
   $('entries').replaceChildren(...list.map((e) => {
     const box = el('input', { type: 'checkbox', 'aria-label': 'Select ' + e.name, checked: browse.sel.has(e.path) });
     box.addEventListener('change', () => (box.checked ? browse.sel.add(e.path) : browse.sel.delete(e.path)));
@@ -572,11 +632,37 @@ function renderBrowser() {
       ? el('span', { class: 'e-name' }, el('button', { type: 'button', text: e.name + '/', onclick: () => openBrowser(browse.conn, e.path) }))
       : el('span', { class: 'e-name', text: e.name });
     return el('li', {}, box, name,
+      el('em', { class: 'e-date', text: e.modified ? new Date(e.modified * 1000).toLocaleDateString() : '' }),
       e.dir ? null : el('em', { text: e.size >= 0 ? bytes(e.size) : '' }),
       e.dir ? null : el('button', { type: 'button', text: 'Play', onclick: () => openPlayer({ kind: 'webdav', conn: browse.conn, path: e.path }, e.name) }));
   }));
   if (!list.length) $('entries').append(el('li', { class: 'empty', text: q ? 'Nothing here matches.' : 'This folder is empty.' }));
 }
+
+// Folders always come before files, whatever the order.
+const ENTRY_ORDER = {
+  name: () => 0,
+  size: (a, b) => b.size - a.size,
+  modified: (a, b) => (b.modified || 0) - (a.modified || 0),
+};
+function sortEntries(list) {
+  const cmp = ENTRY_ORDER[sortState.entries] || ENTRY_ORDER.name;
+  return list.slice().sort((a, b) => {
+    if (a.dir !== b.dir) return a.dir ? -1 : 1;
+    const r = cmp(a, b) || byText(a.name, b.name);
+    return sortState.entriesRev ? -r : r;
+  });
+}
+function setEntrySort(by, rev) {
+  sortState.entries = by;
+  sortState.entriesRev = rev;
+  Object.assign(prefs, { entries: by, entriesRev: rev });
+  savePrefs();
+  showSort();
+  renderBrowser();
+}
+$('browse-sort').addEventListener('change', (e) => setEntrySort(e.target.value, false));
+$('browse-sort-dir').addEventListener('click', () => setEntrySort(sortState.entries, !sortState.entriesRev));
 
 $('browse-filter').addEventListener('input', renderBrowser);
 $('browse-back').addEventListener('click', () => { $('browser').hidden = true; $('conn-list-wrap').hidden = false; });
@@ -976,6 +1062,7 @@ async function init() {
   $('browse-output').placeholder = state.info.downloads;
   $('share-dir').placeholder = state.info.downloads;
   applyShare(state.info.share);
+  showSort();
   setKind('url');
   showView();
   connectFeed();

@@ -448,7 +448,8 @@ Keybinds: `space` toggles a job for multi-select (its checkbox shows
 `[x]`, and the title bar shows the running count), `p` pause, `r`
 resume, `x` cancel, `R` retry, `d` remove, `D` remove + delete
 downloaded file (both ask for confirmation), `o` play/stream a job (see
-below), `i` (or `enter`) show a job's details — its full source and
+below), `t` change the sort order (newest, name, status, progress, size, speed,
+time left; `T` reverses it), `i` (or `enter`) show a job's details — its full source and
 destination and, for a torrent or WebDAV folder, every file with its own
 progress (skipped torrent files marked), `n` start a new url/social/torrent download (or just play a
 link, without downloading it), `w` browse a
@@ -486,7 +487,8 @@ same validation as `godl connection add`, saved the same way) and
 managing WebDAV connections no longer needs a trip to the CLI. Once
 inside a connection: `↑`/`↓` moves, `enter` opens a folder, `space`
 toggles a file or folder
-for bulk selection, `/` searches the current folder by name (filters
+for bulk selection, `t` sorts it by name, size or date modified (`T` reverses;
+folders always come first), `/` searches the current folder by name (filters
 live as you type; `enter` keeps the filter and returns to browsing,
 `esc` clears it), `←`/backspace goes up a level (also clearing any
 active search), `D` downloads the folder you're currently browsing in

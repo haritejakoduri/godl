@@ -30,6 +30,10 @@ type Entry struct {
 	// servers don't consistently report getcontentlength for files
 	// either).
 	Size int64
+	// ModTime is when the server says it last changed; zero when it
+	// didn't say (getlastmodified is optional, and some servers skip it
+	// for folders).
+	ModTime time.Time
 }
 
 type Client struct {
@@ -130,6 +134,7 @@ const propfindBody = `<?xml version="1.0" encoding="utf-8" ?>
   <D:prop>
     <D:resourcetype/>
     <D:getcontentlength/>
+    <D:getlastmodified/>
   </D:prop>
 </D:propfind>`
 
@@ -154,6 +159,7 @@ type propstat struct {
 type prop struct {
 	ResourceType  resourceType `xml:"DAV: resourcetype"`
 	ContentLength string       `xml:"DAV: getcontentlength"`
+	LastModified  string       `xml:"DAV: getlastmodified"`
 }
 
 type resourceType struct {
@@ -212,6 +218,13 @@ func (c *Client) entries(ms *multistatus) []Entry {
 		if p.ContentLength != "" {
 			if n, err := strconv.ParseInt(p.ContentLength, 10, 64); err == nil {
 				e.Size = n
+			}
+		}
+		if p.LastModified != "" {
+			// RFC 1123, as HTTP dates are; ParseTime also takes the two
+			// older forms some servers still send.
+			if t, err := http.ParseTime(strings.TrimSpace(p.LastModified)); err == nil {
+				e.ModTime = t
 			}
 		}
 		out = append(out, e)

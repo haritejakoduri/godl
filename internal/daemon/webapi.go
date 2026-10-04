@@ -537,14 +537,18 @@ func (d *Daemon) webWebDAVList(w http.ResponseWriter, r *http.Request) {
 		return strings.ToLower(entries[i].Path) < strings.ToLower(entries[j].Path)
 	})
 	type entry struct {
-		Path string `json:"path"`
-		Name string `json:"name"`
-		Dir  bool   `json:"dir"`
-		Size int64  `json:"size"`
+		Path     string `json:"path"`
+		Name     string `json:"name"`
+		Dir      bool   `json:"dir"`
+		Size     int64  `json:"size"`
+		Modified int64  `json:"modified,omitempty"` // unix seconds, 0 = unknown
 	}
 	out := make([]entry, len(entries))
 	for i, e := range entries {
 		out[i] = entry{Path: e.Path, Name: path.Base(strings.TrimSuffix(e.Path, "/")), Dir: e.IsDir, Size: e.Size}
+		if !e.ModTime.IsZero() {
+			out[i].Modified = e.ModTime.Unix()
+		}
 	}
 	webui.WriteJSON(w, map[string]any{"path": dir, "entries": out})
 }

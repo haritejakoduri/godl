@@ -38,6 +38,18 @@
       <option value="failed">Failed</option>
       <option value="canceled">Canceled</option>
     </select>
+    <label class="sortby">Sort
+      <select id="job-sort" aria-label="Sort downloads by">
+        <option value="newest">Newest</option>
+        <option value="name">Name</option>
+        <option value="status">Status</option>
+        <option value="progress">Progress</option>
+        <option value="size">Size</option>
+        <option value="speed">Speed</option>
+        <option value="eta">Time left</option>
+      </select>
+    </label>
+    <button type="button" id="job-sort-dir" class="sortdir" aria-label="Reverse the order">↓</button>
     <span class="grow"></span>
     <span class="count" id="sel-count"></span>
     <div class="bulk" id="bulk">
@@ -59,11 +71,11 @@
       <thead>
         <tr>
           <th class="c-check"><input type="checkbox" id="check-all" aria-label="Select all"></th>
-          <th>Download</th>
-          <th>Status</th>
-          <th>Progress</th>
-          <th class="num">Speed</th>
-          <th class="num">Time left</th>
+          <th><button type="button" class="th-sort" data-sort="name">Download</button></th>
+          <th><button type="button" class="th-sort" data-sort="status">Status</button></th>
+          <th><button type="button" class="th-sort" data-sort="progress">Progress</button></th>
+          <th class="num"><button type="button" class="th-sort" data-sort="speed">Speed</button></th>
+          <th class="num"><button type="button" class="th-sort" data-sort="eta">Time left</button></th>
           <th></th>
         </tr>
       </thead>
@@ -180,6 +192,14 @@
     </div>
     <div class="toolbar">
       <input type="search" id="browse-filter" placeholder="Search this folder" aria-label="Search this folder">
+      <label class="sortby">Sort
+        <select id="browse-sort" aria-label="Sort this folder by">
+          <option value="name">Name</option>
+          <option value="size">Size</option>
+          <option value="modified">Date modified</option>
+        </select>
+      </label>
+      <button type="button" id="browse-sort-dir" class="sortdir" aria-label="Reverse the order">↓</button>
       <span class="grow"></span>
       <button type="button" id="browse-dl-sel" class="primary">Download selected</button>
       <button type="button" id="browse-dl-all">Download this folder</button>

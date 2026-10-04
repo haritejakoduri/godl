@@ -82,6 +82,11 @@ type webdavBrowseState struct {
 	searching   bool
 	query       string
 	searchInput textinput.Model
+
+	// sortBy/sortRev order the folder ("t" cycles, "T" reverses);
+	// folders always come before files.
+	sortBy  entrySort
+	sortRev bool
 }
 
 // visibleEntries returns wb.entries narrowed to wb.query, or every entry
@@ -90,7 +95,7 @@ type webdavBrowseState struct {
 // cursor always lines up with what's actually on screen.
 func (wb *webdavBrowseState) visibleEntries() []webdav.Entry {
 	if wb.query == "" {
-		return wb.entries
+		return sortEntries(wb.entries, wb.sortBy, wb.sortRev)
 	}
 	q := strings.ToLower(wb.query)
 	out := make([]webdav.Entry, 0, len(wb.entries))
@@ -100,7 +105,7 @@ func (wb *webdavBrowseState) visibleEntries() []webdav.Entry {
 			out = append(out, e)
 		}
 	}
-	return out
+	return sortEntries(out, wb.sortBy, wb.sortRev)
 }
 
 // The listing replies carry the browser session (wb) and directory they
@@ -342,6 +347,22 @@ func (m statusModel) webdavBrowsingKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
 		m.webdavBrowse = nil
+	case "t", "T":
+		// Re-sort, keeping the cursor on the entry it was on.
+		keep, hadCurrent := current()
+		if msg.String() == "t" {
+			wb.sortBy = (wb.sortBy + 1) % entrySortCount
+		} else {
+			wb.sortRev = !wb.sortRev
+		}
+		if hadCurrent {
+			for i, e := range wb.visibleEntries() {
+				if e.Path == keep.Path {
+					wb.cursor = i
+					break
+				}
+			}
+		}
 	case "/":
 		if wb.loading {
 			return m, nil
@@ -505,7 +526,14 @@ func (m statusModel) viewWebDAVBrowse() string {
 		return b.String()
 	}
 
-	head := m.wrapped(statStyle).Render(fmt.Sprintf("%s:%s  (%d selected)", wb.connName, wb.path, len(wb.selected))) +
+	order := ""
+	if wb.sortBy != entryByName || wb.sortRev {
+		order = "  sorted by " + wb.sortBy.String()
+		if wb.sortRev {
+			order += ", reversed"
+		}
+	}
+	head := m.wrapped(statStyle).Render(fmt.Sprintf("%s:%s  (%d selected)%s", wb.connName, wb.path, len(wb.selected), order)) +
 		"\n" + m.helpView("downloading to "+format.ShortenHome(wb.outputDir))
 	if wb.searching {
 		head += "\nSearch: " + wb.searchInput.View()
@@ -513,7 +541,7 @@ func (m statusModel) viewWebDAVBrowse() string {
 		head += "\n" + m.wrapped(statStyle).Render(fmt.Sprintf("filter: %q (/ to edit, esc to clear)", wb.query))
 	}
 
-	foot := m.helpView("↑/↓ move  enter open folder  space select  / search  d download selected (or current)  D download this whole folder  o play/stream  ←/backspace up  esc cancel")
+	foot := m.helpView("↑/↓ move  enter open folder  space select  / search  t/T sort  d download selected (or current)  D download this whole folder  o play/stream  ←/backspace up  esc cancel")
 	if wb.searching {
 		foot = m.helpView("type to filter  enter confirm  esc cancel")
 	}
@@ -557,7 +585,15 @@ func (m statusModel) viewWebDAVBrowse() string {
 			} else if e.Size >= 0 {
 				size = format.Bytes(e.Size)
 			}
-			b.WriteString(cursor + check + " " + fitCells(name, m.browseNameWidth()) + " " + fmt.Sprintf("%*s", browseSizeCells, size) + "\n")
+			date := ""
+			if !e.ModTime.IsZero() {
+				date = e.ModTime.Local().Format("2006-01-02")
+			}
+			cols := fmt.Sprintf("%*s", browseSizeCells, size)
+			if m.browseShowsDates() {
+				cols += fmt.Sprintf(" %*s", browseDateCells, date)
+			}
+			b.WriteString(cursor + check + " " + fitCells(name, m.browseNameWidth()) + " " + cols + "\n")
 		}
 		if len(visible) > visibleRows {
 			b.WriteString(m.helpView(browsePosition(start+1, end, len(visible))))
@@ -580,8 +616,17 @@ func (m statusModel) browseNameWidth() int {
 	}
 	// cursor (2) + checkbox and its space (4) + the gap and the size
 	// column are what share the line with the name.
-	const otherCells = 2 + 4 + 1 + browseSizeCells
+	otherCells := 2 + 4 + 1 + browseSizeCells
+	if m.browseShowsDates() {
+		otherCells += 1 + browseDateCells
+	}
 	return max(m.width-otherCells, browseNameMin)
+}
+
+// browseShowsDates reports whether there's room for the last-modified
+// column: on a narrow terminal the name matters more.
+func (m statusModel) browseShowsDates() bool {
+	return m.width <= 0 || m.width >= browseDatesMinWidth
 }
 
 const (
@@ -590,4 +635,9 @@ const (
 	// browseSizeCells fits a size like "1023.9 MiB", right-aligned so
 	// the column lines up whatever the unit.
 	browseSizeCells = 10
+	// browseDateCells fits a last-modified date, "2026-10-04".
+	browseDateCells = 10
+	// browseDatesMinWidth is the narrowest terminal that gets the date
+	// column.
+	browseDatesMinWidth = 60
 )

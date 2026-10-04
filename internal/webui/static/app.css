@@ -93,6 +93,14 @@ main { max-width: 78rem; margin: 0 auto; padding-block: 1.25rem 4rem; padding-in
 .toolbar input[type=search] { width: 18rem; max-width: 100%; }
 .toolbar select { width: auto; }
 .bulk { display: flex; gap: 0.35rem; flex-wrap: wrap; }
+.sortby { display: flex; align-items: center; gap: 0.35rem; font-size: 0.86rem; color: var(--muted); }
+.sortby select { width: auto; }
+.sortdir { padding: 0.4rem 0.6rem; min-width: 2.2rem; }
+.th-sort { border: 0; background: none; padding: 0; font: inherit; color: inherit; letter-spacing: inherit; text-transform: inherit; cursor: pointer; }
+.th-sort:hover { color: var(--fg); }
+.th-sort.on { color: var(--fg); }
+.th-sort.on::after { content: " " attr(data-dir); }
+.entries .e-date { min-width: 6.5rem; text-align: right; }
 .count { color: var(--muted); font-size: 0.88rem; }
 .confirm { display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap; padding: 0.6rem 0.8rem; border: 1px solid var(--danger); border-radius: 6px; background: var(--surface); }
 .empty { color: var(--muted); }

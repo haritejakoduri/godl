@@ -39,7 +39,7 @@ func (m statusModel) View() string {
 	return m.dashboardHeader() + "\n" + m.table.View() + "\n" + m.dashboardFooter()
 }
 
-const dashboardHelp = "space select  p pause  r resume  x cancel  R retry  d remove  D remove+delete  o play  i details  n new  w browse webdav  s settings  S serve  ↑/↓ navigate  q quit"
+const dashboardHelp = "space select  p pause  r resume  x cancel  R retry  d remove  D remove+delete  o play  i details  t sort  n new  w webdav  s settings  S serve  ↑/↓ move  q quit"
 
 // dashboardMessageLines is how many message lines (connection error,
 // status/job error) the table leaves room for beside the help text, so
@@ -94,6 +94,13 @@ func (m statusModel) dashboardHeader() string {
 	}
 	if len(m.selected) > 0 {
 		parts = append(parts, fmt.Sprintf("(%d selected)", len(m.selected)))
+	}
+	if m.sortBy != sortNewest || m.sortRev {
+		order := "sorted by " + m.sortBy.String()
+		if m.sortRev {
+			order += " ↕"
+		}
+		parts = append(parts, headerDimStyle.Render(order))
 	}
 	return m.wrapped(titleStyle).Render(strings.Join(parts, "  "))
 }

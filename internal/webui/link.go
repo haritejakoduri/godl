@@ -32,6 +32,11 @@ type ytdlpFormat struct {
 	LanguagePreference int               `json:"language_preference"`
 	FormatNote         string            `json:"format_note"`
 	HTTPHeaders        map[string]string `json:"http_headers"`
+	// Set by yt-dlp on streams the site slows down when read in one
+	// long request (YouTube's): fetch them this many bytes at a time.
+	DownloaderOptions struct {
+		HTTPChunkSize int64 `json:"http_chunk_size"`
+	} `json:"downloader_options"`
 }
 
 type ytdlpSub struct {
@@ -78,11 +83,13 @@ func sourceFromYtdlp(y ytdlpInfo, maxHeight int) (Source, Info, error) {
 		}
 		first := audios[0]
 		src.URL, src.UserAgent = first.URL, first.HTTPHeaders["User-Agent"]
+		src.ChunkSize = first.DownloaderOptions.HTTPChunkSize
 		info.Audio = []Track{{Index: 0, Language: first.Language, Title: first.FormatNote, Codec: first.ACodec}}
 		return src, info.withEmptyLists(), nil
 	}
 
 	src.URL, src.UserAgent = video.URL, video.HTTPHeaders["User-Agent"]
+	src.ChunkSize = video.DownloaderOptions.HTTPChunkSize
 	codec := ffmpegCodecName(video.VCodec)
 	info.Video = &Video{Codec: codec, Width: video.Width, Height: video.Height, MIME: videoMIMEFromTag(video.VCodec)}
 

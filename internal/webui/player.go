@@ -69,12 +69,18 @@ type Player struct {
 	links    map[string]*extLink
 
 	slots chan struct{}
+
+	relay relay
 }
 
 type session struct {
 	src  Source
 	info Info
 	used time.Time
+
+	// viaRelay is src with its URLs pointed at the relay, made on first
+	// use (see Player.input).
+	viaRelay *Source
 }
 
 type extLink struct {
@@ -322,14 +328,51 @@ func (l *limitedWriter) Write(b []byte) (int, error) {
 	return len(b), nil
 }
 
+// input is the source as ffmpeg should open it: as it is, or — for a
+// site that slows down long downloads — with every URL read through the
+// relay in pieces.
+func (p *Player) input(s *session) (Source, error) {
+	if s.src.ChunkSize <= 0 {
+		return s.src, nil
+	}
+	p.mu.Lock()
+	routed := s.viaRelay
+	p.mu.Unlock()
+	if routed != nil {
+		return *routed, nil
+	}
+	src := s.src
+	src.Audio = append([]AudioInput(nil), s.src.Audio...)
+	var err error
+	if src.URL, err = p.relay.url(s.src.URL, "video", s.src.Header, s.src.UserAgent, s.src.ChunkSize); err != nil {
+		return Source{}, err
+	}
+	for i := range src.Audio {
+		if src.Audio[i].URL, err = p.relay.url(s.src.Audio[i].URL, "audio", s.src.Header, s.src.UserAgent, s.src.ChunkSize); err != nil {
+			return Source{}, err
+		}
+	}
+	// The relay sends the site's headers itself.
+	src.Header, src.UserAgent = nil, ""
+	p.mu.Lock()
+	s.viaRelay = &src
+	p.mu.Unlock()
+	return src, nil
+}
+
 func (p *Player) handleStream(w http.ResponseWriter, r *http.Request) {
 	s, ok := p.sessionFor(w, r)
 	if !ok {
 		return
 	}
+	src, err := p.input(s)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err)
+		return
+	}
 	audio, _ := strconv.Atoi(r.URL.Query().Get("audio"))
 	seek, _ := strconv.ParseFloat(r.URL.Query().Get("t"), 64)
-	p.pipe(w, r, "video/mp4", streamArgs(s.src, s.info, audio, seek))
+	p.pipe(w, r, "video/mp4", streamArgs(src, s.info, audio, seek))
 }
 
 // handleFile hands the source to the browser as it is, with Range
@@ -403,7 +446,11 @@ func (p *Player) handleSeek(w http.ResponseWriter, r *http.Request) {
 	if t > 0 && s.info.Video != nil {
 		if ffprobe, err := p.tool(r.Context(), "ffprobe"); err == nil {
 			ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
-			out, err := exec.CommandContext(ctx, ffprobe, keyframeArgs(s.src, t)...).Output()
+			src, err := p.input(s)
+			if err != nil {
+				src = s.src
+			}
+			out, err := exec.CommandContext(ctx, ffprobe, keyframeArgs(src, t)...).Output()
 			cancel()
 			if err == nil {
 				first := strings.TrimSpace(strings.SplitN(string(out), "\n", 2)[0])
@@ -501,7 +548,12 @@ func (p *Player) ExternalLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.src.Remote {
-		p.pipe(w, r, "video/x-matroska", remuxAllArgs(s.src))
+		src, err := p.input(s)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		p.pipe(w, r, "video/x-matroska", remuxAllArgs(src))
 		return
 	}
 	serveOriginal(w, r, s.src, r.URL.Query().Get("dl") == "1")

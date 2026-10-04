@@ -36,6 +36,10 @@ type Source struct {
 	// Remote is true for a web link: there's no file to hand out, so
 	// "open in another app" means a remux rather than the original.
 	Remote bool
+	// ChunkSize > 0 means the site slows down long requests, so URL and
+	// the audio URLs are read through the relay in pieces of this size
+	// (see relay.go).
+	ChunkSize int64
 }
 
 type AudioInput struct {

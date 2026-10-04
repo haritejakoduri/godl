@@ -27,12 +27,22 @@ var (
 	progressPersistBytes    = int64(8 << 20)
 )
 
+// maxJobConcurrency caps a url job's pieces-at-once. Well past where
+// more connections stop helping, and servers start refusing them.
+const maxJobConcurrency = 64
+
 func (d *Daemon) createJob(ctx context.Context, typ store.JobType, source, output, format string, concurrency int, limitRate int64, sha256 string, opts store.JobOptions) (*store.Job, error) {
 	if source == "" {
 		return nil, fmt.Errorf("source is required")
 	}
 	if concurrency < 1 {
 		concurrency = 1
+	}
+	// Each piece is a connection, a goroutine and a sidecar entry; a
+	// number from a request (the web form's included) mustn't be able to
+	// ask for millions of them.
+	if concurrency > maxJobConcurrency {
+		return nil, fmt.Errorf("at most %d pieces at once (asked for %d)", maxJobConcurrency, concurrency)
 	}
 	// A job that didn't ask for its own --limit-rate falls back to the
 	// settings-tab default, if one's set — parse errors here would mean

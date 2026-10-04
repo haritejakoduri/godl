@@ -252,7 +252,7 @@ func updateRPM(ctx context.Context, latestTag, latestVersion string, progress fu
 }
 
 func updatedMessage(latestVersion string) string {
-	return "godl updated to " + latestVersion + " — already-running commands (godl status, godl serve, ...) keep using the old binary until restarted"
+	return "godl updated to " + latestVersion + " — open godl windows (godl status, godl serve, ...) keep using the old version until reopened; the background daemon restarts by itself on the next godl command"
 }
 
 func report(progress func(string), msg string) {

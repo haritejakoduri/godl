@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"godl/internal/store"
+	"godl/internal/version"
 )
 
 type logMsg struct {
@@ -88,6 +89,15 @@ func (d *Daemon) do(ctx context.Context, req Request) Response {
 
 	switch req.Cmd {
 	case CmdPing:
+		return Response{Type: "result", OK: true, Version: version.Version}
+
+	case CmdShutdown:
+		// After the reply is on its way: closing the listener ends Serve,
+		// and with it the process.
+		go func() {
+			time.Sleep(100 * time.Millisecond)
+			d.stopServing()
+		}()
 		return Response{Type: "result", OK: true}
 
 	case CmdAddURL:

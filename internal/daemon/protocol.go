@@ -39,18 +39,22 @@ type Request struct {
 }
 
 const (
-	CmdAddURL      = "add_url"
-	CmdAddSocial   = "add_social"
-	CmdAddTorrent  = "add_torrent"
-	CmdAddWebDAV   = "add_webdav"
-	CmdPause       = "pause"
-	CmdResume      = "resume"
-	CmdRetry       = "retry"
-	CmdCancel      = "cancel"
-	CmdRemove      = "remove"
-	CmdList        = "list"
-	CmdSubscribe   = "subscribe"
-	CmdPing        = "ping"
+	CmdAddURL     = "add_url"
+	CmdAddSocial  = "add_social"
+	CmdAddTorrent = "add_torrent"
+	CmdAddWebDAV  = "add_webdav"
+	CmdPause      = "pause"
+	CmdResume     = "resume"
+	CmdRetry      = "retry"
+	CmdCancel     = "cancel"
+	CmdRemove     = "remove"
+	CmdList       = "list"
+	CmdSubscribe  = "subscribe"
+	CmdPing       = "ping"
+	// shutdown stops the daemon. Whatever was downloading stays marked
+	// active and is resumed by the next daemon to start — how a newer
+	// godl replaces an older daemon (see EnsureRunning).
+	CmdShutdown    = "shutdown"
 	CmdGetSettings = "get_settings"
 	CmdSetSettings = "set_settings"
 	// torrent_files fetches a torrent's metadata (from peers, for a
@@ -103,6 +107,10 @@ type Response struct {
 	Type  string `json:"type"` // "result" | "log" | "snapshot" | "error"
 	OK    bool   `json:"ok"`
 	Error string `json:"error,omitempty"`
+
+	// ping: the daemon's godl version. Empty from daemons older than
+	// 0.8.1, which didn't say.
+	Version string `json:"version,omitempty"`
 
 	Job  *JobView   `json:"job,omitempty"`
 	Jobs []*JobView `json:"jobs,omitempty"`

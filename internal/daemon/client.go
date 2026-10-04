@@ -10,9 +10,12 @@ import (
 	"os"
 	"os/exec"
 	"runtime/debug"
+	"strconv"
+	"strings"
 	"time"
 
 	"godl/internal/paths"
+	"godl/internal/version"
 )
 
 // InternalDaemonArg is the hidden cobra subcommand godl re-execs itself
@@ -26,8 +29,17 @@ func EnsureRunning() error {
 	if err != nil {
 		return err
 	}
-	if pingOK(sockPath) {
-		return nil
+	if ok, ver := ping(sockPath); ok {
+		if !olderVersion(ver, version.Version) {
+			return nil
+		}
+		// A daemon left running from before godl was updated: it doesn't
+		// know this version's commands and settings (and quietly drops
+		// the ones it doesn't know), so replace it. Its downloads are
+		// picked up again by the new one.
+		if err := stopDaemon(sockPath, ver); err != nil {
+			return fmt.Errorf("godl was updated to %s but its background daemon is still %s and couldn't be restarted: %w", version.Version, orUnknown(ver), err)
+		}
 	}
 
 	exe, err := os.Executable()
@@ -64,26 +76,112 @@ func EnsureRunning() error {
 }
 
 func pingOK(sockPath string) bool {
+	ok, _ := ping(sockPath)
+	return ok
+}
+
+// ping reports whether a daemon answers on sockPath, and its version
+// ("" from one too old to say).
+func ping(sockPath string) (ok bool, ver string) {
 	conn, err := net.DialTimeout("unix", sockPath, 300*time.Millisecond)
 	if err != nil {
-		return false
+		return false, ""
 	}
 	defer conn.Close()
 	conn.SetDeadline(time.Now().Add(500 * time.Millisecond))
 	data, _ := json.Marshal(Request{Cmd: CmdPing})
 	if _, err := conn.Write(append(data, '\n')); err != nil {
-		return false
+		return false, ""
 	}
 	reader := bufio.NewReader(conn)
 	line, err := reader.ReadBytes('\n')
 	if err != nil {
-		return false
+		return false, ""
 	}
 	var r Response
 	if json.Unmarshal(bytes.TrimSpace(line), &r) != nil {
-		return false
+		return false, ""
 	}
-	return r.OK
+	return r.OK, r.Version
+}
+
+func orUnknown(ver string) string {
+	if ver == "" {
+		return "an older version"
+	}
+	return ver
+}
+
+// olderVersion reports whether daemon version a is older than b, as
+// dotted numbers. "" (a daemon from before versions were reported) is
+// older than everything. Only older daemons are replaced: a newer one
+// answering an older godl is left alone, so two installs of different
+// versions don't keep restarting each other's daemon.
+func olderVersion(a, b string) bool {
+	if a == "" {
+		return b != ""
+	}
+	as, bs := strings.Split(a, "."), strings.Split(b, ".")
+	for i := 0; i < len(as) || i < len(bs); i++ {
+		var x, y int
+		if i < len(as) {
+			x, _ = strconv.Atoi(as[i])
+		}
+		if i < len(bs) {
+			y, _ = strconv.Atoi(bs[i])
+		}
+		if x != y {
+			return x < y
+		}
+	}
+	return false
+}
+
+// stopDaemon stops the daemon on sockPath and waits for it to be gone.
+// One that knows "shutdown" is asked; an older one is found through
+// the socket and sent the signal a plain kill would send — it has no
+// cleanup to skip, and its unfinished jobs resume in the next daemon.
+func stopDaemon(sockPath, ver string) error {
+	asked := false
+	if ver != "" {
+		if resp, err := Call(Request{Cmd: CmdShutdown}); err == nil && resp.OK {
+			asked = true
+		}
+	}
+	if !asked {
+		pid, err := peerPID(sockPath)
+		if err != nil {
+			return fmt.Errorf("%w — stop the old \"godl %s\" process yourself, then run godl again", err, InternalDaemonArg)
+		}
+		proc, err := os.FindProcess(pid)
+		if err != nil {
+			return err
+		}
+		if err := terminate(proc); err != nil {
+			return err
+		}
+	}
+	for i := 0; i < 100; i++ {
+		if !pingOK(sockPath) {
+			return nil
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return fmt.Errorf("the old daemon didn't stop")
+}
+
+// Restart stops the running daemon, if any, and starts a fresh one.
+func Restart() error {
+	sockPath, err := paths.SocketPath()
+	if err != nil {
+		return err
+	}
+	if ok, ver := ping(sockPath); ok {
+		if err := stopDaemon(sockPath, ver); err != nil {
+			return err
+		}
+	}
+	return EnsureRunning()
 }
 
 // Call sends a single request and returns the single response, for every

@@ -42,6 +42,8 @@ func (d *Daemon) webRoutes(mux *http.ServeMux, ws *webServer) {
 	mux.HandleFunc("POST /api/jobs/action", d.webJobsAction)
 	mux.HandleFunc("GET /api/jobs/{id}/files", d.webJobFiles)
 	mux.HandleFunc("GET /api/jobs/{id}/details", d.webJobDetails)
+	mux.HandleFunc("GET /api/jobs/{id}/torrent-choice", d.webTorrentChoice)
+	mux.HandleFunc("POST /api/jobs/{id}/select", d.webSelectFiles)
 	mux.HandleFunc("POST /api/torrent/files", d.webTorrentFiles)
 	mux.HandleFunc("POST /api/torrent/upload", d.webTorrentUpload)
 	mux.HandleFunc("PUT /api/settings", d.webPutSettings)
@@ -716,6 +718,34 @@ func mediaFiles(files []playableFile) []playableFile {
 		return files
 	}
 	return media
+}
+
+// webTorrentChoice is a torrent job's full file list with what's
+// chosen, for the details panel's "Choose files".
+func (d *Daemon) webTorrentChoice(w http.ResponseWriter, r *http.Request) {
+	resp := d.do(r.Context(), Request{Cmd: CmdTorrentChoice, JobID: r.PathValue("id")})
+	if !resp.OK {
+		webui.WriteError(w, http.StatusBadGateway, fmt.Errorf("%s", resp.Error))
+		return
+	}
+	webui.WriteJSON(w, map[string]any{"name": resp.Name, "files": resp.Files})
+}
+
+func (d *Daemon) webSelectFiles(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		TorrentFiles string `json:"torrent_files"`
+	}
+	if !readJSON(w, r, &in) {
+		return
+	}
+	req := Request{Cmd: CmdSelectFiles, JobID: r.PathValue("id")}
+	req.Options.TorrentFiles = in.TorrentFiles
+	resp := d.do(r.Context(), req)
+	if !resp.OK {
+		badRequest(w, fmt.Errorf("%s", resp.Error))
+		return
+	}
+	webui.WriteJSON(w, map[string]bool{"ok": true})
 }
 
 // webJobDetails is a job's file list with per-file progress, for the

@@ -63,6 +63,11 @@ const (
 	// Daemon.jobFileList): what a multi-file torrent or WebDAV folder
 	// job is made of, and how far along each part is.
 	CmdJobFiles = "job_files"
+	// torrent_choice lists every file of a torrent job with whether it's
+	// currently chosen (Skipped false); select_files changes the choice
+	// (Options.TorrentFiles, "" for every file). See torrentselect.go.
+	CmdTorrentChoice = "torrent_choice"
+	CmdSelectFiles   = "select_files"
 )
 
 // TorrentFile is one entry of a torrent_files / stream_torrent reply.

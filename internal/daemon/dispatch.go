@@ -142,6 +142,16 @@ func (d *Daemon) do(ctx context.Context, req Request) Response {
 		}
 		return Response{Type: "result", OK: true, Files: files, Note: note}
 
+	case CmdTorrentChoice:
+		name, files, err := d.torrentChoice(req.JobID)
+		if err != nil {
+			return errResp(err)
+		}
+		return Response{Type: "result", OK: true, Name: name, Files: files}
+
+	case CmdSelectFiles:
+		return jobResult(d.selectFiles(ctx, req.JobID, req.Options.TorrentFiles))
+
 	case CmdList:
 		return Response{Type: "result", OK: true, Jobs: d.snapshot()}
 

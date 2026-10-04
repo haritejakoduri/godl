@@ -318,6 +318,7 @@ async function loadDetails(row, id) {
 function renderDetails(row, id) {
   const j = state.jobs.get(id);
   if (!j) return;
+  if (row.choosing) { renderChooser(row, id); return; }
   const info = el('dl', { class: 'kv' },
     el('dt', { text: 'Source' }), el('dd', { text: j.source }),
     el('dt', { text: 'Saved to' }), el('dd', { text: j.output || '—' }),
@@ -335,12 +336,17 @@ function renderDetails(row, id) {
     if (total) parts.push(bytes(total) + (skipped ? ' selected' : ''));
     if (files.length > 1) parts.push(done + ' finished');
     if (skipped) parts.push(skipped + ' skipped');
-    kids.push(el('p', { class: 'fsum', text: parts.join(' · ') }));
+    const summary = el('p', { class: 'fsum' }, parts.join(' · '));
+    if (j.type === 'torrent') {
+      summary.append(' ', el('button', { type: 'button', class: 'linkish', text: 'Choose files…', onclick: () => startChoosing(row, id) }));
+    }
+    kids.push(summary);
     if (data.note) kids.push(el('p', { class: 'hint', text: data.note }));
     if (files.length) {
       kids.push(el('div', { class: 'ftable' }, el('table', {},
         el('thead', {}, el('tr', {}, el('th', { text: 'File' }), el('th', { text: 'Progress' }), el('th', { class: 'num', text: 'Size' }))),
         el('tbody', {}, ...files.map((f) => {
+          f.done = f.done || 0; // left out of the JSON when nothing has arrived yet
           const known = f.length > 0;
           const p = known ? Math.min(100, (f.done / f.length) * 100) : 0;
           const fill = el('i');
@@ -358,10 +364,109 @@ function renderDetails(row, id) {
   row.detailBody.replaceChildren(...kids);
 }
 
+// ---------- choosing a torrent's files after it was added ----------
+
+async function startChoosing(row, id) {
+  row.choosing = { loading: true, files: [], err: '' };
+  renderDetails(row, id);
+  try {
+    const r = await api('GET', 'api/jobs/' + encodeURIComponent(id) + '/torrent-choice');
+    if (!row.choosing) return;
+    row.choosing = { loading: false, files: r.files.map((f) => ({ ...f, on: !f.skipped })), err: '' };
+  } catch (err) {
+    if (!row.choosing) return;
+    row.choosing = { loading: false, files: [], err: err.message };
+  }
+  renderDetails(row, id);
+}
+
+function renderChooser(row, id) {
+  const c = row.choosing;
+  const close = () => { row.choosing = null; renderDetails(row, id); loadDetails(row, id); };
+  if (c.loading) {
+    const j = state.jobs.get(id);
+    const slow = j && j.status !== 'active' && j.source.startsWith('magnet:');
+    row.detailBody.replaceChildren(el('p', { class: 'hint', text: slow ? 'Getting the file list from peers (can take up to a minute)…' : 'Loading the file list…' }),
+      el('button', { type: 'button', text: 'Cancel', onclick: close }));
+    return;
+  }
+  if (c.err) {
+    row.detailBody.replaceChildren(el('p', { class: 'msg err', text: 'Couldn\u2019t list the files: ' + c.err }),
+      el('button', { type: 'button', text: 'Back', onclick: close }));
+    return;
+  }
+  const count = el('strong');
+  const apply = el('button', { type: 'button', class: 'primary' });
+  const msg = el('span', { class: 'msg' });
+  const refresh = () => {
+    const on = c.files.filter((f) => f.on);
+    const size = on.reduce((n, f) => n + f.length, 0);
+    count.textContent = on.length + ' of ' + c.files.length + ' files selected · ' + bytes(size);
+    apply.textContent = 'Download ' + on.length + ' file' + (on.length === 1 ? '' : 's');
+    apply.disabled = on.length === 0;
+  };
+  let anchor = null;
+  const boxes = c.files.map((f, i) => {
+    const box = el('input', { type: 'checkbox', checked: f.on });
+    box.addEventListener('click', () => {
+      if (shiftHeld && anchor !== null) selectRange(c.files.map((_, k) => k), anchor, i, box.checked, (k, v) => { c.files[k].on = v; boxes[k].checked = v; });
+      f.on = box.checked;
+      anchor = i;
+      shiftHeld = false;
+      refresh();
+    });
+    return box;
+  });
+  const setAll = (v) => { c.files.forEach((f, k) => { f.on = v; boxes[k].checked = v; }); refresh(); };
+  apply.addEventListener('click', async () => {
+    apply.disabled = true;
+    say2(msg, 'Applying…');
+    try {
+      await api('POST', 'api/jobs/' + encodeURIComponent(id) + '/select', { torrent_files: selectionSpec(c.files.map((f) => f.on)) });
+      close();
+    } catch (err) { say2(msg, err.message, 'err'); apply.disabled = false; }
+  });
+  const list = el('ul', {}, ...c.files.map((f, i) => el('li', {}, el('label', {}, boxes[i],
+    el('span', { text: f.path }),
+    el('em', { text: f.done > 0 && f.done < f.length ? bytes(f.done) + ' / ' + bytes(f.length) : bytes(f.length) })))));
+  const j = state.jobs.get(id);
+  const note = j && (j.status === 'completed' || j.status === 'seeding')
+    ? 'This torrent has finished: applying starts it again to fetch any files you add. Files already on disk aren\u2019t downloaded twice.'
+    : 'Unticked files stop downloading; what\u2019s already on disk of them is kept.';
+  row.detailBody.replaceChildren(el('div', { class: 'filepick' },
+    el('div', { class: 'row' }, count, el('span', { class: 'grow' }),
+      el('button', { type: 'button', text: 'All', onclick: () => setAll(true) }),
+      el('button', { type: 'button', text: 'None', onclick: () => setAll(false) })),
+    list,
+    el('p', { class: 'hint', text: note }),
+    el('div', { class: 'row' }, apply, el('button', { type: 'button', text: 'Cancel', onclick: close }), msg)));
+  refresh();
+}
+
+function say2(node, text, kind) {
+  node.textContent = text || '';
+  node.classList.toggle('err', kind === 'err');
+}
+
+// selectionSpec writes a choice as --files: runs of files as ranges
+// ("1-40,43"), or "" for every file.
+function selectionSpec(on) {
+  if (on.every(Boolean)) return '';
+  const parts = [];
+  for (let i = 0; i < on.length; i++) {
+    if (!on[i]) continue;
+    let k = i;
+    while (k + 1 < on.length && on[k + 1]) k++;
+    parts.push(i === k ? String(i + 1) : (i + 1) + '-' + (k + 1));
+    i = k;
+  }
+  return parts.join(',');
+}
+
 setInterval(() => {
   if (document.hidden) return;
   for (const [id, row] of state.rows) {
-    if (!row.open) continue;
+    if (!row.open || row.choosing) continue;
     const j = state.jobs.get(id);
     // A finished job's files don't change; no need to keep asking.
     if (j && row.files && (j.status === 'completed' || j.status === 'failed' || j.status === 'canceled') && row.filesFinal === j.status) continue;
@@ -630,15 +735,7 @@ function torrentSelection() {
   const on = boxes.map((c) => c.checked);
   if (on.every(Boolean)) return '';
   if (!on.some(Boolean)) throw new Error('Pick at least one file (All ticks them all).');
-  const parts = [];
-  for (let i = 0; i < on.length; i++) {
-    if (!on[i]) continue;
-    let j = i;
-    while (j + 1 < on.length && on[j + 1]) j++;
-    parts.push(i === j ? String(i + 1) : (i + 1) + '-' + (j + 1));
-    i = j;
-  }
-  return parts.join(',');
+  return selectionSpec(on);
 }
 
 $('new-form').addEventListener('submit', async (e) => {

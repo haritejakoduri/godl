@@ -337,22 +337,48 @@ function renderDetails(row, id) {
     if (files.length > 1) parts.push(done + ' finished');
     if (skipped) parts.push(skipped + ' skipped');
     const summary = el('p', { class: 'fsum' }, parts.join(' · '));
-    if (j.type === 'torrent') {
+    // A running torrent's list is its whole list: files are ticked on and
+    // off right in it, as it downloads. Otherwise the choice is made from
+    // the torrent's metadata in a separate list.
+    const live = j.type === 'torrent' && data.live && files.length > 0;
+    if (!live) row.pick = null;
+    const pick = live ? (row.pick = row.pick || new Map()) : null;
+    const wants = (f) => (pick.has(f.index) ? pick.get(f.index) : !f.skipped);
+    const setWant = (f, v) => { if (v === !f.skipped) pick.delete(f.index); else pick.set(f.index, v); };
+    if (live) files.forEach((f) => { if (pick.has(f.index)) setWant(f, pick.get(f.index)); }); // drop changes that already took
+    if (live) {
+      summary.append(' ',
+        el('button', { type: 'button', class: 'linkish', text: 'Tick all', onclick: () => { files.forEach((f) => setWant(f, true)); renderDetails(row, id); } }), ' ',
+        el('button', { type: 'button', class: 'linkish', text: 'Untick all', onclick: () => { files.forEach((f) => setWant(f, false)); renderDetails(row, id); } }));
+    } else if (j.type === 'torrent') {
       summary.append(' ', el('button', { type: 'button', class: 'linkish', text: 'Choose files…', onclick: () => startChoosing(row, id) }));
     }
     kids.push(summary);
     if (data.note) kids.push(el('p', { class: 'hint', text: data.note }));
+    if (live && pick.size) kids.push(pickBar(row, id, files, wants));
     if (files.length) {
       kids.push(el('div', { class: 'ftable' }, el('table', {},
-        el('thead', {}, el('tr', {}, el('th', { text: 'File' }), el('th', { text: 'Progress' }), el('th', { class: 'num', text: 'Size' }))),
-        el('tbody', {}, ...files.map((f) => {
+        el('thead', {}, el('tr', {}, live ? el('th', { class: 'c-check' }) : null, el('th', { text: 'File' }), el('th', { text: 'Progress' }), el('th', { class: 'num', text: 'Size' }))),
+        el('tbody', {}, ...files.map((f, i) => {
+          let tick = null;
+          if (live) {
+            tick = el('input', { type: 'checkbox', checked: wants(f), 'aria-label': 'Download ' + f.path });
+            tick.addEventListener('click', () => {
+              if (shiftHeld && row.pickAnchor != null) selectRange(files.map((_, k) => k), row.pickAnchor, i, tick.checked, (k, v) => setWant(files[k], v));
+              setWant(f, tick.checked);
+              row.pickAnchor = i;
+              shiftHeld = false;
+              renderDetails(row, id);
+            });
+          }
           f.done = f.done || 0; // left out of the JSON when nothing has arrived yet
           const known = f.length > 0;
           const p = known ? Math.min(100, (f.done / f.length) * 100) : 0;
           const fill = el('i');
           fill.style.width = p.toFixed(1) + '%';
           const fs = f.skipped ? 'skipped' : (known && f.done >= f.length ? 'done' : (f.done > 0 ? 'part' : 'none'));
-          return el('tr', { class: 'f-' + fs },
+          return el('tr', { class: 'f-' + fs + (live && pick.has(f.index) ? ' f-changed' : '') },
+            live ? el('td', { class: 'c-check' }, tick) : null,
             el('td', { class: 'fname', text: f.path }),
             el('td', { class: 'fprog' }, f.skipped ? el('span', { class: 'hint', text: 'skipped' })
               : !known ? el('span', { class: 'hint', text: 'so far' })
@@ -361,7 +387,40 @@ function renderDetails(row, id) {
         })))));
     }
   }
+  // Keep the file list where it was scrolled to across the refreshes.
+  const old = row.detailBody.querySelector('.ftable');
+  const top = old ? old.scrollTop : 0;
   row.detailBody.replaceChildren(...kids);
+  const now = row.detailBody.querySelector('.ftable');
+  if (now && top) now.scrollTop = top;
+}
+
+// pickBar holds the changes ticked in a running torrent's file list
+// until they're applied, so a run of clicks becomes one switch.
+function pickBar(row, id, files, wants) {
+  const on = files.filter(wants);
+  const size = on.reduce((n, f) => n + Math.max(0, f.length), 0);
+  const msg = el('span', { class: 'msg' });
+  const apply = el('button', { type: 'button', class: 'primary', text: 'Apply', disabled: on.length === 0 });
+  apply.addEventListener('click', async () => {
+    apply.disabled = true;
+    say2(msg, 'Applying…');
+    const want = [];
+    for (const f of files) want[f.index] = wants(f);
+    try {
+      await api('POST', 'api/jobs/' + encodeURIComponent(id) + '/select', { torrent_files: selectionSpec(Array.from(want, Boolean)) });
+      row.pick = null;
+      loadDetails(row, id);
+    } catch (err) { say2(msg, err.message, 'err'); apply.disabled = false; }
+  });
+  const n = row.pick.size;
+  return el('div', { class: 'pickbar' },
+    el('span', { text: n + ' change' + (n === 1 ? '' : 's') + ' · will download ' + on.length + ' of ' + files.length + ' files (' + bytes(size) + ')' }),
+    on.length === 0 ? el('span', { class: 'msg err', text: 'Tick at least one file.' }) : null,
+    el('span', { class: 'grow' }),
+    apply,
+    el('button', { type: 'button', text: 'Undo', onclick: () => { row.pick = null; renderDetails(row, id); } }),
+    msg);
 }
 
 // ---------- choosing a torrent's files after it was added ----------

@@ -140,7 +140,11 @@ func (d *Daemon) do(ctx context.Context, req Request) Response {
 		if err != nil {
 			return errResp(err)
 		}
-		return Response{Type: "result", OK: true, Files: files, Note: note}
+		// Live: the list is a running torrent's whole file list, so the
+		// files can be switched on and off right there (select_files).
+		infos, _ := d.tmFiles(req.JobID)
+		live := infos != nil && len(infos) == len(files)
+		return Response{Type: "result", OK: true, Files: files, Note: note, Live: live}
 
 	case CmdTorrentChoice:
 		name, files, err := d.torrentChoice(req.JobID)

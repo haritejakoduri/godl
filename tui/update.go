@@ -171,6 +171,12 @@ func (m statusModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case detailsLoadedMsg:
 		return m.detailsLoaded(msg)
 
+	case detailsChoiceMsg:
+		return m.detailsChoiceLoaded(msg)
+
+	case detailsAppliedMsg:
+		return m.detailsApplied(msg)
+
 	case detailsTickMsg:
 		if m.details != nil && m.details == msg.st {
 			return m, loadDetails(msg.st)

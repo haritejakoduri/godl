@@ -114,6 +114,9 @@ type Response struct {
 	Name      string        `json:"name,omitempty"`
 	Files     []TorrentFile `json:"files,omitempty"`
 	StreamURL string        `json:"stream_url,omitempty"`
+	// job_files: Files is a running torrent's complete list, every file
+	// at its own index, so a choice can be made from it directly.
+	Live bool `json:"live,omitempty"`
 
 	// log streaming (add_social)
 	JobIDForLog string `json:"job_id_for_log,omitempty"`

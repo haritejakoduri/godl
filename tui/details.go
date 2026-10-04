@@ -12,6 +12,7 @@ import (
 	"godl/internal/daemon"
 	"godl/internal/format"
 	"godl/internal/store"
+	"godl/internal/torrentmgr"
 )
 
 // detailsState is the job details overlay ("i" or enter): the job's
@@ -25,13 +26,36 @@ type detailsState struct {
 	loaded  bool
 	offset  int // first file row shown
 	settled bool
+
+	// Choosing a torrent's files from the overlay. live: files is a
+	// running torrent's whole list, so it can be ticked as it downloads.
+	// choice: files came from torrent_choice instead ("c", for a torrent
+	// that isn't running), and stands until applied or closed.
+	live     bool
+	choice   bool
+	choosing bool         // torrent_choice in flight
+	pick     map[int]bool // file index -> wanted, where it differs from now
+	cursor   int
+	msg      string
 }
 
 type detailsLoadedMsg struct {
 	st    *detailsState
 	files []daemon.TorrentFile
 	note  string
+	live  bool
 	err   error
+}
+
+type detailsChoiceMsg struct {
+	st    *detailsState
+	files []daemon.TorrentFile
+	err   error
+}
+
+type detailsAppliedMsg struct {
+	st  *detailsState
+	err error
 }
 
 type detailsTickMsg struct{ st *detailsState }
@@ -46,7 +70,25 @@ func loadDetails(st *detailsState) tea.Cmd {
 		if err != nil {
 			return detailsLoadedMsg{st: st, err: err}
 		}
-		return detailsLoadedMsg{st: st, files: resp.Files, note: resp.Note}
+		return detailsLoadedMsg{st: st, files: resp.Files, note: resp.Note, live: resp.Live}
+	}
+}
+
+func loadChoice(st *detailsState) tea.Cmd {
+	return func() tea.Msg {
+		resp, err := daemon.Call(daemon.Request{Cmd: daemon.CmdTorrentChoice, JobID: st.jobID})
+		if err != nil {
+			return detailsChoiceMsg{st: st, err: err}
+		}
+		return detailsChoiceMsg{st: st, files: resp.Files}
+	}
+}
+
+func applyChoice(st *detailsState, spec string) tea.Cmd {
+	return func() tea.Msg {
+		_, err := daemon.Call(daemon.Request{Cmd: daemon.CmdSelectFiles, JobID: st.jobID,
+			Options: store.JobOptions{TorrentFiles: spec}})
+		return detailsAppliedMsg{st: st, err: err}
 	}
 }
 
@@ -82,10 +124,15 @@ func (m statusModel) detailsLoaded(msg detailsLoadedMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	st.loaded = true
-	if msg.err != nil {
+	switch {
+	case msg.err != nil:
 		st.err = msg.err.Error()
-	} else {
+	case st.choice && !msg.live:
+		// Keep the list being chosen from; it isn't running yet.
+	default:
 		st.err, st.files, st.note = "", msg.files, msg.note
+		st.live, st.choice = msg.live, false
+		st.prunePick()
 	}
 	if j := m.detailsJob(); j == nil || finished(j.Status) {
 		st.settled = true
@@ -94,8 +141,91 @@ func (m statusModel) detailsLoaded(msg detailsLoadedMsg) (tea.Model, tea.Cmd) {
 	return m, detailsTick(st)
 }
 
+func (m statusModel) detailsChoiceLoaded(msg detailsChoiceMsg) (tea.Model, tea.Cmd) {
+	st := m.details
+	if st == nil || st != msg.st {
+		return m, nil
+	}
+	st.choosing = false
+	if msg.err != nil {
+		st.msg = "couldn't list the files: " + msg.err.Error()
+		return m, nil
+	}
+	st.files, st.choice, st.note, st.msg = msg.files, true, "", ""
+	st.cursor, st.offset = 0, 0
+	st.prunePick()
+	return m, nil
+}
+
+func (m statusModel) detailsApplied(msg detailsAppliedMsg) (tea.Model, tea.Cmd) {
+	st := m.details
+	if st == nil || st != msg.st {
+		return m, nil
+	}
+	if msg.err != nil {
+		st.msg = "error: " + msg.err.Error()
+		return m, nil
+	}
+	st.pick, st.msg = nil, "applied"
+	if st.settled {
+		// The overlay had stopped refreshing a finished job; it restarts
+		// when files are added, so start watching again — after a tick,
+		// by which time the dashboard's snapshot shows it running.
+		st.settled = false
+		return m, detailsTick(st)
+	}
+	return m, nil
+}
+
+// selectable: the overlay's file list is one files can be ticked in.
+func (st *detailsState) selectable() bool { return st.live || st.choice }
+
+func (st *detailsState) wants(f daemon.TorrentFile) bool {
+	if v, ok := st.pick[f.Index]; ok {
+		return v
+	}
+	return !f.Skipped
+}
+
+func (st *detailsState) setWant(f daemon.TorrentFile, v bool) {
+	if st.pick == nil {
+		st.pick = map[int]bool{}
+	}
+	if v == !f.Skipped {
+		delete(st.pick, f.Index)
+	} else {
+		st.pick[f.Index] = v
+	}
+}
+
+// prunePick drops ticked changes the torrent has already taken on, and
+// keeps the cursor on the list.
+func (st *detailsState) prunePick() {
+	for _, f := range st.files {
+		if v, ok := st.pick[f.Index]; ok {
+			st.setWant(f, v)
+		}
+	}
+	st.cursor = min(st.cursor, max(0, len(st.files)-1))
+}
+
+// spec is the --files value for the choice as ticked.
+func (st *detailsState) spec() (spec string, n int) {
+	want := make([]bool, len(st.files))
+	for _, f := range st.files {
+		if f.Index >= 0 && f.Index < len(want) && st.wants(f) {
+			want[f.Index] = true
+			n++
+		}
+	}
+	return torrentmgr.SelectionSpec(want), n
+}
+
 func (m statusModel) updateDetails(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	st := m.details
+	if st.selectable() {
+		return m.updateDetailsPick(msg)
+	}
 	page := max(1, m.detailsRows()-1)
 	last := max(0, len(st.files)-m.detailsRows())
 	switch msg.String() {
@@ -113,6 +243,69 @@ func (m statusModel) updateDetails(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		st.offset = 0
 	case "end", "G":
 		st.offset = last
+	case "c":
+		if j := m.detailsJob(); j != nil && j.Type == store.JobTorrent && !st.choosing {
+			st.choosing, st.msg = true, ""
+			return m, loadChoice(st)
+		}
+	}
+	return m, nil
+}
+
+// updateDetailsPick drives the overlay while its files can be ticked:
+// the arrows move a cursor instead of scrolling, and changes wait in
+// st.pick until s applies them all at once.
+func (m statusModel) updateDetailsPick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	st := m.details
+	rows := m.detailsRows()
+	n := len(st.files)
+	st.msg = ""
+	switch msg.String() {
+	case "esc", "q", "i", "enter":
+		m.details = nil
+		return m, nil
+	case "up", "k":
+		st.cursor = max(0, st.cursor-1)
+	case "down", "j":
+		st.cursor = min(n-1, st.cursor+1)
+	case "pgup", "b":
+		st.cursor = max(0, st.cursor-rows)
+	case "pgdown", "f":
+		st.cursor = min(n-1, st.cursor+rows)
+	case "home", "g":
+		st.cursor = 0
+	case "end", "G":
+		st.cursor = n - 1
+	case " ", "x":
+		if n > 0 {
+			f := st.files[st.cursor]
+			st.setWant(f, !st.wants(f))
+			st.cursor = min(n-1, st.cursor+1)
+		}
+	case "a", "n":
+		for _, f := range st.files {
+			st.setWant(f, msg.String() == "a")
+		}
+	case "u":
+		st.pick = nil
+	case "s":
+		if len(st.pick) == 0 {
+			return m, nil
+		}
+		spec, chosen := st.spec()
+		if chosen == 0 {
+			st.msg = "tick at least one file (a ticks all)"
+			return m, nil
+		}
+		st.msg = "applying..."
+		return m, applyChoice(st, spec)
+	}
+	st.cursor = max(0, st.cursor)
+	if st.cursor < st.offset {
+		st.offset = st.cursor
+	}
+	if st.cursor >= st.offset+rows {
+		st.offset = st.cursor - rows + 1
 	}
 	return m, nil
 }
@@ -131,6 +324,7 @@ func (m statusModel) detailsRows() int {
 var (
 	detailsLabel   = lipgloss.NewStyle().Faint(true)
 	detailsSkipped = lipgloss.NewStyle().Faint(true).Strikethrough(true)
+	detailsChanged = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#5FD6C9"))
 )
 
 func (m statusModel) viewDetails() string {
@@ -168,7 +362,12 @@ func (m statusModel) viewDetails() string {
 		b.WriteString(m.wrapped(errStyle).Render("error: " + st.err))
 		b.WriteString("\n")
 	default:
-		b.WriteString(m.wrapped(statStyle).Render(detailsSummary(st.files)))
+		summary := detailsSummary(st.files)
+		if st.selectable() && len(st.pick) > 0 {
+			_, chosen := st.spec()
+			summary += fmt.Sprintf("  —  %d change(s) not applied: %d of %d files", len(st.pick), chosen, len(st.files))
+		}
+		b.WriteString(m.wrapped(statStyle).Render(summary))
 		b.WriteString("\n")
 		if st.note != "" {
 			b.WriteString(m.wrapped(helpStyle.Padding(0, 1)).Render(st.note))
@@ -178,6 +377,19 @@ func (m statusModel) viewDetails() string {
 	}
 
 	help := "↑/↓ scroll  pgup/pgdn page  esc close"
+	switch {
+	case st.selectable() && len(st.pick) > 0:
+		help = "space tick  a all  n none  s apply  u undo  esc close"
+	case st.selectable():
+		help = "↑/↓ move  space tick/untick  a all  n none  esc close"
+	case j.Type == store.JobTorrent && st.choosing:
+		help = "getting the file list...  esc close"
+	case j.Type == store.JobTorrent:
+		help = "↑/↓ scroll  c choose files  esc close"
+	}
+	if st.msg != "" {
+		help = st.msg + "   " + help
+	}
 	if len(st.files) > m.detailsRows() {
 		help = fmt.Sprintf("files %d–%d of %d   ", st.offset+1, min(len(st.files), st.offset+m.detailsRows()), len(st.files)) + help
 	}
@@ -226,12 +438,17 @@ func (m statusModel) detailsTable(j *daemon.JobView) string {
 	// bar + " 100% " + size column + gaps; the name takes the rest.
 	const sizeW = 21
 	nameW := max(10, width-2-detailsBarWidth-6-sizeW-2)
+	pickW := 0
+	if st.selectable() {
+		pickW = 6 // "> [x] "
+		nameW = max(10, nameW-pickW)
+	}
 
 	var b strings.Builder
-	b.WriteString(detailsLabel.Render(fmt.Sprintf(" %-*s %5s  %*s  %s", detailsBarWidth, "PROGRESS", "", sizeW, "SIZE", "FILE")))
+	b.WriteString(detailsLabel.Render(fmt.Sprintf("%*s %-*s %5s  %*s  %s", pickW, "", detailsBarWidth, "PROGRESS", "", sizeW, "SIZE", "FILE")))
 	b.WriteString("\n")
 	end := min(len(st.files), st.offset+m.detailsRows())
-	for _, f := range st.files[st.offset:end] {
+	for i, f := range st.files[st.offset:end] {
 		known := f.Length > 0
 		frac := 0.0
 		if known {
@@ -258,7 +475,21 @@ func (m statusModel) detailsTable(j *daemon.JobView) string {
 		} else if status == store.StatusCompleted {
 			bar = jobStatusStyles[store.StatusCompleted].Render(bar)
 		}
-		fmt.Fprintf(&b, " %s %5s  %*s  %s\n", bar, pct, sizeW, size, name)
+		pick := ""
+		if st.selectable() {
+			cursor, check := "  ", "[ ]"
+			if st.offset+i == st.cursor {
+				cursor = "> "
+			}
+			if st.wants(f) {
+				check = "[x]"
+			}
+			if _, changed := st.pick[f.Index]; changed {
+				check = detailsChanged.Render(check)
+			}
+			pick = cursor + check + " "
+		}
+		fmt.Fprintf(&b, "%s %s %5s  %*s  %s\n", pick, bar, pct, sizeW, size, name)
 	}
 	return b.String()
 }

@@ -173,6 +173,9 @@ button.linkish { border: 0; background: none; padding: 0.15rem 0; color: var(--a
 .fbar small { color: var(--muted); font-variant-numeric: tabular-nums; min-width: 2.6rem; text-align: right; }
 .f-skipped td { color: var(--muted); }
 .f-skipped .fname { text-decoration: line-through; }
+.ftable td.c-check, .ftable th.c-check { width: 1.8rem; padding-right: 0; }
+.ftable .f-changed td { background: var(--accent-soft); }
+.pickbar { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; padding: 0.5rem 0.7rem; border: 1px solid var(--line); border-radius: 6px; background: var(--accent-soft); font-size: 0.86rem; position: sticky; top: 0; z-index: 1; }
 
 /* Forms */
 .segments { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; align-self: flex-start; flex-wrap: wrap; }

@@ -756,7 +756,7 @@ func (d *Daemon) webJobDetails(w http.ResponseWriter, r *http.Request) {
 		webui.WriteError(w, http.StatusNotFound, fmt.Errorf("%s", resp.Error))
 		return
 	}
-	webui.WriteJSON(w, map[string]any{"files": resp.Files, "note": resp.Note})
+	webui.WriteJSON(w, map[string]any{"files": resp.Files, "note": resp.Note, "live": resp.Live})
 }
 
 func (d *Daemon) webJobFiles(w http.ResponseWriter, r *http.Request) {

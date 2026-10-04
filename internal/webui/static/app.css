@@ -93,6 +93,23 @@ main { max-width: 78rem; margin: 0 auto; padding-block: 1.25rem 4rem; padding-in
 .toolbar input[type=search] { width: 18rem; max-width: 100%; }
 .toolbar select { width: auto; }
 .bulk { display: flex; gap: 0.35rem; flex-wrap: wrap; }
+input[type=checkbox] { width: 1.05rem; height: 1.05rem; accent-color: var(--accent); cursor: pointer; }
+.seltip { margin: -0.4rem 0 0; }
+.jobs > tbody > tr:not(.detail), .entries li { cursor: pointer; }
+.entries li.sel { background: var(--accent-soft); }
+.entries-head { display: flex; align-items: center; gap: 0.8rem; padding: 0 0.8rem; font-size: 0.9rem; }
+.entries-head .count { color: var(--muted); }
+/* The selection bar: pinned to the bottom so the actions stay in reach. */
+.selbar {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 10;
+  background: var(--surface); border-top: 1px solid var(--line);
+  box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.08);
+  padding: 0.6rem 1.25rem calc(0.6rem + env(safe-area-inset-bottom, 0px));
+  display: flex; flex-direction: column; gap: 0.5rem;
+}
+.selrow { display: flex; align-items: center; gap: 0.6rem 0.9rem; flex-wrap: wrap; max-width: 78rem; margin: 0 auto; width: 100%; }
+.selbar .confirm { max-width: 78rem; margin: 0 auto; width: 100%; }
+body.has-selbar main { padding-bottom: 9rem; }
 .sortby { display: flex; align-items: center; gap: 0.35rem; font-size: 0.86rem; color: var(--muted); }
 .sortby select { width: auto; }
 .sortdir { padding: 0.4rem 0.6rem; min-width: 2.2rem; }
@@ -229,6 +246,10 @@ details > div { display: flex; flex-direction: column; gap: 0.7rem; margin-botto
   .jobs > tbody > tr.sel { background: var(--accent-soft); }
   .jobs > tbody > tr.sel > td { background: none; }
   .jobs > tbody > tr > td { border: 0; padding: 0.15rem 0; }
+  .selbar { padding-inline: 1rem; }
+  .selbar .bulk button { padding: 0.45rem 0.6rem; }
+  .jobs > tbody > tr > td.c-check input { width: 1.35rem; height: 1.35rem; }
+  .entries input[type=checkbox] { width: 1.35rem; height: 1.35rem; }
   .jobs > tbody > tr > td.c-check { position: absolute; left: 0.8rem; top: 0.7rem; width: auto; }
   .jobs > tbody > tr > .num { display: inline-block; text-align: left; margin-right: 1rem; color: var(--muted); }
   .jobs > tbody > tr > td.num:empty { display: none; }

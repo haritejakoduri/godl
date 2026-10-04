@@ -51,21 +51,9 @@
     </label>
     <button type="button" id="job-sort-dir" class="sortdir" aria-label="Reverse the order">↓</button>
     <span class="grow"></span>
-    <span class="count" id="sel-count"></span>
-    <div class="bulk" id="bulk">
-      <button type="button" data-action="pause">Pause</button>
-      <button type="button" data-action="resume">Resume</button>
-      <button type="button" data-action="retry">Retry</button>
-      <button type="button" data-action="cancel">Cancel</button>
-      <button type="button" data-action="remove">Remove</button>
-      <button type="button" data-action="purge" class="danger">Remove + delete file</button>
-    </div>
+    <button type="button" id="sel-start">Select all</button>
   </div>
-  <div class="confirm" id="confirm" hidden>
-    <span id="confirm-text"></span>
-    <button type="button" id="confirm-yes" class="danger">Yes</button>
-    <button type="button" id="confirm-no">No</button>
-  </div>
+  <p class="hint seltip">Tick downloads, or tap a row, to act on several at once. Shift-click selects a range.</p>
   <div class="tablewrap">
     <table class="jobs">
       <thead>
@@ -84,6 +72,29 @@
   </div>
   <p class="empty" id="jobs-empty" hidden>No downloads yet. Start one from <a href="#new">New</a>.</p>
   <p class="empty" id="jobs-nomatch" hidden>Nothing matches that filter.</p>
+
+  <!-- Shown while anything is ticked; stays on screen however far the list scrolls. -->
+  <div class="selbar" id="selbar" hidden role="region" aria-label="Selected downloads">
+    <div class="confirm" id="confirm" hidden>
+      <span id="confirm-text"></span>
+      <button type="button" id="confirm-yes" class="danger">Yes</button>
+      <button type="button" id="confirm-no">No</button>
+    </div>
+    <div class="selrow">
+      <strong class="count" id="sel-count"></strong>
+      <button type="button" id="sel-all" class="linkish">Select all</button>
+      <button type="button" id="sel-clear" class="linkish">Clear</button>
+      <span class="grow"></span>
+      <div class="bulk" id="bulk">
+        <button type="button" data-action="pause">Pause</button>
+        <button type="button" data-action="resume">Resume</button>
+        <button type="button" data-action="retry">Retry</button>
+        <button type="button" data-action="cancel">Cancel</button>
+        <button type="button" data-action="remove">Remove</button>
+        <button type="button" data-action="purge" class="danger">Remove + delete file</button>
+      </div>
+    </div>
+  </div>
 </section>
 
 <!-- New download -->
@@ -211,6 +222,11 @@
     </div>
     <label class="field"><span>Save to</span><input type="text" id="browse-output" spellcheck="false"></label>
     <p class="msg" id="browse-msg" role="status"></p>
+    <div class="entries-head">
+      <label class="check"><input type="checkbox" id="browse-all"> Select all</label>
+      <span class="count" id="browse-count"></span>
+      <button type="button" id="browse-clear" class="linkish" hidden>Clear</button>
+    </div>
     <ul class="entries" id="entries"></ul>
   </div>
 </section>

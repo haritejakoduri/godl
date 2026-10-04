@@ -16,6 +16,34 @@ const el = (tag, props = {}, ...kids) => {
   return e;
 };
 
+// ---------- multi-select ----------
+//
+// Every list with checkboxes works the same way: tick a box or tap
+// the row, and shift-click to tick (or untick) everything between the
+// last row touched and this one. The pointer's shift state is noted on
+// pointerdown, because a click forwarded from a <label> to its checkbox
+// doesn't reliably carry modifier keys.
+
+let shiftHeld = false;
+document.addEventListener('pointerdown', (e) => { shiftHeld = e.shiftKey; }, true);
+document.addEventListener('keydown', (e) => { if (e.key === ' ' || e.key === 'Enter') shiftHeld = e.shiftKey; }, true);
+
+// selectRange applies on to every key between anchor and key in order.
+// It returns false when there's no usable anchor, so the caller treats
+// the click as a single toggle.
+function selectRange(order, anchor, key, on, set) {
+  const a = order.indexOf(anchor), b = order.indexOf(key);
+  if (a < 0 || b < 0) return false;
+  for (let i = Math.min(a, b); i <= Math.max(a, b); i++) set(order[i], on);
+  return true;
+}
+
+// rowTap turns a tap anywhere on a row into a tick, except on the row's
+// own controls (buttons, links, inputs, the details panel).
+function rowTap(e) {
+  return !e.target.closest('button, a, input, select, label, .details');
+}
+
 // ---------- formatting ----------
 
 function bytes(n) {
@@ -237,10 +265,7 @@ function filtered() {
 
 function makeRow(j) {
   const check = el('input', { type: 'checkbox', 'aria-label': 'Select' });
-  check.addEventListener('change', () => {
-    check.checked ? state.selected.add(j.id) : state.selected.delete(j.id);
-    renderSelection();
-  });
+  check.addEventListener('click', () => selectJob(j.id, check.checked));
   const name = el('b'), src = el('small'), err = el('small', { class: 'j-err' });
   const chip = el('span', { class: 'chip' });
   const fill = el('i'), bar = el('div', { class: 'bar' }, fill), pct = el('small');
@@ -263,6 +288,7 @@ function makeRow(j) {
     el('td', { class: 'j-acts' }, play, ' ', toggle));
   const detailBody = el('div', { class: 'details' });
   const detail = el('tr', { class: 'detail' }, el('td', { colspan: '7' }, detailBody));
+  tr.addEventListener('click', (e) => { if (rowTap(e)) selectJob(j.id, !state.selected.has(j.id)); });
   const row = { tr, check, name, src, err, chip, bar, fill, pct, spd, left, play, toggle, more, detail, detailBody, open: false, last: {} };
   more.addEventListener('click', () => {
     row.open = !row.open;
@@ -405,12 +431,35 @@ function renderJobs() {
   renderSelection();
 }
 
+let jobAnchor = null;
+
+function selectJob(id, on) {
+  const set = (k, v) => (v ? state.selected.add(k) : state.selected.delete(k));
+  if (!(shiftHeld && selectRange(filtered().map((j) => j.id), jobAnchor, id, on, set))) set(id, on);
+  jobAnchor = id;
+  shiftHeld = false;
+  renderSelection();
+}
+
+function setAllJobs(on) {
+  for (const j of filtered()) on ? state.selected.add(j.id) : state.selected.delete(j.id);
+  if (!on) state.selected.clear();
+  renderSelection();
+}
+
 function renderSelection() {
   const n = state.selected.size;
-  $('sel-count').textContent = n ? n + ' selected' : '';
-  $('bulk').querySelectorAll('button').forEach((b) => (b.disabled = n === 0));
   const visible = filtered();
-  $('check-all').checked = visible.length > 0 && visible.every((j) => state.selected.has(j.id));
+  const allOn = visible.length > 0 && visible.every((j) => state.selected.has(j.id));
+  $('sel-count').textContent = n + ' selected';
+  $('selbar').hidden = n === 0;
+  if (n === 0) $('confirm').hidden = true;
+  document.body.classList.toggle('has-selbar', n > 0);
+  $('sel-all').hidden = allOn;
+  $('sel-all').textContent = 'Select all ' + visible.length;
+  $('sel-start').hidden = n > 0 || visible.length < 2;
+  $('check-all').checked = allOn;
+  $('check-all').indeterminate = n > 0 && !allOn;
   for (const [id, row] of state.rows) {
     const s = state.selected.has(id);
     set(row, 'sel', s, (v) => { row.check.checked = v; row.tr.classList.toggle('sel', v); });
@@ -419,10 +468,10 @@ function renderSelection() {
 
 $('job-filter').addEventListener('input', renderJobs);
 $('job-state').addEventListener('change', renderJobs);
-$('check-all').addEventListener('change', (e) => {
-  for (const j of filtered()) e.target.checked ? state.selected.add(j.id) : state.selected.delete(j.id);
-  renderSelection();
-});
+$('check-all').addEventListener('change', (e) => setAllJobs(e.target.checked));
+$('sel-start').addEventListener('click', () => setAllJobs(true));
+$('sel-all').addEventListener('click', () => setAllJobs(true));
+$('sel-clear').addEventListener('click', () => setAllJobs(false));
 
 let pendingConfirm = null;
 function confirmThen(text, fn) {
@@ -438,7 +487,8 @@ async function jobAction(ids, action, purge) {
   try {
     const r = await api('POST', 'api/jobs/action', { ids, action, purge: !!purge });
     if (r.failed && r.failed.length) banner(r.failed.length + ' could not be changed: ' + r.failed[0].error, true);
-    if (action === 'remove') ids.forEach((id) => state.selected.delete(id));
+    // Done with that selection, as the dashboard is after a bulk action.
+    if (ids.length > 1 || action === 'remove') ids.forEach((id) => state.selected.delete(id));
     renderSelection();
   } catch (e) { banner(e.message, true); }
 }
@@ -551,7 +601,16 @@ $('torrent-file').addEventListener('change', async (e) => {
 });
 
 $('torrent-list').addEventListener('click', () => loadTorrentFiles(true));
-$('torrent-files').addEventListener('change', updatePickSummary);
+let fileAnchor = null;
+$('torrent-files').addEventListener('click', (e) => {
+  const box = e.target.closest('input[type=checkbox]');
+  if (!box) return;
+  const boxes = [...$('torrent-files').querySelectorAll('input')];
+  if (shiftHeld && fileAnchor) selectRange(boxes, fileAnchor, box, box.checked, (b, v) => (b.checked = v));
+  fileAnchor = box;
+  shiftHeld = false;
+  updatePickSummary();
+});
 $('torrent-all').addEventListener('click', () => { $('torrent-files').querySelectorAll('input').forEach((c) => (c.checked = true)); updatePickSummary(); });
 $('torrent-none').addEventListener('click', () => { $('torrent-files').querySelectorAll('input').forEach((c) => (c.checked = false)); updatePickSummary(); });
 
@@ -680,17 +739,46 @@ function renderBrowser() {
   const list = sortEntries(browse.entries.filter((e) => !q || e.name.toLowerCase().includes(q)));
   $('entries').replaceChildren(...list.map((e) => {
     const box = el('input', { type: 'checkbox', 'aria-label': 'Select ' + e.name, checked: browse.sel.has(e.path) });
-    box.addEventListener('change', () => (box.checked ? browse.sel.add(e.path) : browse.sel.delete(e.path)));
+    box.addEventListener('click', () => selectEntry(e.path, box.checked));
     const name = e.dir
       ? el('span', { class: 'e-name' }, el('button', { type: 'button', text: e.name + '/', onclick: () => openBrowser(browse.conn, e.path) }))
       : el('span', { class: 'e-name', text: e.name });
-    return el('li', {}, box, name,
+    return el('li', { class: browse.sel.has(e.path) ? 'sel' : '', onclick: (ev) => { if (rowTap(ev)) selectEntry(e.path, !browse.sel.has(e.path)); } }, box, name,
       el('em', { class: 'e-date', text: e.modified ? new Date(e.modified * 1000).toLocaleDateString() : '' }),
       e.dir ? null : el('em', { text: e.size >= 0 ? bytes(e.size) : '' }),
       e.dir ? null : el('button', { type: 'button', text: 'Play', onclick: () => openPlayer({ kind: 'webdav', conn: browse.conn, path: e.path }, e.name) }));
   }));
   if (!list.length) $('entries').append(el('li', { class: 'empty', text: q ? 'Nothing here matches.' : 'This folder is empty.' }));
+  const n = browse.sel.size;
+  const allOn = list.length > 0 && list.every((e) => browse.sel.has(e.path));
+  $('browse-all').checked = allOn;
+  $('browse-all').indeterminate = n > 0 && !allOn;
+  $('browse-count').textContent = n ? n + ' selected' : '';
+  $('browse-clear').hidden = n === 0;
+  $('browse-dl-sel').textContent = n ? 'Download selected (' + n + ')' : 'Download selected';
+  $('browse-dl-sel').disabled = n === 0;
 }
+
+let entryAnchor = null;
+
+function visibleEntries() {
+  const q = $('browse-filter').value.trim().toLowerCase();
+  return sortEntries(browse.entries.filter((e) => !q || e.name.toLowerCase().includes(q)));
+}
+
+function selectEntry(path, on) {
+  const set = (k, v) => (v ? browse.sel.add(k) : browse.sel.delete(k));
+  if (!(shiftHeld && selectRange(visibleEntries().map((e) => e.path), entryAnchor, path, on, set))) set(path, on);
+  entryAnchor = path;
+  shiftHeld = false;
+  renderBrowser();
+}
+
+$('browse-all').addEventListener('change', (e) => {
+  for (const en of visibleEntries()) e.target.checked ? browse.sel.add(en.path) : browse.sel.delete(en.path);
+  renderBrowser();
+});
+$('browse-clear').addEventListener('click', () => { browse.sel.clear(); renderBrowser(); });
 
 // Folders always come before files, whatever the order.
 const ENTRY_ORDER = {

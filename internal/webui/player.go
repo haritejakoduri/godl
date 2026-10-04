@@ -13,12 +13,14 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"godl/internal/ffmpeg"
+	"godl/internal/jsruntime"
 	"godl/internal/ytdlp"
 )
 
@@ -36,6 +38,10 @@ type OpenRequest struct {
 
 	Link    string `json:"link,omitempty"`
 	Quality int    `json:"quality,omitempty"` // max height, 0 = no cap
+	// Cookies names a browser on the godl machine whose sign-in yt-dlp
+	// may use (its --cookies-from-browser), for a site that asks to
+	// sign in — YouTube's "confirm you're not a bot", say.
+	Cookies string `json:"cookies,omitempty"`
 }
 
 // A Resolver turns a "job" or "webdav" OpenRequest into a Source.
@@ -63,6 +69,7 @@ type Player struct {
 	// Swappable so tests run without downloading the real tools.
 	ffmpegDir func(context.Context) (string, error)
 	ytdlpPath func(context.Context) (string, error)
+	jsArgs    func(context.Context) []string
 
 	mu       sync.Mutex
 	sessions map[string]*session
@@ -93,6 +100,7 @@ func NewPlayer(resolve Resolver) *Player {
 		resolve:   resolve,
 		ffmpegDir: func(ctx context.Context) (string, error) { return ffmpeg.Ensure(ctx, nil) },
 		ytdlpPath: func(ctx context.Context) (string, error) { return ytdlp.Ensure(ctx, nil) },
+		jsArgs:    func(ctx context.Context) []string { return jsruntime.Args(ctx, nil) },
 		sessions:  map[string]*session{},
 		links:     map[string]*extLink{},
 		slots:     make(chan struct{}, maxStreams),
@@ -140,11 +148,20 @@ func (p *Player) handleOpen(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var ytDlp string
+	var extra []string
 	if req.Kind == "link" {
 		var err error
 		if ytDlp, err = p.ytdlpPath(r.Context()); err != nil {
 			writeError(w, http.StatusBadGateway, fmt.Errorf("getting yt-dlp: %w", err))
 			return
+		}
+		extra = p.jsArgs(r.Context())
+		if c := strings.TrimSpace(req.Cookies); c != "" {
+			if !browserRe.MatchString(c) {
+				writeError(w, http.StatusBadRequest, fmt.Errorf("%q isn't a browser name like firefox or chrome", c))
+				return
+			}
+			extra = append(extra, "--cookies-from-browser", c)
 		}
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), probeTimeout)
@@ -154,7 +171,7 @@ func (p *Player) handleOpen(w http.ResponseWriter, r *http.Request) {
 	var info Info
 	var err error
 	if req.Kind == "link" {
-		src, info, err = openLink(ctx, ytDlp, req)
+		src, info, err = openLink(ctx, ytDlp, req, extra)
 	} else {
 		src, info, err = p.openFile(ctx, req)
 	}
@@ -175,13 +192,18 @@ func (p *Player) handleOpen(w http.ResponseWriter, r *http.Request) {
 	}{id, info})
 }
 
-func openLink(ctx context.Context, ytDlp string, req OpenRequest) (Source, Info, error) {
+// browserRe is what yt-dlp's --cookies-from-browser takes: a browser
+// name, optionally with a keyring, profile or container
+// ("firefox", "chrome:Profile 1", "firefox::Work").
+var browserRe = regexp.MustCompile(`^[A-Za-z]+(\+[A-Za-z]+)?(:[\w .\-]*){0,2}$`)
+
+func openLink(ctx context.Context, ytDlp string, req OpenRequest, extra []string) (Source, Info, error) {
 	link := strings.TrimSpace(req.Link)
 	u, err := url.Parse(link)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
 		return Source{}, Info{}, fmt.Errorf("that doesn't look like a web link")
 	}
-	return resolveLink(ctx, ytDlp, link, req.Quality)
+	return resolveLink(ctx, ytDlp, link, req.Quality, extra)
 }
 
 func (p *Player) openFile(ctx context.Context, req OpenRequest) (Source, Info, error) {

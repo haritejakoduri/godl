@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"godl/internal/jsruntime"
 	"godl/internal/ytdlp"
 )
 
@@ -18,6 +19,9 @@ const resolveTimeout = 30 * time.Second
 
 // ensureYtdlp is ytdlp.Ensure, swappable so tests never download it.
 var ensureYtdlp = ytdlp.Ensure
+
+// jsArgs is jsruntime.Args, likewise swappable.
+var jsArgs = jsruntime.Args
 
 // PlayLink plays a yt-dlp-supported page link (a YouTube watch page,
 // say) straight from the site, with nothing written to disk. format is
@@ -43,10 +47,11 @@ func PlayLink(ctx context.Context, link, format string, progress func(string)) e
 		return fmt.Errorf("getting yt-dlp to resolve the link: %w", err)
 	}
 
+	js := jsArgs(ctx, progress)
 	if kind == playerMPV {
-		return launch(playerPath, append(mpvLinkArgs(ytDlpPath, format), link))
+		return launch(playerPath, append(mpvLinkArgs(ytDlpPath, format, js), link))
 	}
-	urls, err := resolveStream(ctx, ytDlpPath, link, format)
+	urls, err := resolveStream(ctx, ytDlpPath, link, format, js)
 	if err != nil {
 		return fmt.Errorf("resolving a stream URL for VLC: %w", err)
 	}
@@ -57,12 +62,17 @@ func PlayLink(ctx context.Context, link, format string, progress func(string)) e
 // forced open at once: resolving takes a few seconds in which mpv
 // otherwise shows nothing, and an audio-only format would never open
 // one at all — leaving a detached player with no way to stop it.
-func mpvLinkArgs(ytDlpPath, format string) []string {
+func mpvLinkArgs(ytDlpPath, format string, js []string) []string {
 	args := []string{
 		// -append, not --script-opts: that one splits its value on
 		// commas, which a path may contain.
 		"--script-opts-append=ytdl_hook-ytdl_path=" + ytDlpPath,
 		"--force-window=immediate",
+	}
+	// The hook runs yt-dlp itself; pass on the JavaScript runtime
+	// (see internal/jsruntime) as one of its raw options.
+	if len(js) == 2 {
+		args = append(args, "--ytdl-raw-options-append=js-runtimes="+js[1])
 	}
 	if format != "" {
 		args = append(args, "--ytdl-format="+format)
@@ -84,10 +94,10 @@ func vlcLinkArgs(urls []string) []string {
 
 // resolveStream asks yt-dlp for link's direct stream URL(s) in format,
 // one per line of its -g output.
-func resolveStream(ctx context.Context, ytDlpPath, link, format string) ([]string, error) {
+func resolveStream(ctx context.Context, ytDlpPath, link, format string, js []string) ([]string, error) {
 	ctx, cancel := context.WithTimeout(ctx, resolveTimeout)
 	defer cancel()
-	args := []string{"-g"}
+	args := append([]string{"-g"}, js...)
 	if format != "" {
 		args = append(args, "-f", format)
 	}

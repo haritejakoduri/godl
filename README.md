@@ -224,6 +224,11 @@ godl social <link> -p worst        # lowest quality (quick preview/test)
 godl social <link> -p audio        # audio only, best available quality
 ```
 
+YouTube now hides its streams behind a small script the client has to
+run, so yt-dlp needs a JavaScript runtime: godl hands it deno, node or
+bun if one is installed, and otherwise downloads and verifies its own
+copy of deno the first time it's needed.
+
 `godl social --list-presets` prints the full list. For full control,
 `-f`/`--format` instead passes a selector straight through to yt-dlp
 (not together with `-p`):
@@ -606,7 +611,11 @@ browser can read as they are are handed to it directly; anything else
 by godl's own ffmpeg — picture copied, sound converted to AAC only when
 it isn't already — and streamed straight to the page with no temporary
 files. Changing language or seeking restarts that stream at the current
-position. When the browser can't decode the picture (HEVC in some
+position. Sites that slow down long downloads (YouTube) are fetched in
+10 MB pieces, as yt-dlp does, so playback stays well ahead. If a site
+asks you to sign in (YouTube's "confirm you're not a bot"), enter the
+browser you're signed in with under Watch a link — its login is read on
+the godl machine by yt-dlp, the same as `--cookies-from-browser`. When the browser can't decode the picture (HEVC in some
 browsers, or iPhone/iPad Safari), the player says so and offers a
 **stream link** to paste into VLC or another app (the original file,
 with every language and subtitle in it; for a web link, a Matroska

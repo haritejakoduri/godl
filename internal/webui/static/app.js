@@ -473,6 +473,7 @@ function setKind(k) {
   $('new-submit').textContent = t.submit;
   $('new-links').rows = k === 'watch' ? 1 : 4;
   $('f-quality').hidden = !(k === 'social' || k === 'watch');
+  $('f-watch-cookies').hidden = k !== 'watch';
   $('torrent-extra').hidden = k !== 'torrent';
   $('dl-fields').hidden = k === 'watch';
   document.querySelectorAll('#adv > div').forEach((d) => {
@@ -540,7 +541,10 @@ $('new-form').addEventListener('submit', async (e) => {
   if (!links.length) { say('new-msg', 'Paste a link first.', 'err'); return; }
   if (kind === 'watch') {
     const quality = { '1080p': 1080, '720p': 720, '480p': 480, worst: 360 }[$('new-preset').value] || 0;
-    openPlayer({ kind: 'link', link: links[0], quality }, links[0]);
+    const cookies = $('watch-cookies').value.trim();
+    Object.assign(prefs, { watchCookies: cookies });
+    savePrefs();
+    openPlayer({ kind: 'link', link: links[0], quality, cookies }, links[0]);
     return;
   }
   let body;
@@ -809,7 +813,11 @@ async function startSession() {
     r = await api('POST', 'api/play/open', P.req);
   } catch (err) {
     playerWait('');
-    showFallback(err.message, false);
+    let msg = err.message;
+    if (/sign in|not a bot|cookies/i.test(msg) && P.req.kind === 'link' && !P.req.cookies) {
+      msg += ' — In New → Watch a link, enter the browser you\u2019re signed in with (for example firefox) and try again.';
+    }
+    showFallback(msg, false);
     return;
   }
   if ($('player').hidden) return;
@@ -1062,6 +1070,7 @@ async function init() {
   $('browse-output').placeholder = state.info.downloads;
   $('share-dir').placeholder = state.info.downloads;
   applyShare(state.info.share);
+  $('watch-cookies').value = prefs.watchCookies || '';
   showSort();
   setKind('url');
   showView();

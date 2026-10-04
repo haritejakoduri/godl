@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"godl/internal/ffmpeg"
+	"godl/internal/jsruntime"
 	"godl/internal/reqhdr"
 	"godl/internal/store"
 	"godl/internal/ytdlp"
@@ -56,6 +57,8 @@ func (d *Daemon) ytdlpArgs(ctx context.Context, j *store.Job) []string {
 		args = append(args, "-f", j.Format)
 	}
 	args = append(args, YtdlpAuthArgs(j.Options)...)
+	// YouTube's streams need a JavaScript runtime; see internal/jsruntime.
+	args = append(args, jsruntime.Args(ctx, func(msg string) { d.publishLog(j.ID, msg, false) })...)
 	// yt-dlp has its own native rate limiter — no need to
 	// reimplement one for a subprocess we don't read the bytes of
 	// ourselves. Same clamp-not-share treatment as torrent's global

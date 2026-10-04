@@ -48,8 +48,9 @@ type ytdlpSub struct {
 // resolveLink asks yt-dlp what a web link (a YouTube watch page, say)
 // can be played from, and picks the streams the page's player will use:
 // the best picture up to maxHeight, and one audio stream per language.
-func resolveLink(ctx context.Context, ytDlpPath, link string, maxHeight int) (Source, Info, error) {
-	out, err := exec.CommandContext(ctx, ytDlpPath, "-J", "--no-playlist", "--no-warnings", link).Output()
+func resolveLink(ctx context.Context, ytDlpPath, link string, maxHeight int, extra []string) (Source, Info, error) {
+	args := append([]string{"-J", "--no-playlist", "--no-warnings"}, extra...)
+	out, err := exec.CommandContext(ctx, ytDlpPath, append(args, link)...).Output()
 	if err != nil {
 		return Source{}, Info{}, cmdError(err)
 	}

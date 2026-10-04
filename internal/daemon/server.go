@@ -18,6 +18,10 @@ import (
 )
 
 type Daemon struct {
+	// The socket listener, once Serve has it; stopServing closes it.
+	listenerMu sync.Mutex
+	listener   net.Listener
+
 	st      *store.Store
 	tm      *torrentmgr.Manager
 	dataDir string
@@ -127,6 +131,9 @@ func (d *Daemon) Serve() error {
 	}
 	defer l.Close()
 	defer os.Remove(sockPath)
+	d.listenerMu.Lock()
+	d.listener = l
+	d.listenerMu.Unlock()
 	// Unix sockets get created with a mode based on umask (often
 	// world-connectable), and SocketPath() can fall back to a shared
 	// temp dir when $XDG_RUNTIME_DIR isn't set — restrict explicitly so
@@ -206,4 +213,14 @@ func (d *Daemon) Close() {
 	d.closeStreamServer()
 	d.tm.Close()
 	d.st.Close()
+}
+
+// stopServing closes the socket, which ends Serve.
+func (d *Daemon) stopServing() {
+	d.listenerMu.Lock()
+	l := d.listener
+	d.listenerMu.Unlock()
+	if l != nil {
+		l.Close()
+	}
 }

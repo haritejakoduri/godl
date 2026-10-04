@@ -195,3 +195,23 @@ func TestCreateJobRefusesAnAbsurdPieceCount(t *testing.T) {
 		t.Errorf("the cap itself should be allowed: %v", err)
 	}
 }
+
+func TestOlderVersion(t *testing.T) {
+	cases := []struct {
+		daemon, client string
+		want           bool
+	}{
+		{"", "0.8.1", true}, // a daemon from before versions were reported
+		{"0.8.0", "0.8.1", true},
+		{"0.7.3", "0.8.0", true},
+		{"0.9.0", "0.10.0", true}, // numbers, not text
+		{"0.8.1", "0.8.1", false},
+		{"0.8.2", "0.8.1", false}, // a newer daemon is left alone
+		{"1.0", "0.9.9", false},
+	}
+	for _, c := range cases {
+		if got := olderVersion(c.daemon, c.client); got != c.want {
+			t.Errorf("olderVersion(%q, %q) = %v, want %v", c.daemon, c.client, got, c.want)
+		}
+	}
+}

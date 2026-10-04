@@ -60,6 +60,7 @@ func init() {
 		removeCmd,
 		listCmd,
 		updateCmd,
+		restartCmd,
 		internalDaemonCmd,
 	)
 }

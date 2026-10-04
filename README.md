@@ -660,6 +660,10 @@ copying data, capped at a few at a time.
 
 ### `godl update` — update everything godl manages, including itself
 
+After an update, the background daemon from the old version is replaced
+automatically the next time any godl command runs (its downloads carry
+on in the new one). `godl restart` does the same by hand.
+
 Forces an immediate check for a newer yt-dlp/ffmpeg build (godl checks
 on its own too — see `godl social` above) *and* a newer godl release,
 updating whichever it finds:

@@ -168,6 +168,9 @@ func (m statusModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case torrentFilesMsg:
 		return m.torrentFilesLoaded(msg)
 
+	case newJobSettingsMsg:
+		return m.newJobSettingsLoaded(msg)
+
 	case detailsLoadedMsg:
 		return m.detailsLoaded(msg)
 
@@ -239,7 +242,7 @@ func (m statusModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		ti.CharLimit = 2048
 		ti.Width = 60
 		m.newJob = &newJobState{step: newJobPickType, input: ti}
-		return m, nil
+		return m, loadNewJobSettings(m.newJob)
 	case "w":
 		return m.openWebDAVBrowser()
 	case "s":

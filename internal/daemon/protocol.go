@@ -89,6 +89,10 @@ type JobView struct {
 	// Only set while Status is seeding.
 	UploadBps float64 `json:"upload_bps,omitempty"`
 	Ratio     float64 `json:"ratio,omitempty"`
+	// Phase says what a TorBox torrent is waiting on ("TorBox:
+	// downloading 40% · 12 MB/s"), or that its files are arriving
+	// ("from TorBox"). Empty for everything else.
+	Phase string `json:"phase,omitempty"`
 }
 
 // Response is one daemon->client message. Most commands get exactly one;

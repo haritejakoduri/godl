@@ -267,3 +267,8 @@ details > div { display: flex; flex-direction: column; gap: 0.7rem; margin-botto
   .bar i { transition: none; }
   .bar.unknown i { animation: none; }
 }
+.via { border: 1px solid var(--line); border-radius: 8px; background: var(--surface); padding: 0.5rem 0.8rem 0.6rem; margin: 0 0 0.6rem; display: flex; flex-direction: column; gap: 0.3rem; }
+.via legend { font-size: 0.78rem; font-weight: 600; color: var(--muted); padding: 0 0.3rem; }
+#torbox-cached:empty { display: none; }
+#torbox-cached.ok { color: var(--st-done); }
+#seed-opts.off { display: none; }

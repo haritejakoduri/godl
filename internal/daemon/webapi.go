@@ -24,6 +24,7 @@ import (
 	"godl/internal/reqhdr"
 	"godl/internal/social"
 	"godl/internal/store"
+	"godl/internal/torbox"
 	"godl/internal/torrentmgr"
 	"godl/internal/urlname"
 	"godl/internal/version"
@@ -46,6 +47,7 @@ func (d *Daemon) webRoutes(mux *http.ServeMux, ws *webServer) {
 	mux.HandleFunc("POST /api/jobs/{id}/select", d.webSelectFiles)
 	mux.HandleFunc("POST /api/torrent/files", d.webTorrentFiles)
 	mux.HandleFunc("POST /api/torrent/upload", d.webTorrentUpload)
+	mux.HandleFunc("POST /api/torbox/cached", d.webTorBoxCached)
 	mux.HandleFunc("PUT /api/settings", d.webPutSettings)
 	mux.HandleFunc("POST /api/connections", d.webAddConnection)
 	mux.HandleFunc("DELETE /api/connections/{name}", d.webRemoveConnection)
@@ -90,6 +92,12 @@ type webSettings struct {
 	WebUIUsername        string `json:"webui_username"`
 	WebUIPassword        string `json:"webui_password,omitempty"`
 	WebUIPasswordSet     bool   `json:"webui_password_set"`
+	// The TorBox key is write-only too; TorBoxKeyClear removes it.
+	TorBoxAPIKey   string `json:"torbox_api_key,omitempty"`
+	TorBoxKeySet   bool   `json:"torbox_key_set"`
+	TorBoxKeyClear bool   `json:"torbox_key_clear,omitempty"`
+	TorBoxDefault  bool   `json:"torbox_default"`
+	TorBoxKeep     bool   `json:"torbox_keep"`
 }
 
 func webSettingsOf(s store.Settings) webSettings {
@@ -102,6 +110,7 @@ func webSettingsOf(s store.Settings) webSettings {
 		AutoRetry: s.AutoRetry, AutoRetryMaxAttempts: s.AutoRetryMaxAttempts, NotifyOnComplete: s.NotifyOnComplete,
 		WebUI: s.WebUI, WebUIPort: port, WebUINetwork: s.WebUINetwork, WebUIUsername: s.WebUIUsername,
 		WebUIPasswordSet: s.WebUIPassword != "",
+		TorBoxKeySet:     s.TorBoxAPIKey != "", TorBoxDefault: s.TorBoxDefault, TorBoxKeep: s.TorBoxKeep,
 	}
 }
 
@@ -161,6 +170,13 @@ func (d *Daemon) webPutSettings(w http.ResponseWriter, r *http.Request) {
 	if in.WebUIPassword != "" {
 		s.WebUIPassword = in.WebUIPassword
 	}
+	s.TorBoxAPIKey, s.TorBoxDefault, s.TorBoxKeep = cur.TorBoxAPIKey, in.TorBoxDefault, in.TorBoxKeep
+	switch {
+	case in.TorBoxKeyClear:
+		s.TorBoxAPIKey = ""
+	case strings.TrimSpace(in.TorBoxAPIKey) != "":
+		s.TorBoxAPIKey = in.TorBoxAPIKey
+	}
 	resp := d.do(r.Context(), Request{Cmd: CmdSetSettings, Settings: &s})
 	if !resp.OK {
 		badRequest(w, fmt.Errorf("%s", resp.Error))
@@ -191,6 +207,7 @@ type webAddRequest struct {
 	TorrentFiles string  `json:"torrent_files"`
 	SeedRatio    float64 `json:"seed_ratio"`
 	SeedTime     string  `json:"seed_time"`
+	Via          string  `json:"via"` // "torbox" | "p2p" | "" (the default setting)
 }
 
 var sha256Re = regexp.MustCompile(`^[0-9a-fA-F]{64}$`)
@@ -322,6 +339,7 @@ func buildAddRequests(in webAddRequest) ([]Request, error) {
 			reqs[i].Options.TorrentFiles = in.TorrentFiles
 			reqs[i].Options.SeedRatio = in.SeedRatio
 			reqs[i].Options.SeedTimeSec = seedSec
+			reqs[i].Options.Via = in.Via
 		}
 
 	default:
@@ -817,4 +835,42 @@ func (d *Daemon) resolveMedia(ctx context.Context, req webui.OpenRequest) (webui
 		return src, nil
 	}
 	return webui.Source{}, fmt.Errorf("unknown thing to play: %q", req.Kind)
+}
+
+// webTorBoxCached says whether TorBox already has a torrent, so the page
+// can tell the user it'll be ready at once.
+func (d *Daemon) webTorBoxCached(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Source string `json:"source"`
+	}
+	if !readJSON(w, r, &in) {
+		return
+	}
+	s := d.cachedSettings()
+	if !s.TorBoxReady() {
+		badRequest(w, fmt.Errorf("TorBox isn't set up"))
+		return
+	}
+	source := strings.TrimSpace(in.Source)
+	if !strings.HasPrefix(source, "magnet:") {
+		abs, err := paths.ResolveOutput(source)
+		if err != nil {
+			badRequest(w, err)
+			return
+		}
+		source = abs
+	}
+	hash, err := torrentmgr.InfoHashOf(source)
+	if err != nil {
+		badRequest(w, err)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	cached, err := torbox.New(s.TorBoxAPIKey).Cached(ctx, hash)
+	if err != nil {
+		webui.WriteError(w, http.StatusBadGateway, err)
+		return
+	}
+	webui.WriteJSON(w, map[string]bool{"cached": cached[hash]})
 }

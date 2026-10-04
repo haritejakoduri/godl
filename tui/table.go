@@ -191,7 +191,7 @@ func (m *statusModel) rebuildRows(cursorIdx int) {
 		rows = append(rows, table.Row{
 			check,
 			j.ID,
-			string(j.Type),
+			jobTypeLabel(j),
 			status,
 			m.progressCell(j, frame),
 			m.speedCell(j),
@@ -272,4 +272,13 @@ func fitCells(s string, w int) string {
 		s = b.String() + "…"
 	}
 	return s + strings.Repeat(" ", max(w-lipgloss.Width(s), 0))
+}
+
+// jobTypeLabel is the Type column: "torbox" for a torrent fetched
+// through TorBox, the job's type otherwise.
+func jobTypeLabel(j *daemon.JobView) string {
+	if j.Type == store.JobTorrent && j.Options.TorBox() {
+		return "torbox"
+	}
+	return string(j.Type)
 }

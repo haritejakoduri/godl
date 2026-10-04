@@ -9,6 +9,7 @@ import (
 
 	"godl/internal/daemon"
 	"godl/internal/format"
+	"godl/internal/store"
 	"godl/internal/torrentmgr"
 )
 
@@ -29,6 +30,15 @@ is reached, whichever comes first:
 
   godl torrent <magnet> --seed-ratio 1.5
   godl torrent <magnet> --seed-time 2h
+
+Send it through TorBox (torbox.app) instead: TorBox downloads the
+torrent on its servers, then godl fetches the files from TorBox over a
+fast direct connection. Set your TorBox API key in Settings ("s" in
+"godl status", or the web interface) first:
+
+  godl torrent <magnet> --torbox
+
+With "Use TorBox for new torrents" on, --p2p sends one past TorBox.
 
 Watch it while it downloads with "godl stream <job-id>" (or "o" in
 "godl status").`,
@@ -75,12 +85,28 @@ Watch it while it downloads with "godl stream <job-id>" (or "o" in
 			return fmt.Errorf("--seed-ratio and --seed-time can't be negative")
 		}
 
+		useTorBox, _ := cmd.Flags().GetBool("torbox")
+		useP2P, _ := cmd.Flags().GetBool("p2p")
+		via := ""
+		switch {
+		case useTorBox && useP2P:
+			return fmt.Errorf("pick one of --torbox and --p2p")
+		case useTorBox:
+			via = store.ViaTorBox
+		case useP2P:
+			via = store.ViaP2P
+		}
+		if via == store.ViaTorBox && (seedRatio > 0 || seedTime > 0) {
+			return fmt.Errorf("a torrent sent through TorBox isn't seeded from here; drop --seed-ratio/--seed-time")
+		}
+
 		reqs := make([]daemon.Request, len(all))
 		for i, source := range all {
 			reqs[i] = daemon.Request{Cmd: daemon.CmdAddTorrent, Source: source, Output: output, LimitRate: limitRate}
 			reqs[i].Options.TorrentFiles = files
 			reqs[i].Options.SeedRatio = seedRatio
 			reqs[i].Options.SeedTimeSec = int64(seedTime.Seconds())
+			reqs[i].Options.Via = via
 		}
 		return startJobs(reqs)
 	},
@@ -121,5 +147,7 @@ func init() {
 	torrentCmd.Flags().String("files", "", `download only these files: numbers and ranges from --list-files and/or glob patterns, e.g. "1,3-5" or "*.mkv" (default: all)`)
 	torrentCmd.Flags().Float64("seed-ratio", 0, "keep seeding after completion until uploaded/size reaches this, e.g. 1.0 (default: stop at completion)")
 	torrentCmd.Flags().Duration("seed-time", 0, "keep seeding after completion for this long, e.g. 30m or 2h (default: stop at completion)")
+	torrentCmd.Flags().Bool("torbox", false, "download it through TorBox (needs your TorBox API key in Settings)")
+	torrentCmd.Flags().Bool("p2p", false, "download it straight from peers, even with \"Use TorBox for new torrents\" on")
 	addBatchFlag(torrentCmd)
 }

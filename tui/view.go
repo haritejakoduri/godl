@@ -146,6 +146,10 @@ func (m statusModel) dashboardFooter() string {
 		// reason, so a failed row's ErrorMsg shows here instead, just by
 		// scrolling to it — no extra keybinding needed.
 		lines = append(lines, m.wrapped(errStyle).Render(m.selectedJobError()))
+	case m.selectedJobPhase() != "":
+		// What TorBox is doing with the selected torrent, while nothing
+		// has reached this machine yet.
+		lines = append(lines, m.wrapped(statStyle).Render(m.selectedJobPhase()))
 	}
 	lines = append(lines, m.helpView(dashboardHelp))
 	return strings.Join(lines, "\n")
@@ -184,4 +188,13 @@ func (m statusModel) wrapped(style lipgloss.Style) lipgloss.Style {
 // helpView renders a help/footer hint, wrapped to the terminal width.
 func (m statusModel) helpView(s string) string {
 	return m.wrapped(helpStyle).Render(s)
+}
+
+// selectedJobPhase is the cursor job's TorBox progress, if it has one.
+func (m statusModel) selectedJobPhase() string {
+	j, _, ok := m.cursorJob()
+	if !ok || j.Status != store.StatusActive || !strings.HasPrefix(j.Phase, "TorBox") {
+		return ""
+	}
+	return j.Phase
 }

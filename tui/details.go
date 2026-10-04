@@ -349,6 +349,16 @@ func (m statusModel) viewDetails() string {
 	}
 	line("Source", j.Source)
 	line("Saved to", format.ShortenHome(j.Output))
+	if j.Options.TorBox() {
+		via := "TorBox"
+		if j.Status == store.StatusActive && j.Phase != "" {
+			via = strings.TrimPrefix(j.Phase, "TorBox: ")
+			if j.Phase == "from TorBox" {
+				via = "TorBox has it; downloading the files here"
+			}
+		}
+		line("Via", via)
+	}
 	if j.ErrorMsg != "" && j.Status == store.StatusFailed {
 		b.WriteString(m.wrapped(errStyle).Render(j.ErrorMsg))
 		b.WriteString("\n")

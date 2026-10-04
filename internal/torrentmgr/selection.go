@@ -50,6 +50,20 @@ func ParseSelection(spec string) (*Selection, error) {
 	return s, nil
 }
 
+// UsesIndices reports whether the selection names any file by number,
+// which only means something against the torrent's own file order.
+func (s *Selection) UsesIndices() bool {
+	if s == nil {
+		return false
+	}
+	for _, it := range s.items {
+		if it.glob == "" {
+			return true
+		}
+	}
+	return false
+}
+
 // parseRange reports ok for anything shaped like "N" or "N-M". err is
 // set for a well-shaped but invalid one, such as "0" or "9-3".
 func parseRange(part string) (lo, hi int, ok bool, err error) {

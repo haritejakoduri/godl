@@ -94,7 +94,11 @@ func (d *Daemon) do(ctx context.Context, req Request) Response {
 		return startAndReport(d.createJob(ctx, store.JobURL, req.Source, req.Output, "", req.Concurrency, req.LimitRate, req.Sha256, req.Options))
 
 	case CmdAddTorrent:
-		return startAndReport(d.createJob(ctx, store.JobTorrent, req.Source, req.Output, "", 0, req.LimitRate, "", req.Options))
+		opts, err := d.resolveVia(req.Options)
+		if err != nil {
+			return errResp(err)
+		}
+		return startAndReport(d.createJob(ctx, store.JobTorrent, req.Source, req.Output, "", 0, req.LimitRate, "", opts))
 
 	case CmdAddWebDAV:
 		return startAndReport(d.createJob(ctx, store.JobWebDAV, req.Source, req.Output, "", 0, req.LimitRate, "", store.JobOptions{}))
@@ -144,6 +148,9 @@ func (d *Daemon) do(ctx context.Context, req Request) Response {
 		// files can be switched on and off right there (select_files).
 		infos, _ := d.tmFiles(req.JobID)
 		live := infos != nil && len(infos) == len(files)
+		if tf := d.torboxRuntimeFiles(req.JobID); tf != nil {
+			live = len(tf) == len(files)
+		}
 		return Response{Type: "result", OK: true, Files: files, Note: note, Live: live}
 
 	case CmdTorrentChoice:
@@ -205,6 +212,7 @@ func viewOf(job *store.Job, rt *runtime) *JobView {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
 	v.SpeedBps = rt.speedBps
+	v.Phase = rt.phase
 	if rt.bytesDone > job.BytesDone {
 		v.BytesDone = rt.bytesDone
 	}

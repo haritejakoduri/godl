@@ -55,6 +55,10 @@ type settingsField struct {
 	get    func(store.Settings) string
 	set    func(*store.Settings, string) error
 	toggle func(*store.Settings)
+	// secret: typed masked, starting empty; leaving it empty keeps what's
+	// saved. limit overrides the input's usual 32 characters.
+	secret bool
+	limit  int
 }
 
 func boolLabel(b bool) string {
@@ -200,6 +204,43 @@ var settingsFields = []settingsField{
 		get:    func(s store.Settings) string { return boolLabel(s.WebUINetwork) },
 		toggle: func(s *store.Settings) { s.WebUINetwork = !s.WebUINetwork },
 	},
+	{
+		label:  "TorBox API key",
+		help:   `From torbox.app → Settings. With it, a torrent can be downloaded by TorBox first and then come here over a fast direct connection. Type "-" to remove it; leave empty to keep it.`,
+		kind:   settingsFieldText,
+		secret: true,
+		limit:  128,
+		get: func(s store.Settings) string {
+			if s.TorBoxAPIKey == "" {
+				return ""
+			}
+			return "(saved)"
+		},
+		set: func(s *store.Settings, v string) error {
+			switch v = strings.TrimSpace(v); v {
+			case "":
+			case "-":
+				s.TorBoxAPIKey = ""
+			default:
+				s.TorBoxAPIKey = v
+			}
+			return nil
+		},
+	},
+	{
+		label:  "Use TorBox for new torrents",
+		help:   "Pre-picks TorBox when adding a torrent (needs the key above). Each torrent can still go either way when it's added.",
+		kind:   settingsFieldBool,
+		get:    func(s store.Settings) string { return boolLabel(s.TorBoxDefault) },
+		toggle: func(s *store.Settings) { s.TorBoxDefault = !s.TorBoxDefault },
+	},
+	{
+		label:  "Keep torrents in TorBox",
+		help:   "Off = once a torrent's files are here, it's deleted from your TorBox account to free the slot. On = it stays there.",
+		kind:   settingsFieldBool,
+		get:    func(s store.Settings) string { return boolLabel(s.TorBoxKeep) },
+		toggle: func(s *store.Settings) { s.TorBoxKeep = !s.TorBoxKeep },
+	},
 }
 
 // loadSettings fetches the daemon's current settings for the Settings
@@ -292,9 +333,16 @@ func (m statusModel) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, saveSettings(s, working)
 		}
 		ti := textinput.New()
-		ti.SetValue(field.get(s.current))
+		if field.secret {
+			ti.EchoMode = textinput.EchoPassword
+		} else {
+			ti.SetValue(field.get(s.current))
+		}
 		ti.Focus()
 		ti.CharLimit = 32
+		if field.limit > 0 {
+			ti.CharLimit = field.limit
+		}
 		ti.Width = 24
 		s.input = ti
 		s.editing = true

@@ -345,3 +345,13 @@ func (m *Manager) InfoHash(jobID string) (string, bool) {
 	}
 	return t.InfoHash().HexString(), true
 }
+
+// InfoHashOf reads a magnet link's or .torrent file's info hash (hex)
+// without touching the network.
+func InfoHashOf(source string) (string, error) {
+	spec, err := specFromSource(source)
+	if err != nil {
+		return "", err
+	}
+	return spec.InfoHash.HexString(), nil
+}

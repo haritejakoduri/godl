@@ -335,6 +335,10 @@ func (d *Daemon) retry(ctx context.Context, id string) (*store.Job, error) {
 		return nil, fmt.Errorf("job %s is already %s", id, job.Status)
 	}
 	resetForRetry(job)
+	// A fresh start for a TorBox torrent adds it to TorBox afresh, in
+	// case what went wrong was TorBox's copy.
+	d.forgetTorBox(job, true)
+	job.Options.TorBoxID = 0
 	// A manual retry is an explicit fresh start, not another automated
 	// attempt — reset the auto-retry streak so it gets the full backoff
 	// budget again rather than picking up where it left off.
@@ -409,6 +413,7 @@ func (d *Daemon) remove(ctx context.Context, id string, purge bool) (*store.Job,
 	if purge {
 		removeDownloadedFiles(job)
 	}
+	d.forgetTorBox(job, false)
 
 	if err := d.st.DeleteJob(ctx, id); err != nil {
 		return nil, err

@@ -342,6 +342,11 @@ godl stream &lt;job-id&gt; --file 3      <span class="c"># a specific file, numb
   <div class="term"><pre>godl torrent &lt;magnet&gt; --seed-ratio 1.5
 godl torrent &lt;magnet&gt; --seed-time 2h</pre></div>
 
+  <h3>Faster, through TorBox</h3>
+  <p>With a <a href="https://torbox.app">TorBox</a> account, TorBox can download the torrent on its servers first; godl then fetches the files from TorBox over a fast direct connection. That is usually much quicker when a torrent has few peers, and instant when TorBox already has it. Save your TorBox API key in Settings first. The dashboard and the web page then ask, for each torrent, whether to use TorBox or this computer.</p>
+  <div class="term"><pre>godl torrent &lt;magnet&gt; --torbox
+godl torrent &lt;magnet&gt; --p2p         <span class="c"># skip TorBox when it is the default</span></pre></div>
+
   <ul>
     <li>Keep a <code>.torrent</code> file where it is until the download finishes. godl reads it again when a job resumes.</li>
     <li>A web address that points to a <code>.torrent</code> does not work directly. Save the file first, then pass its path.</li>
@@ -468,6 +473,9 @@ godl remove &lt;job-id&gt; --purge   <span class="c"># take it off the list and 
       <tr><td>Global bandwidth limit</td><td>A cap on link and WebDAV downloads combined. Torrents and videos are each held to it separately.</td></tr>
       <tr><td>Auto-retry on failure</td><td>Retries a failed job by itself after a growing wait, up to the number of attempts you set.</td></tr>
       <tr><td>Notify on completion</td><td>Shows a desktop notification when a job finishes. Works on Linux and macOS.</td></tr>
+      <tr><td>TorBox API key</td><td>Lets torrents go through TorBox. Copy it from torbox.app → Settings.</td></tr>
+      <tr><td>Use TorBox for new torrents</td><td>Makes TorBox the pre-picked choice when adding a torrent.</td></tr>
+      <tr><td>Keep torrents in TorBox</td><td>Off: godl deletes a torrent from your TorBox account once its files are downloaded. On: it stays there.</td></tr>
     </tbody>
   </table>
   </div>

@@ -195,6 +195,8 @@ type webJob struct {
 	Ratio   float64 `json:"ratio,omitempty"`
 	Error   string  `json:"error,omitempty"`
 	Created int64   `json:"created"`
+	Via     string  `json:"via,omitempty"`   // "torbox" for a torrent fetched through TorBox
+	Phase   string  `json:"phase,omitempty"` // what TorBox is doing with it
 }
 
 type webShare struct {
@@ -226,6 +228,7 @@ func (d *Daemon) webEventPayload() []byte {
 			Done: v.BytesDone, Total: v.BytesTotal,
 			Speed: v.SpeedBps, ETA: v.ETASeconds, Upload: v.UploadBps, Ratio: v.Ratio,
 			Error: v.ErrorMsg, Created: v.CreatedAt.Unix(),
+			Via: v.Options.Via, Phase: v.Phase,
 		}
 	}
 	payload, err := json.Marshal(struct {

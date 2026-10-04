@@ -3,11 +3,14 @@ package daemon
 import (
 	"context"
 	"fmt"
+	"strings"
+	"time"
 
 	"golang.org/x/time/rate"
 
 	"godl/internal/ratelimit"
 	"godl/internal/store"
+	"godl/internal/torbox"
 )
 
 // rebuildGlobalLimiter swaps in a fresh limiter rather than mutating the
@@ -92,6 +95,9 @@ func (d *Daemon) applySettings(ctx context.Context, s store.Settings) (store.Set
 	if err := validateWebSettings(s); err != nil {
 		return store.Settings{}, err
 	}
+	if err := checkTorBoxKey(ctx, d.cachedSettings(), &s); err != nil {
+		return store.Settings{}, err
+	}
 	// Before saving: a web interface that can't start (the port is
 	// taken) is reported as the reason the settings weren't accepted,
 	// instead of being saved as "on" while nothing is listening.
@@ -105,4 +111,21 @@ func (d *Daemon) applySettings(ctx context.Context, s store.Settings) (store.Set
 	d.rebuildGlobalLimiter(s)
 	d.tryStartQueued()
 	return s, nil
+}
+
+// checkTorBoxKey tidies the TorBox key and, when it's new, asks TorBox
+// whether it's good, so a mistyped key is caught here rather than by
+// the first torrent sent there. Only an outright rejection refuses it:
+// TorBox being unreachable right now isn't the key's fault.
+func checkTorBoxKey(ctx context.Context, cur store.Settings, s *store.Settings) error {
+	s.TorBoxAPIKey = strings.TrimSpace(s.TorBoxAPIKey)
+	if s.TorBoxAPIKey == "" || s.TorBoxAPIKey == cur.TorBoxAPIKey {
+		return nil
+	}
+	cctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	if _, err := torbox.New(s.TorBoxAPIKey).Me(cctx); torbox.Unauthorized(err) {
+		return fmt.Errorf("TorBox didn't accept that API key — copy it again from torbox.app → Settings")
+	}
+	return nil
 }

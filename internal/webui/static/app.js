@@ -165,7 +165,9 @@ function jobName(j) {
 }
 
 function playable(j) {
-  return j.status === 'completed' || j.status === 'seeding' || (j.type === 'torrent' && j.status === 'active' && j.total > 0);
+  // A running torrent streams while it downloads — but not one coming
+  // through TorBox, which only has its files once they've arrived.
+  return j.status === 'completed' || j.status === 'seeding' || (j.type === 'torrent' && j.status === 'active' && j.total > 0 && j.via !== 'torbox');
 }
 
 function applyJobs(list) {
@@ -544,7 +546,7 @@ function set(row, key, value, apply) {
 
 function updateRow(row, j) {
   set(row, 'name', jobName(j), (v) => (row.name.textContent = v));
-  set(row, 'src', j.type + ' · ' + j.source, (v) => { row.src.textContent = v; row.src.title = j.source; });
+  set(row, 'src', j.type + (j.via === 'torbox' ? ' via TorBox' : '') + ' · ' + j.source, (v) => { row.src.textContent = v; row.src.title = j.source; });
   set(row, 'err', j.status === 'failed' ? j.error || '' : '', (v) => { row.err.textContent = v; row.err.hidden = !v; });
   set(row, 'status', j.status, (v) => {
     row.chip.textContent = v;
@@ -557,6 +559,9 @@ function updateRow(row, j) {
   set(row, 'pct', known ? p.toFixed(1) : '', (v) => (row.fill.style.width = (v || 0) + '%'));
   let detail = known ? bytes(j.done) + ' of ' + bytes(j.total) + ' · ' + p.toFixed(1) + '%' : (j.done ? bytes(j.done) : '');
   if (j.status === 'seeding') detail = 'ratio ' + (j.ratio || 0).toFixed(2);
+  // While TorBox is still fetching it, nothing has come here yet: say
+  // what TorBox is doing instead of "0 B of …".
+  if (j.phase && j.phase.startsWith('TorBox') && j.status === 'active') detail = j.phase;
   set(row, 'detail', detail, (v) => (row.pct.textContent = v));
   set(row, 'speed', j.status === 'seeding' ? '↑ ' + speed(j.upload) : speed(j.speed), (v) => (row.spd.textContent = v));
   set(row, 'eta', j.status === 'active' ? eta(j.eta) : '', (v) => (row.left.textContent = v));
@@ -677,6 +682,40 @@ const kindText = {
   watch: { hint: 'Plays the video here in the page without saving it.', links: 'Link to watch', output: '', submit: 'Watch' },
 };
 
+// How a torrent is downloaded: offered only once a TorBox key is saved.
+// The default setting picks the first choice; what the user ticks then
+// sticks for the rest of the visit.
+let viaTouched = false;
+function renderVia() {
+  const s = (state.info && state.info.settings) || {};
+  $('torrent-via').hidden = !s.torbox_key_set;
+  if (!s.torbox_key_set) { $('via-p2p').checked = true; }
+  else if (!viaTouched) { $(s.torbox_default ? 'via-torbox' : 'via-p2p').checked = true; }
+  const tb = viaChoice() === 'torbox';
+  $('seed-opts').classList.toggle('off', tb);
+  // Seeding is all "More options" holds for a torrent, and TorBox
+  // torrents aren't seeded from here.
+  $('adv').hidden = kind === 'torrent' && tb;
+  if (!tb) say('torbox-cached', '');
+}
+const viaChoice = () => ($('torrent-via').hidden ? '' : ($('via-torbox').checked ? 'torbox' : 'p2p'));
+document.querySelectorAll('#torrent-via input').forEach((r) => r.addEventListener('change', () => { viaTouched = true; renderVia(); checkCached(); }));
+
+// checkCached tells the user when TorBox already has the torrent, so
+// it'll be ready straight away.
+let cachedSeq = 0;
+async function checkCached() {
+  const srcs = lines($('new-links').value);
+  if (viaChoice() !== 'torbox' || srcs.length !== 1 || !isTorrentSource(srcs[0])) { say('torbox-cached', ''); return; }
+  const seq = ++cachedSeq;
+  say('torbox-cached', 'Checking TorBox…');
+  try {
+    const r = await api('POST', 'api/torbox/cached', { source: srcs[0] });
+    if (seq !== cachedSeq) return;
+    say('torbox-cached', r.cached ? 'TorBox already has this torrent: it will be ready straight away.' : 'TorBox doesn’t have this one yet: it downloads it first, then it comes here.', r.cached ? 'ok' : '');
+  } catch (err) { if (seq === cachedSeq) say('torbox-cached', ''); }
+}
+
 function setKind(k) {
   kind = k;
   document.querySelectorAll('#new-kind button').forEach((b) => b.setAttribute('aria-selected', String(b.dataset.kind === k)));
@@ -686,15 +725,17 @@ function setKind(k) {
   $('output-label').textContent = t.output;
   $('new-submit').textContent = t.submit;
   $('new-submit').disabled = false;
-  if (k === 'torrent') loadTorrentFiles(false);
+  if (k === 'torrent') { loadTorrentFiles(false); checkCached(); }
   $('new-links').rows = k === 'watch' ? 1 : 4;
   $('f-quality').hidden = !(k === 'social' || k === 'watch');
   $('f-watch-cookies').hidden = k !== 'watch';
   $('torrent-extra').hidden = k !== 'torrent';
   $('dl-fields').hidden = k === 'watch';
+  $('adv').hidden = false;
   document.querySelectorAll('#adv > div').forEach((d) => {
     d.hidden = !d.className.split(' ').includes('kind-' + k);
   });
+  if (k === 'torrent') renderVia();
   say('new-msg', '');
 }
 document.querySelectorAll('#new-kind button').forEach((b) => b.addEventListener('click', () => setKind(b.dataset.kind)));
@@ -760,6 +801,7 @@ $('torrent-file').addEventListener('change', async (e) => {
     $('new-links').value = cur.join('\n');
     say('torrent-status', 'Added ' + f.name + '.', 'ok');
     loadTorrentFiles(false);
+    checkCached();
   } catch (err) { say('torrent-status', err.message, 'err'); }
   e.target.value = '';
 });
@@ -783,7 +825,7 @@ $('new-links').addEventListener('input', () => {
   if (kind !== 'torrent') return;
   // Wait for typing or pasting to settle before asking.
   clearTimeout(pickTimer);
-  pickTimer = setTimeout(() => loadTorrentFiles(false), 600);
+  pickTimer = setTimeout(() => { loadTorrentFiles(false); checkCached(); }, 600);
 });
 
 // torrentSelection is the --files value for the choice on show: runs of
@@ -818,7 +860,11 @@ $('new-form').addEventListener('submit', async (e) => {
     if (kind === 'url') Object.assign(body, { concurrency: +$('new-conc').value || 4, sha256: $('new-sha').value.trim() });
     if (kind === 'social') Object.assign(body, { preset: $('new-preset').value, format: $('new-format').value.trim(), cookies_from_browser: $('new-browser').value.trim() });
     if (kind === 'url' || kind === 'social') Object.assign(body, { headers: lines($('new-headers').value), cookie: $('new-cookie').value.trim(), cookies_file: $('new-cookies-file').value.trim() });
-    if (kind === 'torrent') Object.assign(body, { torrent_files: torrentSelection(), seed_ratio: +$('new-seed-ratio').value || 0, seed_time: $('new-seed-time').value.trim() });
+    if (kind === 'torrent') {
+      const via = viaChoice();
+      Object.assign(body, { torrent_files: torrentSelection(), via });
+      if (via !== 'torbox') Object.assign(body, { seed_ratio: +$('new-seed-ratio').value || 0, seed_time: $('new-seed-time').value.trim() });
+    }
   } catch (err) { say('new-msg', err.message, 'err'); return; }
 
   $('new-submit').disabled = true;
@@ -833,6 +879,7 @@ $('new-form').addEventListener('submit', async (e) => {
       picked = null;
       $('torrent-pick').hidden = true;
       say('torrent-status', '');
+      say('torbox-cached', '');
     }
   } catch (err) { say('new-msg', err.message, 'err'); }
   $('new-submit').disabled = false;
@@ -1026,6 +1073,12 @@ function fillSettings() {
   $('s-web-user').value = s.webui_username;
   $('s-web-pass').value = '';
   $('s-web-pass-state').textContent = s.webui_password_set ? '(set)' : '(not set)';
+  $('s-tb-key').value = '';
+  $('s-tb-key-state').textContent = s.torbox_key_set ? '(saved)' : '(not set)';
+  $('s-tb-clear-wrap').hidden = !s.torbox_key_set;
+  $('s-tb-clear').checked = false;
+  $('s-tb-default').checked = s.torbox_default;
+  $('s-tb-keep').checked = s.torbox_keep;
 }
 
 $('settings-form').addEventListener('submit', async (e) => {
@@ -1042,12 +1095,18 @@ $('settings-form').addEventListener('submit', async (e) => {
     webui_network: $('s-web-net').checked,
     webui_username: $('s-web-user').value.trim(),
     webui_password: $('s-web-pass').value,
+    torbox_api_key: $('s-tb-key').value.trim(),
+    torbox_key_clear: $('s-tb-clear').checked,
+    torbox_default: $('s-tb-default').checked,
+    torbox_keep: $('s-tb-keep').checked,
   };
   const prev = state.info.settings;
   const moving = !body.webui || body.webui_port !== prev.webui_port || body.webui_network !== prev.webui_network;
   try {
+    say('settings-msg', body.torbox_api_key ? 'Checking the TorBox key…' : 'Saving…');
     state.info.settings = await api('PUT', 'api/settings', body);
     fillSettings();
+    renderVia();
     if (moving) say('settings-msg', body.webui ? 'Saved. The web interface moved — open it again at its new address (run "godl web").' : 'Saved. The web interface is now off.', 'ok');
     else say('settings-msg', 'Saved.', 'ok');
   } catch (err) { say('settings-msg', err.message, 'err'); }

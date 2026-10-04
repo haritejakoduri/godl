@@ -113,8 +113,9 @@ func buildAddRequest(apiCmd, source, outputOverride string) (daemon.Request, err
 // limitRate are the wizard's optional output/rate-limit fields ("" and
 // 0 meaning "use the same default the CLI would").
 //
-// torrentFiles is a torrent's file choice in --files form ("" = all).
-func startNewJob(apiCmd, source, format, outputOverride string, limitRate int64, torrentFiles string) tea.Cmd {
+// torrentFiles is a torrent's file choice in --files form ("" = all);
+// via is how it's fetched (see store.JobOptions.Via).
+func startNewJob(apiCmd, source, format, outputOverride string, limitRate int64, torrentFiles, via string) tea.Cmd {
 	return func() tea.Msg {
 		if err := daemon.EnsureRunning(); err != nil {
 			return actionDoneMsg{err}
@@ -126,6 +127,7 @@ func startNewJob(apiCmd, source, format, outputOverride string, limitRate int64,
 		req.Format = format
 		req.LimitRate = limitRate
 		req.Options.TorrentFiles = torrentFiles
+		req.Options.Via = via
 		_, err = daemon.Call(req)
 		return actionDoneMsg{err}
 	}

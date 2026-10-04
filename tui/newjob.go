@@ -10,6 +10,7 @@ import (
 	"godl/internal/daemon"
 	"godl/internal/ratelimit"
 	"godl/internal/social"
+	"godl/internal/store"
 )
 
 type newJobStep int
@@ -18,6 +19,7 @@ const (
 	newJobPickType   newJobStep = iota
 	newJobPickPreset            // social only — skipped for url/torrent
 	newJobEnterLink
+	newJobPickVia     // torrent only, with TorBox set up — TorBox or this computer
 	newJobPickFiles   // torrent only — which of its files to download
 	newJobEnterOutput // optional — blank keeps the CLI's own default
 	newJobEnterRate   // optional — blank means unlimited
@@ -32,6 +34,63 @@ type newJobState struct {
 	rateInput   textinput.Model
 	err         string // set on an invalid rate limit, cleared on the next edit
 	pick        *torrentPick
+	// TorBox: whether it's set up (asked for when the wizard opens), and
+	// whether this torrent goes through it.
+	torboxReady bool
+	viaTorBox   bool
+}
+
+// newJobSettingsMsg carries what the wizard needs from the settings.
+type newJobSettingsMsg struct {
+	nj             *newJobState
+	ready, prefers bool
+}
+
+// loadNewJobSettings asks whether TorBox is set up, so a torrent can be
+// offered the choice. Failing quietly just means no choice is offered.
+func loadNewJobSettings(nj *newJobState) tea.Cmd {
+	return func() tea.Msg {
+		if err := daemon.EnsureRunning(); err != nil {
+			return newJobSettingsMsg{nj: nj}
+		}
+		resp, err := daemon.Call(daemon.Request{Cmd: daemon.CmdGetSettings})
+		if err != nil || resp.Settings == nil {
+			return newJobSettingsMsg{nj: nj}
+		}
+		return newJobSettingsMsg{nj: nj, ready: resp.Settings.TorBoxReady(), prefers: resp.Settings.TorBoxDefault}
+	}
+}
+
+func (m statusModel) newJobSettingsLoaded(msg newJobSettingsMsg) (tea.Model, tea.Cmd) {
+	if m.newJob == nil || m.newJob != msg.nj {
+		return m, nil
+	}
+	m.newJob.torboxReady = msg.ready
+	m.newJob.viaTorBox = msg.ready && msg.prefers
+	return m, nil
+}
+
+// via is the add request's Options.Via for the wizard's choice.
+func (s *newJobState) via() string {
+	switch {
+	case !s.torboxReady:
+		return ""
+	case s.viaTorBox:
+		return store.ViaTorBox
+	default:
+		return store.ViaP2P
+	}
+}
+
+// leaveVia moves on from the TorBox choice: to the file list, or straight
+// to the output step when the torrent turned out to be one file.
+func (m statusModel) leaveVia() statusModel {
+	p := m.newJob.pick
+	if p != nil && !p.loading && p.err == "" && len(p.files) <= 1 {
+		return m.advanceToOutput()
+	}
+	m.newJob.step = newJobPickFiles
+	return m
 }
 
 // newJobPlay is the wizard's one entry that isn't a daemon command:
@@ -143,6 +202,9 @@ func (m statusModel) updateNewJob(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				pick, cmd := newTorrentPick(link)
 				m.newJob.pick = pick
 				m.newJob.step = newJobPickFiles
+				if m.newJob.torboxReady {
+					m.newJob.step = newJobPickVia // the list loads meanwhile
+				}
 				return m, cmd
 			}
 			return m.advanceToOutput(), nil
@@ -152,6 +214,18 @@ func (m statusModel) updateNewJob(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 
+	case newJobPickVia:
+		switch msg.String() {
+		case "up", "k", "down", "j", "tab", "t", "v":
+			m.newJob.viaTorBox = !m.newJob.viaTorBox
+		case "enter":
+			return m.leaveVia(), nil
+		case "esc":
+			m.newJob.pick = nil
+			m.newJob.step = newJobEnterLink
+		}
+		return m, nil
+
 	case newJobPickFiles:
 		return m.updateTorrentPick(msg)
 
@@ -159,6 +233,9 @@ func (m statusModel) updateNewJob(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "esc":
 			m.newJob.step = newJobEnterLink
+			if m.newJob.torboxReady && m.newJob.pick != nil {
+				m.newJob.step = newJobPickVia
+			}
 			if m.newJob.pick != nil && len(m.newJob.pick.files) > 1 {
 				m.newJob.step = newJobPickFiles
 			}
@@ -200,9 +277,13 @@ func (m statusModel) updateNewJob(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			apiCmd := newJobTypes[m.newJob.typeIndex].cmd
 			format := m.newJob.selectedFormat()
 			files := m.newJob.pick.spec()
+			via := ""
+			if apiCmd == daemon.CmdAddTorrent {
+				via = m.newJob.via()
+			}
 			m.newJob = nil
 			m.statusMsg = "starting..."
-			return m, startNewJob(apiCmd, link, format, output, limitRate, files)
+			return m, startNewJob(apiCmd, link, format, output, limitRate, files, via)
 		default:
 			m.newJob.err = ""
 			var cmd tea.Cmd
@@ -262,6 +343,27 @@ func (m statusModel) viewNewJob() string {
 		b.WriteString(m.newJob.input.View())
 		b.WriteString("\n")
 		b.WriteString(m.helpView(help))
+		return b.String()
+
+	case newJobPickVia:
+		var b strings.Builder
+		b.WriteString(m.wrapped(statStyle).Render("Download this torrent with:"))
+		b.WriteString("\n")
+		choices := []struct {
+			on          bool
+			label, note string
+		}{
+			{m.newJob.viaTorBox, "TorBox", "TorBox fetches it on its servers, then it comes here over a fast direct connection"},
+			{!m.newJob.viaTorBox, "This computer", "straight from other peers"},
+		}
+		for _, c := range choices {
+			cursor := "  "
+			if c.on {
+				cursor = "> "
+			}
+			b.WriteString(cursor + c.label + "  " + helpStyle.Render(c.note) + "\n")
+		}
+		b.WriteString(m.helpView("↑/↓ switch  enter next  esc back"))
 		return b.String()
 
 	case newJobPickFiles:

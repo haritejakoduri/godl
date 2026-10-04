@@ -22,6 +22,11 @@ func (d *Daemon) torrentChoice(id string) (name string, files []TorrentFile, err
 	if job.Type != store.JobTorrent {
 		return "", nil, fmt.Errorf("job %s is a %s job, not a torrent", id, job.Type)
 	}
+	if job.Options.TorBox() {
+		if name, files, ok := d.torboxChoice(context.Background(), job); ok {
+			return name, files, nil
+		}
+	}
 	if infos, selected := d.tmFiles(id); infos != nil {
 		for i, f := range infos {
 			files = append(files, TorrentFile{Index: f.Index, Path: f.Path, Length: f.Length, Done: f.Done,
@@ -82,6 +87,32 @@ func (d *Daemon) selectFiles(ctx context.Context, id, spec string) (*store.Job, 
 		}
 	}
 
+	// A running TorBox torrent takes a new choice by starting over:
+	// files already here are kept and not fetched again, and newly
+	// chosen ones join in.
+	restart := job.Options.TorBox() && (job.Status == store.StatusActive || job.Status == store.StatusQueued)
+	if restart {
+		if tf := d.torboxRuntimeFiles(id); tf != nil {
+			n := 0
+			for _, f := range tf {
+				if sel.Match(f.Index+1, f.Path) {
+					n++
+				}
+			}
+			if n == 0 {
+				return nil, fmt.Errorf("that choice leaves no files to download")
+			}
+		}
+		if _, err := d.pause(ctx, id); err != nil {
+			return nil, err
+		}
+		if job, err = d.st.GetJob(ctx, id); err != nil {
+			return nil, err
+		}
+		job.Status = store.StatusQueued
+		job.ErrorMsg = ""
+	}
+
 	job.Options.TorrentFiles = spec
 	finished := job.Status == store.StatusCompleted || job.Status == store.StatusSeeding
 	if finished {
@@ -92,7 +123,7 @@ func (d *Daemon) selectFiles(ctx context.Context, id, spec string) (*store.Job, 
 	if err := d.st.UpdateJob(ctx, job); err != nil {
 		return nil, err
 	}
-	if finished {
+	if finished || restart {
 		d.start(job)
 	}
 	return d.st.GetJob(ctx, id)

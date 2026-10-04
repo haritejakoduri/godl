@@ -33,6 +33,11 @@ func (d *Daemon) jobFileList(id string) (files []TorrentFile, note string, err e
 		return nil, "", fmt.Errorf("job %s not found", id)
 	}
 
+	if job.Type == store.JobTorrent && job.Options.TorBox() {
+		if tf := d.torboxRuntimeFiles(id); tf != nil {
+			return capFiles(tf, note)
+		}
+	}
 	if job.Type == store.JobTorrent && d.tm != nil {
 		if infos, selected := d.tm.Files(id); infos != nil {
 			for i, f := range infos {
@@ -67,6 +72,8 @@ func (d *Daemon) jobFileList(id string) (files []TorrentFile, note string, err e
 	files = filesOnDisk(job)
 	switch {
 	case job.Status == store.StatusCompleted || job.Status == store.StatusSeeding:
+	case job.Type == store.JobTorrent && job.Options.TorBox() && job.Status == store.StatusActive:
+		note = "TorBox is downloading this torrent; the file list appears once it's ready."
 	case job.Type == store.JobTorrent && len(files) > 0:
 		note = "Showing what's on disk so far. Resume the torrent to see every file and its progress."
 	case job.Type == store.JobTorrent:

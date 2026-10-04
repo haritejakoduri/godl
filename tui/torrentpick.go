@@ -63,7 +63,7 @@ func newTorrentPick(link string) (*torrentPick, tea.Cmd) {
 
 func (m statusModel) torrentFilesLoaded(msg torrentFilesMsg) (tea.Model, tea.Cmd) {
 	nj := m.newJob
-	if nj == nil || nj.pick != msg.pick || nj.step != newJobPickFiles {
+	if nj == nil || nj.pick != msg.pick || (nj.step != newJobPickFiles && nj.step != newJobPickVia) {
 		return m, nil // the wizard moved on or closed meanwhile
 	}
 	p := nj.pick
@@ -77,8 +77,9 @@ func (m statusModel) torrentFilesLoaded(msg torrentFilesMsg) (tea.Model, tea.Cmd
 	for i := range p.sel {
 		p.sel[i] = true
 	}
-	// One file leaves nothing to choose.
-	if len(p.files) <= 1 {
+	// One file leaves nothing to choose. (Still on the TorBox choice:
+	// leaving it skips the file list instead — see leaveVia.)
+	if len(p.files) <= 1 && nj.step == newJobPickFiles {
 		return m.advanceToOutput(), nil
 	}
 	return m, nil
@@ -114,6 +115,10 @@ func (m statusModel) updateTorrentPick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	p := nj.pick
 	switch msg.String() {
 	case "esc":
+		if nj.torboxReady {
+			nj.step = newJobPickVia
+			return m, nil
+		}
 		nj.pick = nil
 		nj.step = newJobEnterLink
 		return m, nil

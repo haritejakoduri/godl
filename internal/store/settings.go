@@ -52,7 +52,21 @@ type Settings struct {
 	WebUINetwork  bool
 	WebUIUsername string
 	WebUIPassword string
+
+	// TorBoxAPIKey lets torrent jobs go through TorBox (internal/torbox):
+	// TorBox downloads the torrent on its servers, then godl fetches the
+	// files over HTTPS. Empty means TorBox isn't set up.
+	TorBoxAPIKey string
+	// TorBoxDefault pre-picks TorBox for new torrents; each one can
+	// still be sent either way when it's added.
+	TorBoxDefault bool
+	// TorBoxKeep leaves a torrent in the TorBox account once its files
+	// are downloaded, instead of deleting it there to free the slot.
+	TorBoxKeep bool
 }
+
+// TorBoxReady reports whether TorBox can be used.
+func (s Settings) TorBoxReady() bool { return s.TorBoxAPIKey != "" }
 
 // DefaultWebUIPort is where the web interface listens unless changed.
 const DefaultWebUIPort = 8787
@@ -77,6 +91,9 @@ const (
 	settingsKeyWebUINetwork         = "webui_network"
 	settingsKeyWebUIUsername        = "webui_username"
 	settingsKeyWebUIPassword        = "webui_password"
+	settingsKeyTorBoxAPIKey         = "torbox_api_key"
+	settingsKeyTorBoxDefault        = "torbox_default"
+	settingsKeyTorBoxKeep           = "torbox_keep"
 )
 
 // GetSettings reads the daemon's saved settings, falling back to
@@ -142,6 +159,15 @@ func (s *Store) GetSettings(ctx context.Context) (Settings, error) {
 	if v, ok := kv[settingsKeyWebUIPassword]; ok {
 		set.WebUIPassword = v
 	}
+	if v, ok := kv[settingsKeyTorBoxAPIKey]; ok {
+		set.TorBoxAPIKey = v
+	}
+	if v, ok := kv[settingsKeyTorBoxDefault]; ok {
+		set.TorBoxDefault = v == "true"
+	}
+	if v, ok := kv[settingsKeyTorBoxKeep]; ok {
+		set.TorBoxKeep = v == "true"
+	}
 	return set, nil
 }
 
@@ -161,6 +187,9 @@ func (s *Store) SaveSettings(ctx context.Context, set Settings) error {
 		settingsKeyWebUINetwork:         strconv.FormatBool(set.WebUINetwork),
 		settingsKeyWebUIUsername:        set.WebUIUsername,
 		settingsKeyWebUIPassword:        set.WebUIPassword,
+		settingsKeyTorBoxAPIKey:         set.TorBoxAPIKey,
+		settingsKeyTorBoxDefault:        strconv.FormatBool(set.TorBoxDefault),
+		settingsKeyTorBoxKeep:           strconv.FormatBool(set.TorBoxKeep),
 	}
 	for k, v := range kv {
 		if _, err := s.db.ExecContext(ctx,

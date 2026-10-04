@@ -310,6 +310,32 @@ tab's "max concurrent downloads" slots. Pausing or canceling a seeding
 job just stops the seeding; the download stays completed. Seeding
 doesn't survive a daemon restart — the job is marked completed.
 
+**Through TorBox.** With a [TorBox](https://torbox.app) account, a
+torrent can be downloaded by TorBox on its servers first and then come
+to you over plain HTTPS, split into several connections like any `godl
+url` download — usually much faster than peers for a torrent with few
+seeds, and immediate for one TorBox already has ("cached"). Save your
+API key (torbox.app → Settings) in the Settings tab (`s` in `godl
+status`, or the web interface), then choose per torrent:
+
+```sh
+godl torrent <magnet> --torbox
+godl torrent <magnet> --p2p       # past TorBox, when it's the default
+```
+
+The dashboard's `n` wizard and the web interface's Torrent tab ask
+"Download with: TorBox / This computer" as soon as a key is saved
+(the web page also says whether TorBox already has the torrent), and
+"Use TorBox for new torrents" makes TorBox the pre-picked choice.
+While TorBox works the job shows its progress (`TorBox: downloading
+40% · 12 MB/s · 30 seeds`); then the chosen files download into the
+same place godl's own client would put them. `--files` works the same
+way, and so does changing the choice later from Details. Pause/resume
+picks up the same TorBox torrent and keeps finished files. Once the
+files are here godl deletes the torrent from your TorBox account to
+free the slot, unless "Keep torrents in TorBox" is on. TorBox torrents
+aren't seeded or streamed from godl.
+
 **Stream while downloading.** `godl stream <job-id>` (or `o` in `godl
 status`) plays a running torrent in mpv/VLC before it's finished. godl
 serves the file to the player over a loopback-only HTTP address with a

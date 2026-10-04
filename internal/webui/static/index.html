@@ -115,6 +115,12 @@
     </label>
 
     <div id="torrent-extra" hidden>
+      <fieldset class="via" id="torrent-via" hidden>
+        <legend>Download with</legend>
+        <label class="check"><input type="radio" name="via" value="torbox" id="via-torbox"> TorBox <span class="hint">— TorBox fetches it on its servers, then it comes here over a fast direct connection</span></label>
+        <label class="check"><input type="radio" name="via" value="p2p" id="via-p2p"> This computer <span class="hint">— straight from other peers</span></label>
+        <span class="hint" id="torbox-cached" role="status"></span>
+      </fieldset>
       <div class="row">
         <label class="filebtn">Upload a .torrent file
           <input type="file" id="torrent-file" accept=".torrent,application/x-bittorrent">
@@ -168,7 +174,7 @@
           <label class="field"><span>Cookie</span><input type="text" id="new-cookie" spellcheck="false" placeholder="session=abc; theme=dark"></label>
           <label class="field"><span>cookies.txt file on the godl machine</span><input type="text" id="new-cookies-file" spellcheck="false"></label>
         </div>
-        <div class="kind-torrent">
+        <div class="kind-torrent" id="seed-opts">
           <label class="field short"><span>Keep seeding to ratio</span><input type="number" id="new-seed-ratio" min="0" step="0.1" placeholder="off"></label>
           <label class="field short"><span>Keep seeding for</span><input type="text" id="new-seed-time" placeholder="off, or 30m / 2h"></label>
         </div>
@@ -272,6 +278,13 @@
     <label class="field short"><span>Username</span><input type="text" id="s-web-user"></label>
     <label class="field short"><span>Password <span id="s-web-pass-state" class="hint"></span></span><input type="password" id="s-web-pass" autocomplete="new-password" placeholder="leave blank to keep"></label>
     <p class="hint">Network access needs a username and password. It is plain http, so use it on a home network you trust, not across the internet.</p>
+
+    <h2>TorBox</h2>
+    <p class="hint">With a <a href="https://torbox.app" target="_blank" rel="noopener">TorBox</a> account, torrents can be downloaded by TorBox first and then come here over a fast direct connection — quicker when a torrent has few peers, and ready at once when TorBox already has it.</p>
+    <label class="field"><span>API key <span id="s-tb-key-state" class="hint"></span></span><input type="password" id="s-tb-key" autocomplete="off" placeholder="from torbox.app → Settings → API key" spellcheck="false"></label>
+    <label class="check" id="s-tb-clear-wrap" hidden><input type="checkbox" id="s-tb-clear"> Remove the saved key</label>
+    <label class="check"><input type="checkbox" id="s-tb-default"> Use TorBox for new torrents unless I choose otherwise</label>
+    <label class="check"><input type="checkbox" id="s-tb-keep"> Keep torrents in my TorBox account after downloading them</label>
 
     <div class="row"><button type="submit" class="primary">Save settings</button><span class="msg" id="settings-msg" role="status"></span></div>
   </form>

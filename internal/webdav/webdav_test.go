@@ -687,3 +687,24 @@ func TestHostGateBoundsConcurrentRequests(t *testing.T) {
 		t.Fatal("no requests reached the server")
 	}
 }
+
+func TestEntriesParseLastModified(t *testing.T) {
+	c, err := New("https://dav.example.com/", "", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ms := &multistatus{Responses: []response{{
+		Href:     "/a.mkv",
+		Propstat: []propstat{{Status: "HTTP/1.1 200 OK", Prop: prop{ContentLength: "5", LastModified: "Sat, 03 Oct 2026 08:30:00 GMT"}}},
+	}, {
+		Href:     "/b.mkv",
+		Propstat: []propstat{{Status: "HTTP/1.1 200 OK", Prop: prop{ContentLength: "6", LastModified: "not a date"}}},
+	}}}
+	es := c.entries(ms)
+	if len(es) != 2 || es[0].ModTime.IsZero() || es[0].ModTime.Year() != 2026 || es[0].ModTime.Day() != 3 {
+		t.Fatalf("entries = %+v, want a.mkv's date parsed", es)
+	}
+	if !es[1].ModTime.IsZero() {
+		t.Error("an unparseable date should leave ModTime zero, not fail the listing")
+	}
+}

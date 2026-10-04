@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -138,46 +137,20 @@ everything under <dir>.
 	},
 }
 
-// maxPortFallbackAttempts bounds how many consecutive ports
-// listenWithFallback will try past the one the user asked for — enough
-// to get past a handful of stray listeners without silently wandering
-// off to a port far away from what was requested.
-const maxPortFallbackAttempts = 20
+// The listen/address helpers below live in internal/fileserver, shared
+// with the TUI's Serve tab and the web interface's share; these keep
+// the names this file and its tests already use.
+const maxPortFallbackAttempts = fileserver.MaxPortFallbackAttempts
 
-// listenWithFallback binds host:port, and if that exact port is
-// already taken, tries host:port+1, host:port+2, ... up to
-// maxAttempts total tries before giving up. Any bind failure that
-// isn't specifically "address already in use" (permission denied on a
-// privileged port, an invalid host, ...) is returned immediately
-// without trying further ports — those aren't going to be fixed by
-// picking a different port number.
 func listenWithFallback(host string, port, maxAttempts int) (net.Listener, int, error) {
-	var lastErr error
-	for i := 0; i < maxAttempts; i++ {
-		p := port + i
-		l, err := net.Listen("tcp", net.JoinHostPort(host, strconv.Itoa(p)))
-		if err == nil {
-			return l, p, nil
-		}
-		lastErr = err
-		if !isAddrInUseErr(err) {
-			return nil, 0, err
-		}
-	}
-	return nil, 0, fmt.Errorf("no free port found starting at %d after %d attempts: %w", port, maxAttempts, lastErr)
+	return fileserver.ListenWithFallback(host, port, maxAttempts)
 }
 
 func isAddrInUseErr(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "address already in use")
 }
 
-func isLoopbackHost(host string) bool {
-	if host == "localhost" {
-		return true
-	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
-}
+func isLoopbackHost(host string) bool { return fileserver.IsLoopbackHost(host) }
 
 // validateServeFlags checks the flag combinations that would otherwise
 // only surface as a confusing runtime failure (or, worse for the
@@ -197,67 +170,11 @@ func validateServeFlags(dir, host string, hasAuth, insecureNoAuth bool, tlsCert,
 	return nil
 }
 
-// isUnspecifiedHost reports whether host means "every interface" ("0.0.0.0"
-// or "::") rather than one specific address — that's not itself
-// something a client can connect to, so the banner needs to print the
-// machine's real IPs instead.
-func isUnspecifiedHost(host string) bool {
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsUnspecified()
-}
+func isUnspecifiedHost(host string) bool { return fileserver.IsUnspecifiedHost(host) }
 
-// reachableIPs lists this machine's own non-loopback IPv4 addresses —
-// what listening on "every interface" actually resolves to from
-// another device's point of view. IPv6 is skipped for the banner
-// specifically: a bare IPv6 literal needs bracket syntax in a URL
-// ("http://[fd00::1]:8080/"), which is more likely to confuse in a
-// quick-start message than help; --host accepts an IPv6 address
-// explicitly if that's what's wanted.
-func reachableIPs() []string {
-	ifaces, err := net.Interfaces()
-	if err != nil {
-		return nil
-	}
-	var ips []string
-	for _, iface := range ifaces {
-		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
-			continue
-		}
-		addrs, err := iface.Addrs()
-		if err != nil {
-			continue
-		}
-		for _, a := range addrs {
-			var ip net.IP
-			switch v := a.(type) {
-			case *net.IPNet:
-				ip = v.IP
-			case *net.IPAddr:
-				ip = v.IP
-			}
-			if ip == nil || ip.To4() == nil || ip.IsLoopback() || ip.IsLinkLocalUnicast() {
-				continue
-			}
-			ips = append(ips, ip.String())
-		}
-	}
-	sort.Strings(ips)
-	return ips
-}
+func reachableIPs() []string { return fileserver.ReachableIPs() }
 
-// bannerAddrs resolves what address(es) to actually show for host: a
-// specific host is used as-is; "every interface" is expanded to this
-// machine's own LAN IPs, always listed alongside "127.0.0.1" — binding
-// "every interface" really does include the loopback interface, so
-// it's a genuinely usable address too (testing from the same machine,
-// or any tool that only knows to try localhost), not just a fallback
-// for when no LAN interface exists.
-func bannerAddrs(host string) []string {
-	if !isUnspecifiedHost(host) {
-		return []string{host}
-	}
-	return append([]string{"127.0.0.1"}, reachableIPs()...)
-}
+func bannerAddrs(host string) []string { return fileserver.BannerAddrs(host) }
 
 // exampleConnectAddr picks which of addrs to show in the "godl
 // connection add" suggestion: a LAN-reachable address when one exists

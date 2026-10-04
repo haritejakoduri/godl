@@ -55,6 +55,10 @@ type settingsField struct {
 	get    func(store.Settings) string
 	set    func(*store.Settings, string) error
 	toggle func(*store.Settings)
+	// secret: typed masked, starting empty; leaving it empty keeps what's
+	// saved. limit overrides the input's usual 32 characters.
+	secret bool
+	limit  int
 }
 
 func boolLabel(b bool) string {
@@ -138,6 +142,104 @@ var settingsFields = []settingsField{
 		kind:   settingsFieldBool,
 		get:    func(s store.Settings) string { return boolLabel(s.NotifyOnComplete) },
 		toggle: func(s *store.Settings) { s.NotifyOnComplete = !s.NotifyOnComplete },
+	},
+	{
+		label:  "Web interface",
+		help:   `Serves godl's browser interface from the background daemon. Run "godl web" to open it. Off = nothing is listening.`,
+		kind:   settingsFieldBool,
+		get:    func(s store.Settings) string { return boolLabel(s.WebUI) },
+		toggle: func(s *store.Settings) { s.WebUI = !s.WebUI },
+	},
+	{
+		label: "Web interface port",
+		help:  "The port the web interface is served on.",
+		kind:  settingsFieldInt,
+		get: func(s store.Settings) string {
+			if s.WebUIPort == 0 {
+				return strconv.Itoa(store.DefaultWebUIPort)
+			}
+			return strconv.Itoa(s.WebUIPort)
+		},
+		set: func(s *store.Settings, v string) error {
+			n, err := strconv.Atoi(strings.TrimSpace(v))
+			if err != nil || n < 1 || n > 65535 {
+				return fmt.Errorf("must be a port number between 1 and 65535")
+			}
+			s.WebUIPort = n
+			return nil
+		},
+	},
+	{
+		label: "Web interface username",
+		help:  "Needed, with a password, before other devices can be let in.",
+		kind:  settingsFieldText,
+		get:   func(s store.Settings) string { return s.WebUIUsername },
+		set: func(s *store.Settings, v string) error {
+			s.WebUIUsername = strings.TrimSpace(v)
+			return nil
+		},
+	},
+	{
+		label: "Web interface password",
+		help:  "Shown masked. Stored in godl's data directory, readable only by your user account.",
+		kind:  settingsFieldText,
+		get: func(s store.Settings) string {
+			if s.WebUIPassword == "" {
+				return ""
+			}
+			return "(set)"
+		},
+		set: func(s *store.Settings, v string) error {
+			// An untouched "(set)" isn't a new password.
+			if v != "(set)" {
+				s.WebUIPassword = v
+			}
+			return nil
+		},
+	},
+	{
+		label:  "Web interface: other devices",
+		help:   "Off = only this machine. On = phones and computers on your network too, signing in with the username and password above (set those first). Plain http: for a home network, not the internet.",
+		kind:   settingsFieldBool,
+		get:    func(s store.Settings) string { return boolLabel(s.WebUINetwork) },
+		toggle: func(s *store.Settings) { s.WebUINetwork = !s.WebUINetwork },
+	},
+	{
+		label:  "TorBox API key",
+		help:   `From torbox.app → Settings. With it, a torrent can be downloaded by TorBox first and then come here over a fast direct connection. Type "-" to remove it; leave empty to keep it.`,
+		kind:   settingsFieldText,
+		secret: true,
+		limit:  128,
+		get: func(s store.Settings) string {
+			if s.TorBoxAPIKey == "" {
+				return ""
+			}
+			return "(saved)"
+		},
+		set: func(s *store.Settings, v string) error {
+			switch v = strings.TrimSpace(v); v {
+			case "":
+			case "-":
+				s.TorBoxAPIKey = ""
+			default:
+				s.TorBoxAPIKey = v
+			}
+			return nil
+		},
+	},
+	{
+		label:  "Use TorBox for new torrents",
+		help:   "Pre-picks TorBox when adding a torrent (needs the key above). Each torrent can still go either way when it's added.",
+		kind:   settingsFieldBool,
+		get:    func(s store.Settings) string { return boolLabel(s.TorBoxDefault) },
+		toggle: func(s *store.Settings) { s.TorBoxDefault = !s.TorBoxDefault },
+	},
+	{
+		label:  "Keep torrents in TorBox",
+		help:   "Off = once a torrent's files are here, it's deleted from your TorBox account to free the slot. On = it stays there.",
+		kind:   settingsFieldBool,
+		get:    func(s store.Settings) string { return boolLabel(s.TorBoxKeep) },
+		toggle: func(s *store.Settings) { s.TorBoxKeep = !s.TorBoxKeep },
 	},
 }
 
@@ -231,9 +333,16 @@ func (m statusModel) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, saveSettings(s, working)
 		}
 		ti := textinput.New()
-		ti.SetValue(field.get(s.current))
+		if field.secret {
+			ti.EchoMode = textinput.EchoPassword
+		} else {
+			ti.SetValue(field.get(s.current))
+		}
 		ti.Focus()
 		ti.CharLimit = 32
+		if field.limit > 0 {
+			ti.CharLimit = field.limit
+		}
 		ti.Width = 24
 		s.input = ti
 		s.editing = true

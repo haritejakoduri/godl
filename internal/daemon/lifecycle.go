@@ -27,12 +27,22 @@ var (
 	progressPersistBytes    = int64(8 << 20)
 )
 
+// maxJobConcurrency caps a url job's pieces-at-once. Well past where
+// more connections stop helping, and servers start refusing them.
+const maxJobConcurrency = 64
+
 func (d *Daemon) createJob(ctx context.Context, typ store.JobType, source, output, format string, concurrency int, limitRate int64, sha256 string, opts store.JobOptions) (*store.Job, error) {
 	if source == "" {
 		return nil, fmt.Errorf("source is required")
 	}
 	if concurrency < 1 {
 		concurrency = 1
+	}
+	// Each piece is a connection, a goroutine and a sidecar entry; a
+	// number from a request (the web form's included) mustn't be able to
+	// ask for millions of them.
+	if concurrency > maxJobConcurrency {
+		return nil, fmt.Errorf("at most %d pieces at once (asked for %d)", maxJobConcurrency, concurrency)
 	}
 	// A job that didn't ask for its own --limit-rate falls back to the
 	// settings-tab default, if one's set — parse errors here would mean
@@ -335,6 +345,10 @@ func (d *Daemon) retry(ctx context.Context, id string) (*store.Job, error) {
 		return nil, fmt.Errorf("job %s is already %s", id, job.Status)
 	}
 	resetForRetry(job)
+	// A fresh start for a TorBox torrent adds it to TorBox afresh, in
+	// case what went wrong was TorBox's copy.
+	d.forgetTorBox(job, true)
+	job.Options.TorBoxID = 0
 	// A manual retry is an explicit fresh start, not another automated
 	// attempt — reset the auto-retry streak so it gets the full backoff
 	// budget again rather than picking up where it left off.
@@ -409,6 +423,7 @@ func (d *Daemon) remove(ctx context.Context, id string, purge bool) (*store.Job,
 	if purge {
 		removeDownloadedFiles(job)
 	}
+	d.forgetTorBox(job, false)
 
 	if err := d.st.DeleteJob(ctx, id); err != nil {
 		return nil, err

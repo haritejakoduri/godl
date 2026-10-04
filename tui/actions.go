@@ -2,12 +2,12 @@ package tui
 
 import (
 	"fmt"
-	"path/filepath"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 
 	"godl/internal/daemon"
+	"godl/internal/jobreq"
 	"godl/internal/paths"
 	"godl/internal/urlname"
 )
@@ -61,14 +61,7 @@ func doBulkRemove(jobIDs []string, purge bool) tea.Cmd {
 // same semantics "godl url/social/torrent -o ..." already has, so the
 // wizard's optional output field behaves identically to the flag.
 func resolveJobOutput(override, name string) (string, error) {
-	if override == "" {
-		dir, err := paths.DownloadsDir()
-		if err != nil {
-			return "", err
-		}
-		override = filepath.Join(dir, name)
-	}
-	return paths.ResolveOutput(override)
+	return jobreq.OutputPath(override, name)
 }
 
 // buildAddRequest fills in a daemon.Request for apiCmd (CmdAddURL/
@@ -119,7 +112,10 @@ func buildAddRequest(apiCmd, source, outputOverride string) (daemon.Request, err
 // through unconditionally is harmless for them. outputOverride and
 // limitRate are the wizard's optional output/rate-limit fields ("" and
 // 0 meaning "use the same default the CLI would").
-func startNewJob(apiCmd, source, format, outputOverride string, limitRate int64) tea.Cmd {
+//
+// torrentFiles is a torrent's file choice in --files form ("" = all);
+// via is how it's fetched (see store.JobOptions.Via).
+func startNewJob(apiCmd, source, format, outputOverride string, limitRate int64, torrentFiles, via string) tea.Cmd {
 	return func() tea.Msg {
 		if err := daemon.EnsureRunning(); err != nil {
 			return actionDoneMsg{err}
@@ -130,6 +126,8 @@ func startNewJob(apiCmd, source, format, outputOverride string, limitRate int64)
 		}
 		req.Format = format
 		req.LimitRate = limitRate
+		req.Options.TorrentFiles = torrentFiles
+		req.Options.Via = via
 		_, err = daemon.Call(req)
 		return actionDoneMsg{err}
 	}

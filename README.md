@@ -91,6 +91,11 @@ resume automatically on your next install.
 
 ## Usage
 
+New to godl? `godl guide` opens an illustrated, task-by-task user guide
+in your browser. It is built into the binary, so it works offline
+(`godl guide -o guide.html` saves it as a file instead). The rest of
+this section is the full reference.
+
 ```sh
 godl url https://example.com/big-file.iso -o out.iso -c 8
 godl url https://example.com/big-file.iso -o out.iso -R 2M   # cap at 2MiB/s
@@ -109,6 +114,7 @@ godl webdav mynas /Photos -o ~/Photos     # a file or a whole folder, recursivel
 godl serve ~/Public -p 8080 --username alice   # share a folder, over WebDAV + browser
 
 godl status                 # live TUI dashboard
+godl web                    # the same, plus a video player, in your browser
 godl list                   # one-shot table, for scripts
 godl pause <job-id>
 godl resume <job-id>
@@ -218,6 +224,11 @@ godl social <link> -p worst        # lowest quality (quick preview/test)
 godl social <link> -p audio        # audio only, best available quality
 ```
 
+YouTube now hides its streams behind a small script the client has to
+run, so yt-dlp needs a JavaScript runtime: godl hands it deno, node or
+bun if one is installed, and otherwise downloads and verifies its own
+copy of deno the first time it's needed.
+
 `godl social --list-presets` prints the full list. For full control,
 `-f`/`--format` instead passes a selector straight through to yt-dlp
 (not together with `-p`):
@@ -280,6 +291,11 @@ godl torrent <magnet> --files 2,5-7
 godl torrent <magnet> --files "*.mkv,Extras/*"
 ```
 
+Both the dashboard's `n` wizard and the web interface's Torrent tab do
+this for you: once a torrent is entered (or a `.torrent` uploaded), its
+whole file list appears with every file ticked, to untick, clear (`n` /
+None) or tick all again (`a` / All).
+
 Progress, ETA and completion then count only the selected files. (Data
 at the very edge of a selected file can share a piece with its
 neighbour, so a sliver of an unselected file may still land on disk —
@@ -293,6 +309,32 @@ settles to `completed`. Seeding doesn't take up one of the Settings
 tab's "max concurrent downloads" slots. Pausing or canceling a seeding
 job just stops the seeding; the download stays completed. Seeding
 doesn't survive a daemon restart — the job is marked completed.
+
+**Through TorBox.** With a [TorBox](https://torbox.app) account, a
+torrent can be downloaded by TorBox on its servers first and then come
+to you over plain HTTPS, split into several connections like any `godl
+url` download — usually much faster than peers for a torrent with few
+seeds, and immediate for one TorBox already has ("cached"). Save your
+API key (torbox.app → Settings) in the Settings tab (`s` in `godl
+status`, or the web interface), then choose per torrent:
+
+```sh
+godl torrent <magnet> --torbox
+godl torrent <magnet> --p2p       # past TorBox, when it's the default
+```
+
+The dashboard's `n` wizard and the web interface's Torrent tab ask
+"Download with: TorBox / This computer" as soon as a key is saved
+(the web page also says whether TorBox already has the torrent), and
+"Use TorBox for new torrents" makes TorBox the pre-picked choice.
+While TorBox works the job shows its progress (`TorBox: downloading
+40% · 12 MB/s · 30 seeds`); then the chosen files download into the
+same place godl's own client would put them. `--files` works the same
+way, and so does changing the choice later from Details. Pause/resume
+picks up the same TorBox torrent and keeps finished files. Once the
+files are here godl deletes the torrent from your TorBox account to
+free the slot, unless "Keep torrents in TorBox" is on. TorBox torrents
+aren't seeded or streamed from godl.
 
 **Stream while downloading.** `godl stream <job-id>` (or `o` in `godl
 status`) plays a running torrent in mpv/VLC before it's finished. godl
@@ -442,7 +484,10 @@ Keybinds: `space` toggles a job for multi-select (its checkbox shows
 `[x]`, and the title bar shows the running count), `p` pause, `r`
 resume, `x` cancel, `R` retry, `d` remove, `D` remove + delete
 downloaded file (both ask for confirmation), `o` play/stream a job (see
-below), `n` start a new url/social/torrent download (or just play a
+below), `t` change the sort order (newest, name, status, progress, size, speed,
+time left; `T` reverses it), `i` (or `enter`) show a job's details — its full source and
+destination and, for a torrent or WebDAV folder, every file with its own
+progress (skipped torrent files marked), `n` start a new url/social/torrent download (or just play a
 link, without downloading it), `w` browse a
 saved WebDAV connection, `s` settings, `S` serve a local folder,
 `↑`/`↓` navigate, `q` quit (jobs keep running
@@ -478,7 +523,8 @@ same validation as `godl connection add`, saved the same way) and
 managing WebDAV connections no longer needs a trip to the CLI. Once
 inside a connection: `↑`/`↓` moves, `enter` opens a folder, `space`
 toggles a file or folder
-for bulk selection, `/` searches the current folder by name (filters
+for bulk selection, `t` sorts it by name, size or date modified (`T` reverses;
+folders always come first), `/` searches the current folder by name (filters
 live as you type; `enter` keeps the filter and returns to browsing,
 `esc` clears it), `←`/backspace goes up a level (also clearing any
 active search), `D` downloads the folder you're currently browsing in
@@ -552,6 +598,65 @@ running, the tab shows the same reachable-address/WebDAV/auth banner
 returns to the dashboard — leaving the tab always stops it, since
 there's no dashboard indicator for "a server is still running
 unattended" that would make it safe to forget about.
+
+### `godl web` — the web interface
+
+Everything the dashboard does, in a browser: the live download list
+with bulk pause/resume/retry/cancel/remove, new downloads (links,
+videos, torrents with a file picker, `.torrent` upload), the WebDAV
+browser, sharing a folder, and settings — plus a video player built
+into the page.
+
+```sh
+godl web                                  # turn it on if needed, and open it
+godl web --off                            # turn it off
+godl web --network --username alice       # also from your phone/other computers (asks for a password)
+godl web --local                          # back to this machine only
+```
+
+It's **off by default**. When on, godl's background daemon serves it
+(port 8787, `--port` to change), so it stays available after the
+command returns and after a restart — the "Web interface" rows in the
+Settings tab (`s` in the dashboard, or the page's own Settings) switch
+it too. While it's off nothing is listening and nothing runs for it.
+
+**Who can use it.** By default only this machine: the page is served on
+`127.0.0.1`, and `godl web` opens it with a private token (stored in
+godl's data directory, readable only by you) that the browser then
+keeps as a cookie — loopback alone isn't enough, since other users of
+the machine and other websites can reach a loopback port. With
+`--network` it's served on every interface and every device signs in
+with the username and password you set; godl refuses network mode
+without both. Either way it only answers to an IP address or
+`localhost` in the address bar and refuses requests sent by other
+websites. Network mode is plain http, like `godl serve` — use it on a
+home network you trust, not across the internet.
+
+**The player** plays finished downloads, torrents that are still
+downloading (the pieces you're watching are fetched first), files on a
+WebDAV server, and web links (YouTube and other yt-dlp sites) without
+saving anything — with a menu of the audio languages the file or site
+offers, and subtitles. godl never re-encodes the picture: files the
+browser can read as they are are handed to it directly; anything else
+(an MKV, a choice of audio track, a web link) is repackaged on the fly
+by godl's own ffmpeg — picture copied, sound converted to AAC only when
+it isn't already — and streamed straight to the page with no temporary
+files. Changing language or seeking restarts that stream at the current
+position. Sites that slow down long downloads (YouTube) are fetched in
+10 MB pieces, as yt-dlp does, so playback stays well ahead. If a site
+asks you to sign in (YouTube's "confirm you're not a bot"), enter the
+browser you're signed in with under Watch a link — its login is read on
+the godl machine by yt-dlp, the same as `--cookies-from-browser`. When the browser can't decode the picture (HEVC in some
+browsers, or iPhone/iPad Safari), the player says so and offers a
+**stream link** to paste into VLC or another app (the original file,
+with every language and subtitle in it; for a web link, a Matroska
+stream carrying every audio language) and a **download link**. Those
+links work for 12 hours.
+
+It's a control panel, not part of the download path: with nobody
+looking at the page it does no work at all, one shared feed serves
+every open tab, and a video playing in it costs one ffmpeg process
+copying data, capped at a few at a time.
 
 ### `godl update` — update everything godl manages, including itself
 

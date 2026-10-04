@@ -41,11 +41,39 @@ type Settings struct {
 	// NotifyOnComplete fires a best-effort desktop notification
 	// (internal/notify) when a job completes successfully.
 	NotifyOnComplete bool
+
+	// WebUI turns on the browser interface the daemon serves (see
+	// internal/webui). Off by default: no listener exists until asked.
+	WebUI     bool
+	WebUIPort int
+	// WebUINetwork binds every interface instead of loopback only, so
+	// another device can reach it. It requires WebUIUsername and
+	// WebUIPassword — the page can start downloads and delete files.
+	WebUINetwork  bool
+	WebUIUsername string
+	WebUIPassword string
+
+	// TorBoxAPIKey lets torrent jobs go through TorBox (internal/torbox):
+	// TorBox downloads the torrent on its servers, then godl fetches the
+	// files over HTTPS. Empty means TorBox isn't set up.
+	TorBoxAPIKey string
+	// TorBoxDefault pre-picks TorBox for new torrents; each one can
+	// still be sent either way when it's added.
+	TorBoxDefault bool
+	// TorBoxKeep leaves a torrent in the TorBox account once its files
+	// are downloaded, instead of deleting it there to free the slot.
+	TorBoxKeep bool
 }
+
+// TorBoxReady reports whether TorBox can be used.
+func (s Settings) TorBoxReady() bool { return s.TorBoxAPIKey != "" }
+
+// DefaultWebUIPort is where the web interface listens unless changed.
+const DefaultWebUIPort = 8787
 
 // DefaultSettings is what GetSettings returns before anything is saved.
 func DefaultSettings() Settings {
-	return Settings{AutoRetryMaxAttempts: 3}
+	return Settings{AutoRetryMaxAttempts: 3, WebUIPort: DefaultWebUIPort}
 }
 
 // settingsKeys names every row GetSettings/SaveSettings read and write
@@ -58,6 +86,14 @@ const (
 	settingsKeyAutoRetry            = "auto_retry"
 	settingsKeyAutoRetryMaxAttempts = "auto_retry_max_attempts"
 	settingsKeyNotifyOnComplete     = "notify_on_complete"
+	settingsKeyWebUI                = "webui"
+	settingsKeyWebUIPort            = "webui_port"
+	settingsKeyWebUINetwork         = "webui_network"
+	settingsKeyWebUIUsername        = "webui_username"
+	settingsKeyWebUIPassword        = "webui_password"
+	settingsKeyTorBoxAPIKey         = "torbox_api_key"
+	settingsKeyTorBoxDefault        = "torbox_default"
+	settingsKeyTorBoxKeep           = "torbox_keep"
 )
 
 // GetSettings reads the daemon's saved settings, falling back to
@@ -106,6 +142,32 @@ func (s *Store) GetSettings(ctx context.Context) (Settings, error) {
 	if v, ok := kv[settingsKeyNotifyOnComplete]; ok {
 		set.NotifyOnComplete = v == "true"
 	}
+	if v, ok := kv[settingsKeyWebUI]; ok {
+		set.WebUI = v == "true"
+	}
+	if v, ok := kv[settingsKeyWebUIPort]; ok {
+		if n, err := strconv.Atoi(v); err == nil {
+			set.WebUIPort = n
+		}
+	}
+	if v, ok := kv[settingsKeyWebUINetwork]; ok {
+		set.WebUINetwork = v == "true"
+	}
+	if v, ok := kv[settingsKeyWebUIUsername]; ok {
+		set.WebUIUsername = v
+	}
+	if v, ok := kv[settingsKeyWebUIPassword]; ok {
+		set.WebUIPassword = v
+	}
+	if v, ok := kv[settingsKeyTorBoxAPIKey]; ok {
+		set.TorBoxAPIKey = v
+	}
+	if v, ok := kv[settingsKeyTorBoxDefault]; ok {
+		set.TorBoxDefault = v == "true"
+	}
+	if v, ok := kv[settingsKeyTorBoxKeep]; ok {
+		set.TorBoxKeep = v == "true"
+	}
 	return set, nil
 }
 
@@ -120,6 +182,14 @@ func (s *Store) SaveSettings(ctx context.Context, set Settings) error {
 		settingsKeyAutoRetry:            strconv.FormatBool(set.AutoRetry),
 		settingsKeyAutoRetryMaxAttempts: strconv.Itoa(set.AutoRetryMaxAttempts),
 		settingsKeyNotifyOnComplete:     strconv.FormatBool(set.NotifyOnComplete),
+		settingsKeyWebUI:                strconv.FormatBool(set.WebUI),
+		settingsKeyWebUIPort:            strconv.Itoa(set.WebUIPort),
+		settingsKeyWebUINetwork:         strconv.FormatBool(set.WebUINetwork),
+		settingsKeyWebUIUsername:        set.WebUIUsername,
+		settingsKeyWebUIPassword:        set.WebUIPassword,
+		settingsKeyTorBoxAPIKey:         set.TorBoxAPIKey,
+		settingsKeyTorBoxDefault:        strconv.FormatBool(set.TorBoxDefault),
+		settingsKeyTorBoxKeep:           strconv.FormatBool(set.TorBoxKeep),
 	}
 	for k, v := range kv {
 		if _, err := s.db.ExecContext(ctx,

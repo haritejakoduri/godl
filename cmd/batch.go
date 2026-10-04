@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"godl/internal/daemon"
+	"godl/internal/jobreq"
 	"godl/internal/store"
 )
 
@@ -108,19 +109,7 @@ func startJobs(reqs []daemon.Request) error {
 	return nil
 }
 
-// uniqueName returns name, or "name (2).ext", "name (3).ext", ... if an
-// earlier file in the same batch already claimed it — two links whose
-// URLs end in the same filename would otherwise write the same file.
+// uniqueName is jobreq.UniqueName.
 func uniqueName(name string, taken map[string]bool) string {
-	candidate := name
-	ext := ""
-	if i := strings.LastIndex(name, "."); i > 0 {
-		ext = name[i:]
-		name = name[:i]
-	}
-	for n := 2; taken[candidate]; n++ {
-		candidate = fmt.Sprintf("%s (%d)%s", name, n, ext)
-	}
-	taken[candidate] = true
-	return candidate
+	return jobreq.UniqueName(name, taken)
 }

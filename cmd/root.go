@@ -20,7 +20,10 @@ background daemon, so jobs keep running after you close the terminal.
 
 Run "godl" with no arguments for a live TUI dashboard (start new
 downloads, track progress), or use the pause/resume/retry/cancel/
-remove/list subcommands to script it.`,
+remove/list subcommands to script it.
+
+New here? "godl guide" opens an illustrated tour of everything godl
+can do.`,
 	Version:       version.Version,
 	SilenceUsage:  true,
 	SilenceErrors: true,
@@ -44,6 +47,8 @@ func init() {
 		torrentCmd,
 		streamCmd,
 		playCmd,
+		guideCmd,
+		webCmd,
 		webdavCmd,
 		connectionCmd,
 		serveCmd,

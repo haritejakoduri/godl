@@ -25,7 +25,8 @@ func (m statusModel) Init() tea.Cmd {
 // the first time it renders post-reorder — see its own doc comment.
 func (m statusModel) applyJobs(msg jobsMsg) statusModel {
 	prevID := m.cursorJobID()
-	m.jobs = newestFirst(msg)
+	m.raw = msg
+	m.jobs = sortJobs(msg, m.sortBy, m.sortRev)
 	m.err = nil
 	m.pruneSelected()
 	m.anim.observe(m.jobs)
@@ -164,6 +165,27 @@ func (m statusModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case torrentFilesMsg:
+		return m.torrentFilesLoaded(msg)
+
+	case newJobSettingsMsg:
+		return m.newJobSettingsLoaded(msg)
+
+	case detailsLoadedMsg:
+		return m.detailsLoaded(msg)
+
+	case detailsChoiceMsg:
+		return m.detailsChoiceLoaded(msg)
+
+	case detailsAppliedMsg:
+		return m.detailsApplied(msg)
+
+	case detailsTickMsg:
+		if m.details != nil && m.details == msg.st {
+			return m, loadDetails(msg.st)
+		}
+		return m, nil
+
 	case settingsLoadedMsg:
 		return m.settingsResult(msg.st, msg.settings, msg.err, false)
 
@@ -199,6 +221,9 @@ func (m statusModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.serve != nil {
 		return m.updateServe(msg)
 	}
+	if m.details != nil {
+		return m.updateDetails(msg)
+	}
 	if m.confirmRemove != nil {
 		return m.resolveRemove(msg)
 	}
@@ -217,7 +242,7 @@ func (m statusModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		ti.CharLimit = 2048
 		ti.Width = 60
 		m.newJob = &newJobState{step: newJobPickType, input: ti}
-		return m, nil
+		return m, loadNewJobSettings(m.newJob)
 	case "w":
 		return m.openWebDAVBrowser()
 	case "s":
@@ -226,6 +251,15 @@ func (m statusModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "S":
 		m.serve = newServeForm()
 		return m, nil
+	case "i", "enter":
+		return m.openDetails()
+	case "t", "T":
+		if msg.String() == "t" {
+			m.sortBy = (m.sortBy + 1) % jobSortCount
+		} else {
+			m.sortRev = !m.sortRev
+		}
+		return m.applyJobs(m.raw), nil
 	case " ":
 		j, idx, ok := m.cursorJob()
 		if !ok {

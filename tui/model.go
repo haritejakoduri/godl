@@ -90,6 +90,13 @@ type statusModel struct {
 	// non-empty, otherwise on the row under the cursor.
 	selected map[string]bool
 
+	// raw is the last snapshot in the daemon's own order (oldest first),
+	// kept so a new sort applies without waiting for the next snapshot.
+	// sortBy/sortRev order m.jobs from it ("t" cycles, "T" reverses).
+	raw     []*daemon.JobView
+	sortBy  jobSort
+	sortRev bool
+
 	// A pending d/D awaiting y/N: remove is consequential enough not to
 	// be a single keypress.
 	confirmRemove *pendingRemove
@@ -99,6 +106,7 @@ type statusModel struct {
 	webdavBrowse *webdavBrowseState
 	settings     *settingsState
 	serve        *serveState
+	details      *detailsState
 }
 
 type pendingRemove struct {

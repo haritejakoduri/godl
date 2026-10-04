@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"godl/internal/daemon"
+	"godl/internal/jsruntime"
 	"godl/internal/social"
 	"godl/internal/store"
 	"godl/internal/ytdlp"
@@ -201,7 +202,8 @@ func runListFormats(link string, opts store.JobOptions) error {
 		return err
 	}
 
-	args := append(daemon.YtdlpAuthArgs(opts), "-F", link)
+	args := append(daemon.YtdlpAuthArgs(opts), jsruntime.Args(ctx, func(msg string) { fmt.Println(msg) })...)
+	args = append(args, "-F", link)
 	c := exec.CommandContext(ctx, ytDlpPath, args...)
 	c.Stdout = os.Stdout
 	c.Stderr = os.Stderr

@@ -45,3 +45,34 @@ func TestSelectionRejectsInvalidRanges(t *testing.T) {
 		}
 	}
 }
+
+func TestSelectionSpec(t *testing.T) {
+	cases := []struct {
+		sel  []bool
+		want string
+	}{
+		{[]bool{true, true, true}, ""},
+		{[]bool{true, false, true}, "1,3"},
+		{[]bool{true, true, true, false, true, true}, "1-3,5-6"},
+		{[]bool{false, false, true}, "3"},
+	}
+	for _, c := range cases {
+		got := SelectionSpec(c.sel)
+		if got != c.want {
+			t.Errorf("SelectionSpec(%v) = %q, want %q", c.sel, got, c.want)
+		}
+		// Round trip: the spec selects exactly the chosen files.
+		if got == "" {
+			continue
+		}
+		s, err := ParseSelection(got)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i, want := range c.sel {
+			if s.Match(i+1, "f") != want {
+				t.Errorf("spec %q: file %d selected=%v, want %v", got, i+1, !want, want)
+			}
+		}
+	}
+}

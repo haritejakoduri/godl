@@ -11,6 +11,7 @@ import (
 
 	"golang.org/x/time/rate"
 
+	"godl/internal/fileserver"
 	"godl/internal/paths"
 	"godl/internal/store"
 	"godl/internal/torrentmgr"
@@ -60,6 +61,12 @@ type Daemon struct {
 	// Loopback HTTP server for streaming torrents, started on first use.
 	streamMu  sync.Mutex
 	streamSrv *streamServer
+
+	// The browser interface, nil while it's switched off (see webui.go),
+	// and the folder being shared from it, if any.
+	webMu sync.Mutex
+	web   *webServer
+	share *fileserver.Running
 }
 
 func NewDaemon() (*Daemon, error) {
@@ -130,6 +137,11 @@ func (d *Daemon) Serve() error {
 		return err
 	}
 
+	// A port that's taken shouldn't stop the daemon from downloading.
+	if err := d.syncWebUI(d.cachedSettings()); err != nil {
+		log.Printf("%v", err)
+	}
+
 	d.resumeInterruptedJobs()
 
 	for {
@@ -190,6 +202,7 @@ func (d *Daemon) Close() {
 	d.retryTimers = nil
 	d.retryMu.Unlock()
 	d.stopAllSeeding()
+	d.closeWebUI()
 	d.closeStreamServer()
 	d.tm.Close()
 	d.st.Close()

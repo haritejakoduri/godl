@@ -56,6 +56,9 @@ func (d *Daemon) streamTorrent(jobID string, fileIndex int) (string, []TorrentFi
 	if job.Type != store.JobTorrent {
 		return "", nil, fmt.Errorf("job %s is a %s job, not a torrent", jobID, job.Type)
 	}
+	if job.Options.TorBox() {
+		return "", nil, fmt.Errorf("this torrent comes through TorBox; it can be played once it has downloaded")
+	}
 	infos, selected := d.tm.Files(jobID)
 	if infos == nil {
 		switch job.Status {

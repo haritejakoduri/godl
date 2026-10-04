@@ -56,10 +56,27 @@ type JobOptions struct {
 	// either limit is reached. Both zero means stop at completion.
 	SeedRatio   float64 `json:"seed_ratio,omitempty"`
 	SeedTimeSec int64   `json:"seed_time_sec,omitempty"`
+	// Via is how a torrent is fetched: ViaTorBox, or "" for godl's own
+	// peer-to-peer client. On an add request it may also be ViaP2P, or
+	// "" to follow Settings.TorBoxDefault; the daemon stores the answer.
+	Via string `json:"via,omitempty"`
+	// TorBoxID is the torrent's ID in the TorBox account, once added, so
+	// a resume picks up the same one instead of adding it again.
+	TorBoxID int64 `json:"torbox_id,omitempty"`
 }
 
-// Seeds reports whether a finished torrent should keep uploading.
-func (o JobOptions) Seeds() bool { return o.SeedRatio > 0 || o.SeedTimeSec > 0 }
+// How a torrent job is fetched; see JobOptions.Via.
+const (
+	ViaTorBox = "torbox"
+	ViaP2P    = "p2p"
+)
+
+// TorBox reports whether the torrent goes through TorBox.
+func (o JobOptions) TorBox() bool { return o.Via == ViaTorBox }
+
+// Seeds reports whether a finished torrent should keep uploading. A
+// TorBox torrent never does: godl never held it as a peer.
+func (o JobOptions) Seeds() bool { return !o.TorBox() && (o.SeedRatio > 0 || o.SeedTimeSec > 0) }
 
 // Job is one download task, of whatever type. Fields not relevant to a
 // given type are left zero (e.g. Format only applies to social jobs).

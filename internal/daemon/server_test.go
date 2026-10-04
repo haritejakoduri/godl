@@ -184,3 +184,14 @@ func TestCreateJobPersistsSha256(t *testing.T) {
 		t.Fatalf("GetJob after createJob: Sha256 = %q, want %q (not persisted to the DB row)", reread.Sha256, wantDigest)
 	}
 }
+
+func TestCreateJobRefusesAnAbsurdPieceCount(t *testing.T) {
+	d := newTestDaemon(t)
+	_, err := d.createJob(context.Background(), store.JobURL, "http://example.com/f", t.TempDir()+"/f", "", 1_000_000_000, 0, "", store.JobOptions{})
+	if err == nil {
+		t.Fatal("a billion pieces at once should be refused, not allocated")
+	}
+	if _, err := d.createJob(context.Background(), store.JobURL, "http://example.com/f", t.TempDir()+"/f", "", maxJobConcurrency, 0, "", store.JobOptions{}); err != nil {
+		t.Errorf("the cap itself should be allowed: %v", err)
+	}
+}

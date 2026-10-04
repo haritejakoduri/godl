@@ -134,15 +134,22 @@ func TestNameReportsNoPlayer(t *testing.T) {
 func TestMPVLinkArgs(t *testing.T) {
 	// A comma in the path is why this is --script-opts-append: plain
 	// --script-opts would split the value there.
-	got := mpvLinkArgs("/home/a,b/bin/yt-dlp", "")
+	got := mpvLinkArgs("/home/a,b/bin/yt-dlp", "", nil)
 	want := []string{"--script-opts-append=ytdl_hook-ytdl_path=/home/a,b/bin/yt-dlp", "--force-window=immediate"}
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Errorf("mpvLinkArgs(no format) = %q, want %q", got, want)
 	}
 
-	got = mpvLinkArgs("/bin/yt-dlp", "bv*[height<=720]+ba/b[height<=720]")
+	got = mpvLinkArgs("/bin/yt-dlp", "bv*[height<=720]+ba/b[height<=720]", nil)
 	if last := got[len(got)-1]; last != "--ytdl-format=bv*[height<=720]+ba/b[height<=720]" {
 		t.Errorf("mpvLinkArgs(format) ends with %q, want the --ytdl-format flag", last)
+	}
+}
+
+func TestMPVLinkArgsPassesTheJSRuntime(t *testing.T) {
+	got := mpvLinkArgs("/bin/yt-dlp", "", []string{"--js-runtimes", "node:/usr/bin/node"})
+	if !strings.Contains(strings.Join(got, " "), "--ytdl-raw-options-append=js-runtimes=node:/usr/bin/node") {
+		t.Errorf("mpvLinkArgs with a runtime = %q, want it passed to the ytdl hook", got)
 	}
 }
 

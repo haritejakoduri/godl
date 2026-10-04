@@ -59,6 +59,15 @@ const (
 	// stream_torrent returns a loopback URL a media player can stream a
 	// running torrent job's file from while it downloads.
 	CmdStreamTorrent = "stream_torrent"
+	// job_files lists a job's files with per-file progress (see
+	// Daemon.jobFileList): what a multi-file torrent or WebDAV folder
+	// job is made of, and how far along each part is.
+	CmdJobFiles = "job_files"
+	// torrent_choice lists every file of a torrent job with whether it's
+	// currently chosen (Skipped false); select_files changes the choice
+	// (Options.TorrentFiles, "" for every file). See torrentselect.go.
+	CmdTorrentChoice = "torrent_choice"
+	CmdSelectFiles   = "select_files"
 )
 
 // TorrentFile is one entry of a torrent_files / stream_torrent reply.
@@ -67,6 +76,8 @@ type TorrentFile struct {
 	Path   string `json:"path"`
 	Length int64  `json:"length"`
 	Done   int64  `json:"done,omitempty"`
+	// job_files: a torrent file left out by --files.
+	Skipped bool `json:"skipped,omitempty"`
 }
 
 // JobView is a store.Job plus the runtime stats (speed, ETA) the daemon
@@ -78,6 +89,10 @@ type JobView struct {
 	// Only set while Status is seeding.
 	UploadBps float64 `json:"upload_bps,omitempty"`
 	Ratio     float64 `json:"ratio,omitempty"`
+	// Phase says what a TorBox torrent is waiting on ("TorBox:
+	// downloading 40% · 12 MB/s"), or that its files are arriving
+	// ("from TorBox"). Empty for everything else.
+	Phase string `json:"phase,omitempty"`
 }
 
 // Response is one daemon->client message. Most commands get exactly one;
@@ -97,10 +112,15 @@ type Response struct {
 	// clamping — see daemon.applySettings).
 	Settings *store.Settings `json:"settings,omitempty"`
 
-	// torrent_files / stream_torrent
+	// torrent_files / stream_torrent / job_files. Note explains a
+	// partial job_files answer (e.g. a paused torrent, listed from disk).
+	Note      string        `json:"note,omitempty"`
 	Name      string        `json:"name,omitempty"`
 	Files     []TorrentFile `json:"files,omitempty"`
 	StreamURL string        `json:"stream_url,omitempty"`
+	// job_files: Files is a running torrent's complete list, every file
+	// at its own index, so a choice can be made from it directly.
+	Live bool `json:"live,omitempty"`
 
 	// log streaming (add_social)
 	JobIDForLog string `json:"job_id_for_log,omitempty"`

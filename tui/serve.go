@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 
@@ -313,94 +312,22 @@ func (m statusModel) stopServe() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// serveIsLoopbackHost mirrors cmd/serve.go's own isLoopbackHost —
-// duplicated rather than imported since tui can't depend on cmd (see
-// boundary_test.go).
-func serveIsLoopbackHost(host string) bool {
-	if host == "localhost" {
-		return true
-	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
-}
+// The listen/address helpers below live in internal/fileserver, shared
+// with "godl serve" and the web interface's share; these keep the names
+// this file and its tests already use.
+func serveIsLoopbackHost(host string) bool { return fileserver.IsLoopbackHost(host) }
 
-// serveListenMaxAttempts mirrors cmd/serve.go's maxPortFallbackAttempts.
-const serveListenMaxAttempts = 20
+const serveListenMaxAttempts = fileserver.MaxPortFallbackAttempts
 
-// serveListenWithFallback mirrors cmd/serve.go's listenWithFallback:
-// binds host:port, falling back to the next few ports if the exact one
-// requested is already taken. Unlike port 0 itself (which asks the OS
-// for any free port), the fallback only tries specific, predictable
-// port numbers — so the "actual port" it returns is read back from the
-// listener rather than assumed, correctly reporting whichever real
-// port got bound either way.
 func serveListenWithFallback(host string, port int) (net.Listener, int, error) {
-	var lastErr error
-	for i := 0; i < serveListenMaxAttempts; i++ {
-		p := port
-		if port != 0 {
-			p = port + i
-		}
-		l, err := net.Listen("tcp", net.JoinHostPort(host, strconv.Itoa(p)))
-		if err == nil {
-			return l, l.Addr().(*net.TCPAddr).Port, nil
-		}
-		lastErr = err
-		if port == 0 || !strings.Contains(err.Error(), "address already in use") {
-			return nil, 0, err
-		}
-	}
-	return nil, 0, fmt.Errorf("no free port found starting at %d after %d attempts: %w", port, serveListenMaxAttempts, lastErr)
+	return fileserver.ListenWithFallback(host, port, serveListenMaxAttempts)
 }
 
-// serveIsUnspecifiedHost mirrors cmd/serve.go's isUnspecifiedHost.
-func serveIsUnspecifiedHost(host string) bool {
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsUnspecified()
-}
+func serveIsUnspecifiedHost(host string) bool { return fileserver.IsUnspecifiedHost(host) }
 
-// serveReachableIPs mirrors cmd/serve.go's reachableIPs: this
-// machine's own non-loopback IPv4 addresses, for expanding "every
-// interface" into addresses another device can actually use.
-func serveReachableIPs() []string {
-	ifaces, err := net.Interfaces()
-	if err != nil {
-		return nil
-	}
-	var ips []string
-	for _, iface := range ifaces {
-		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
-			continue
-		}
-		addrs, err := iface.Addrs()
-		if err != nil {
-			continue
-		}
-		for _, a := range addrs {
-			var ip net.IP
-			switch v := a.(type) {
-			case *net.IPNet:
-				ip = v.IP
-			case *net.IPAddr:
-				ip = v.IP
-			}
-			if ip == nil || ip.To4() == nil || ip.IsLoopback() || ip.IsLinkLocalUnicast() {
-				continue
-			}
-			ips = append(ips, ip.String())
-		}
-	}
-	sort.Strings(ips)
-	return ips
-}
+func serveReachableIPs() []string { return fileserver.ReachableIPs() }
 
-// serveBannerAddrs mirrors cmd/serve.go's bannerAddrs.
-func serveBannerAddrs(host string) []string {
-	if !serveIsUnspecifiedHost(host) {
-		return []string{host}
-	}
-	return append([]string{"127.0.0.1"}, serveReachableIPs()...)
-}
+func serveBannerAddrs(host string) []string { return fileserver.BannerAddrs(host) }
 
 // serveExampleConnectAddr mirrors cmd/serve.go's exampleConnectAddr.
 func serveExampleConnectAddr(addrs []string) string {

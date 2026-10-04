@@ -107,6 +107,10 @@ func (d *Daemon) startWebDAV(j *store.Job) {
 			total = -1
 		}
 
+		rt.mu.Lock()
+		rt.webdavFiles, rt.webdavRoot, rt.webdavRootIsDir = files, remotePath, root.IsDir
+		rt.mu.Unlock()
+
 		var cumulative atomic.Int64
 		pending := d.pendingWebDAVFiles(j, files, remotePath, root.IsDir, &cumulative)
 		d.reportProgress(j.ID, cumulative.Load(), total, nil)

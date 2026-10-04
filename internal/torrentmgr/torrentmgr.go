@@ -68,6 +68,14 @@ func newManager(cfg *torrent.ClientConfig) (*Manager, error) {
 	// torrent seed forever.
 	cfg.Seed = true
 	cl, err := torrent.NewClient(cfg)
+	if err != nil && strings.Contains(err.Error(), "address already in use") {
+		// The default BitTorrent port is taken — another torrent
+		// client, or another user's godl on the same machine. Any free
+		// port works for an outgoing-first client, and the alternative
+		// is the whole daemon failing to start over it.
+		cfg.ListenPort = 0
+		cl, err = torrent.NewClient(cfg)
+	}
 	if err != nil {
 		// The default config listens on both IPv4 and IPv6; on a host/
 		// container without IPv6 support at all (common — some VPS
@@ -336,4 +344,14 @@ func (m *Manager) InfoHash(jobID string) (string, bool) {
 		return "", false
 	}
 	return t.InfoHash().HexString(), true
+}
+
+// InfoHashOf reads a magnet link's or .torrent file's info hash (hex)
+// without touching the network.
+func InfoHashOf(source string) (string, error) {
+	spec, err := specFromSource(source)
+	if err != nil {
+		return "", err
+	}
+	return spec.InfoHash.HexString(), nil
 }

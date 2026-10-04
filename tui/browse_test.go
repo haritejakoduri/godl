@@ -72,9 +72,10 @@ func TestWebDAVBrowseSelectEntryTogglesSelection(t *testing.T) {
 		connName: "mynas",
 		path:     "/",
 		selected: map[string]bool{},
+		// Listed folders first, as the browser always shows them.
 		entries: []webdav.Entry{
-			{Path: "/a.txt", IsDir: false, Size: 10},
 			{Path: "/sub/", IsDir: true, Size: -1},
+			{Path: "/a.txt", IsDir: false, Size: 10},
 		},
 	}}
 
@@ -86,15 +87,15 @@ func TestWebDAVBrowseSelectEntryTogglesSelection(t *testing.T) {
 
 	mm, _ = m.updateWebDAVBrowse(key(" "))
 	m = mm.(statusModel)
-	if !m.webdavBrowse.selected["/sub/"] {
-		t.Fatal("space should have selected /sub/")
+	if !m.webdavBrowse.selected["/a.txt"] {
+		t.Fatal("space should have selected /a.txt")
 	}
 
 	// Toggling again deselects.
 	mm, _ = m.updateWebDAVBrowse(key(" "))
 	m = mm.(statusModel)
-	if m.webdavBrowse.selected["/sub/"] {
-		t.Fatal("space again should have deselected /sub/")
+	if m.webdavBrowse.selected["/a.txt"] {
+		t.Fatal("space again should have deselected /a.txt")
 	}
 }
 

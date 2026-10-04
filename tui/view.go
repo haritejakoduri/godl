@@ -32,12 +32,14 @@ func (m statusModel) View() string {
 		return m.viewSettings()
 	case m.serve != nil:
 		return m.viewServe()
+	case m.details != nil:
+		return m.viewDetails()
 	}
 
 	return m.dashboardHeader() + "\n" + m.table.View() + "\n" + m.dashboardFooter()
 }
 
-const dashboardHelp = "space select  p pause  r resume  x cancel  R retry  d remove  D remove+delete  o play/stream  n new download  w browse webdav  s settings  S serve  ↑/↓ navigate  q quit"
+const dashboardHelp = "space select  p pause  r resume  x cancel  R retry  d remove  D remove+delete  o play  i details  t sort  n new  w webdav  s settings  S serve  ↑/↓ move  q quit"
 
 // dashboardMessageLines is how many message lines (connection error,
 // status/job error) the table leaves room for beside the help text, so
@@ -93,6 +95,13 @@ func (m statusModel) dashboardHeader() string {
 	if len(m.selected) > 0 {
 		parts = append(parts, fmt.Sprintf("(%d selected)", len(m.selected)))
 	}
+	if m.sortBy != sortNewest || m.sortRev {
+		order := "sorted by " + m.sortBy.String()
+		if m.sortRev {
+			order += " ↕"
+		}
+		parts = append(parts, headerDimStyle.Render(order))
+	}
 	return m.wrapped(titleStyle).Render(strings.Join(parts, "  "))
 }
 
@@ -137,6 +146,10 @@ func (m statusModel) dashboardFooter() string {
 		// reason, so a failed row's ErrorMsg shows here instead, just by
 		// scrolling to it — no extra keybinding needed.
 		lines = append(lines, m.wrapped(errStyle).Render(m.selectedJobError()))
+	case m.selectedJobPhase() != "":
+		// What TorBox is doing with the selected torrent, while nothing
+		// has reached this machine yet.
+		lines = append(lines, m.wrapped(statStyle).Render(m.selectedJobPhase()))
 	}
 	lines = append(lines, m.helpView(dashboardHelp))
 	return strings.Join(lines, "\n")
@@ -175,4 +188,13 @@ func (m statusModel) wrapped(style lipgloss.Style) lipgloss.Style {
 // helpView renders a help/footer hint, wrapped to the terminal width.
 func (m statusModel) helpView(s string) string {
 	return m.wrapped(helpStyle).Render(s)
+}
+
+// selectedJobPhase is the cursor job's TorBox progress, if it has one.
+func (m statusModel) selectedJobPhase() string {
+	j, _, ok := m.cursorJob()
+	if !ok || j.Status != store.StatusActive || !strings.HasPrefix(j.Phase, "TorBox") {
+		return ""
+	}
+	return j.Phase
 }

@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"fmt"
+	"godl/internal/webdav"
 	"log"
 	"sync"
 	"time"
@@ -25,6 +26,17 @@ type runtime struct {
 	// See progressPersistInterval.
 	lastPersist      time.Time
 	lastPersistBytes int64
+
+	// WebDAV jobs: the remote files this run is fetching, set once
+	// after the walk, for job_files to report per-file progress from.
+	webdavFiles     []webdav.Entry
+	webdavRoot      string
+	webdavRootIsDir bool
+
+	// TorBox torrent jobs: what TorBox is doing, while nothing has come
+	// here yet ("" once files are arriving), and the files once known.
+	phase       string
+	torboxFiles []*torboxFile
 }
 
 func waitForStop(rt *runtime) {
@@ -60,7 +72,11 @@ func (d *Daemon) start(j *store.Job) bool {
 	case store.JobURL:
 		d.startURL(j)
 	case store.JobTorrent:
-		d.startTorrent(j)
+		if j.Options.TorBox() {
+			d.startTorBox(j)
+		} else {
+			d.startTorrent(j)
+		}
 	case store.JobSocial:
 		d.startSocial(j)
 	case store.JobWebDAV:

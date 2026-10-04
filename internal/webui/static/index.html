@@ -1,0 +1,327 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>godl</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+
+<header class="top">
+  <a class="brand" href="#downloads">godl</a>
+  <nav class="tabs" aria-label="Sections">
+    <a href="#downloads" data-view="downloads">Downloads</a>
+    <a href="#new" data-view="new">New</a>
+    <a href="#remote" data-view="remote">Remote storage</a>
+    <a href="#share" data-view="share">Share a folder</a>
+    <a href="#settings" data-view="settings">Settings</a>
+  </nav>
+  <div class="summary" id="summary" aria-live="off"></div>
+</header>
+
+<div class="banner" id="banner" hidden></div>
+
+<main>
+
+<!-- Downloads -->
+<section id="view-downloads" class="view">
+  <div class="toolbar">
+    <input type="search" id="job-filter" placeholder="Filter by name or link" aria-label="Filter downloads">
+    <select id="job-state" aria-label="Show">
+      <option value="">All</option>
+      <option value="active">Active</option>
+      <option value="queued">Queued</option>
+      <option value="paused">Paused</option>
+      <option value="seeding">Seeding</option>
+      <option value="completed">Completed</option>
+      <option value="failed">Failed</option>
+      <option value="canceled">Canceled</option>
+    </select>
+    <label class="sortby">Sort
+      <select id="job-sort" aria-label="Sort downloads by">
+        <option value="newest">Newest</option>
+        <option value="name">Name</option>
+        <option value="status">Status</option>
+        <option value="progress">Progress</option>
+        <option value="size">Size</option>
+        <option value="speed">Speed</option>
+        <option value="eta">Time left</option>
+      </select>
+    </label>
+    <button type="button" id="job-sort-dir" class="sortdir" aria-label="Reverse the order">↓</button>
+    <span class="grow"></span>
+    <button type="button" id="sel-start">Select all</button>
+  </div>
+  <p class="hint seltip">Tick downloads, or tap a row, to act on several at once. Shift-click selects a range.</p>
+  <div class="tablewrap">
+    <table class="jobs">
+      <thead>
+        <tr>
+          <th class="c-check"><input type="checkbox" id="check-all" aria-label="Select all"></th>
+          <th><button type="button" class="th-sort" data-sort="name">Download</button></th>
+          <th><button type="button" class="th-sort" data-sort="status">Status</button></th>
+          <th><button type="button" class="th-sort" data-sort="progress">Progress</button></th>
+          <th class="num"><button type="button" class="th-sort" data-sort="speed">Speed</button></th>
+          <th class="num"><button type="button" class="th-sort" data-sort="eta">Time left</button></th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody id="job-rows"></tbody>
+    </table>
+  </div>
+  <p class="empty" id="jobs-empty" hidden>No downloads yet. Start one from <a href="#new">New</a>.</p>
+  <p class="empty" id="jobs-nomatch" hidden>Nothing matches that filter.</p>
+
+  <!-- Shown while anything is ticked; stays on screen however far the list scrolls. -->
+  <div class="selbar" id="selbar" hidden role="region" aria-label="Selected downloads">
+    <div class="confirm" id="confirm" hidden>
+      <span id="confirm-text"></span>
+      <button type="button" id="confirm-yes" class="danger">Yes</button>
+      <button type="button" id="confirm-no">No</button>
+    </div>
+    <div class="selrow">
+      <strong class="count" id="sel-count"></strong>
+      <button type="button" id="sel-all" class="linkish">Select all</button>
+      <button type="button" id="sel-clear" class="linkish">Clear</button>
+      <span class="grow"></span>
+      <div class="bulk" id="bulk">
+        <button type="button" data-action="pause">Pause</button>
+        <button type="button" data-action="resume">Resume</button>
+        <button type="button" data-action="retry">Retry</button>
+        <button type="button" data-action="cancel">Cancel</button>
+        <button type="button" data-action="remove">Remove</button>
+        <button type="button" data-action="purge" class="danger">Remove + delete file</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- New download -->
+<section id="view-new" class="view" hidden>
+  <div class="segments" role="tablist" id="new-kind">
+    <button type="button" role="tab" data-kind="url" aria-selected="true">Link</button>
+    <button type="button" role="tab" data-kind="social">Video</button>
+    <button type="button" role="tab" data-kind="torrent">Torrent</button>
+    <button type="button" role="tab" data-kind="watch">Watch a link</button>
+  </div>
+
+  <form id="new-form" class="form" autocomplete="off">
+    <p class="hint" id="new-hint"></p>
+
+    <label class="field" id="f-links">
+      <span id="links-label">Links, one per line</span>
+      <textarea id="new-links" rows="4" spellcheck="false"></textarea>
+    </label>
+
+    <div id="torrent-extra" hidden>
+      <fieldset class="via" id="torrent-via" hidden>
+        <legend>Download with</legend>
+        <label class="check"><input type="radio" name="via" value="torbox" id="via-torbox"> TorBox <span class="hint">— TorBox fetches it on its servers, then it comes here over a fast direct connection</span></label>
+        <label class="check"><input type="radio" name="via" value="p2p" id="via-p2p"> This computer <span class="hint">— straight from other peers</span></label>
+        <span class="hint" id="torbox-cached" role="status"></span>
+      </fieldset>
+      <div class="row">
+        <label class="filebtn">Upload a .torrent file
+          <input type="file" id="torrent-file" accept=".torrent,application/x-bittorrent">
+        </label>
+        <button type="button" id="torrent-list">Reload file list</button>
+        <span class="hint" id="torrent-status"></span>
+      </div>
+      <div class="filepick" id="torrent-pick" hidden>
+        <div class="row">
+          <strong id="torrent-name"></strong>
+          <span class="grow"></span>
+          <button type="button" id="torrent-all">All</button>
+          <button type="button" id="torrent-none">None</button>
+        </div>
+        <ul id="torrent-files"></ul>
+      </div>
+    </div>
+
+    <label class="field" id="f-quality" hidden>
+      <span>Quality</span>
+      <select id="new-preset"></select>
+    </label>
+
+    <label class="field short" id="f-watch-cookies" hidden>
+      <span>Sign in with this browser's login (if the site asks you to sign in)</span>
+      <input type="text" id="watch-cookies" placeholder="firefox, chrome, … or leave empty" spellcheck="false">
+    </label>
+
+    <div id="dl-fields">
+      <label class="field">
+        <span id="output-label">Save to</span>
+        <input type="text" id="new-output" spellcheck="false">
+      </label>
+      <label class="field short">
+        <span>Speed limit</span>
+        <input type="text" id="new-rate" placeholder="unlimited, or 2M / 500K">
+      </label>
+
+      <details id="adv">
+        <summary>More options</summary>
+        <div class="kind-url">
+          <label class="field short"><span>Pieces at once</span><input type="number" id="new-conc" min="1" max="32" value="4"></label>
+          <label class="field"><span>SHA-256 checksum to verify (one link only)</span><input type="text" id="new-sha" spellcheck="false"></label>
+        </div>
+        <div class="kind-social">
+          <label class="field"><span>yt-dlp format selector (instead of a quality)</span><input type="text" id="new-format" spellcheck="false"></label>
+          <label class="field short"><span>Use cookies from browser</span><input type="text" id="new-browser" placeholder="firefox, chrome, …"></label>
+        </div>
+        <div class="kind-url kind-social">
+          <label class="field"><span>Extra headers, one per line</span><textarea id="new-headers" rows="2" spellcheck="false" placeholder="Authorization: Bearer abc"></textarea></label>
+          <label class="field"><span>Cookie</span><input type="text" id="new-cookie" spellcheck="false" placeholder="session=abc; theme=dark"></label>
+          <label class="field"><span>cookies.txt file on the godl machine</span><input type="text" id="new-cookies-file" spellcheck="false"></label>
+        </div>
+        <div class="kind-torrent" id="seed-opts">
+          <label class="field short"><span>Keep seeding to ratio</span><input type="number" id="new-seed-ratio" min="0" step="0.1" placeholder="off"></label>
+          <label class="field short"><span>Keep seeding for</span><input type="text" id="new-seed-time" placeholder="off, or 30m / 2h"></label>
+        </div>
+      </details>
+    </div>
+
+    <div class="row">
+      <button type="submit" class="primary" id="new-submit">Start download</button>
+      <span class="msg" id="new-msg" role="status"></span>
+    </div>
+  </form>
+</section>
+
+<!-- Remote storage -->
+<section id="view-remote" class="view" hidden>
+  <div id="conn-list-wrap">
+    <h2>Saved servers</h2>
+    <ul class="conns" id="conn-list"></ul>
+    <p class="empty" id="conn-empty" hidden>No WebDAV servers saved yet.</p>
+    <details id="conn-add">
+      <summary>Add a server</summary>
+      <form id="conn-form" class="form" autocomplete="off">
+        <label class="field short"><span>Name (letters, digits, - and _)</span><input type="text" id="conn-name" required></label>
+        <label class="field"><span>WebDAV address</span><input type="url" id="conn-url" required placeholder="https://dav.example.com/files/alice/"></label>
+        <label class="field short"><span>Username</span><input type="text" id="conn-user"></label>
+        <label class="field short"><span>Password</span><input type="password" id="conn-pass" autocomplete="new-password"></label>
+        <label class="check"><input type="checkbox" id="conn-insecure"> Skip TLS certificate check (self-signed servers)</label>
+        <div class="row"><button type="submit" class="primary">Save server</button><span class="msg" id="conn-msg" role="status"></span></div>
+      </form>
+    </details>
+  </div>
+
+  <div id="browser" hidden>
+    <div class="row">
+      <button type="button" id="browse-back">← Servers</button>
+      <nav class="crumbs" id="crumbs" aria-label="Folder"></nav>
+    </div>
+    <div class="toolbar">
+      <input type="search" id="browse-filter" placeholder="Search this folder" aria-label="Search this folder">
+      <label class="sortby">Sort
+        <select id="browse-sort" aria-label="Sort this folder by">
+          <option value="name">Name</option>
+          <option value="size">Size</option>
+          <option value="modified">Date modified</option>
+        </select>
+      </label>
+      <button type="button" id="browse-sort-dir" class="sortdir" aria-label="Reverse the order">↓</button>
+      <span class="grow"></span>
+      <button type="button" id="browse-dl-sel" class="primary">Download selected</button>
+      <button type="button" id="browse-dl-all">Download this folder</button>
+    </div>
+    <label class="field"><span>Save to</span><input type="text" id="browse-output" spellcheck="false"></label>
+    <p class="msg" id="browse-msg" role="status"></p>
+    <div class="entries-head">
+      <label class="check"><input type="checkbox" id="browse-all"> Select all</label>
+      <span class="count" id="browse-count"></span>
+      <button type="button" id="browse-clear" class="linkish" hidden>Clear</button>
+    </div>
+    <ul class="entries" id="entries"></ul>
+  </div>
+</section>
+
+<!-- Share a folder -->
+<section id="view-share" class="view" hidden>
+  <div id="share-running" hidden>
+    <h2>Sharing <code id="share-root"></code></h2>
+    <p>Other devices can open any of these addresses in a browser, or add <code>dav/</code> to mount it as a network drive:</p>
+    <ul class="urls" id="share-urls"></ul>
+    <p class="hint" id="share-note"></p>
+    <button type="button" id="share-stop" class="danger">Stop sharing</button>
+  </div>
+  <form id="share-form" class="form" autocomplete="off">
+    <p class="hint">Turns a folder on the godl machine into a small server, so a phone or another computer on your network can fetch files from it.</p>
+    <label class="field"><span>Folder to share</span><input type="text" id="share-dir" spellcheck="false"></label>
+    <label class="field short"><span>Port</span><input type="number" id="share-port" min="0" max="65535" value="8080"></label>
+    <label class="field short"><span>Username</span><input type="text" id="share-user"></label>
+    <label class="field short"><span>Password</span><input type="password" id="share-pass" autocomplete="new-password"></label>
+    <label class="check"><input type="checkbox" id="share-local"> This machine only (no password needed)</label>
+    <label class="check"><input type="checkbox" id="share-write"> Allow uploads and deletes</label>
+    <label class="check"><input type="checkbox" id="share-tls"> Use https with a self-signed certificate</label>
+    <label class="check"><input type="checkbox" id="share-noauth"> Allow sharing on the network without a password</label>
+    <div class="row"><button type="submit" class="primary">Start sharing</button><span class="msg" id="share-msg" role="status"></span></div>
+  </form>
+</section>
+
+<!-- Settings -->
+<section id="view-settings" class="view" hidden>
+  <form id="settings-form" class="form" autocomplete="off">
+    <h2>Downloads</h2>
+    <label class="field short"><span>Downloads at once (0 = no limit)</span><input type="number" id="s-max" min="0"></label>
+    <label class="field short"><span>Speed limit for each new download</span><input type="text" id="s-default-rate" placeholder="unlimited, or 2M"></label>
+    <label class="field short"><span>Speed limit for everything together</span><input type="text" id="s-global-rate" placeholder="unlimited, or 5M"></label>
+    <label class="check"><input type="checkbox" id="s-retry"> Retry failed downloads automatically</label>
+    <label class="field short"><span>Retry attempts</span><input type="number" id="s-retry-max" min="1"></label>
+    <label class="check"><input type="checkbox" id="s-notify"> Desktop notification when a download finishes</label>
+
+    <h2>Web interface</h2>
+    <label class="check"><input type="checkbox" id="s-web"> On <span class="hint">(turning it off closes this page; <code>godl web</code> turns it back on)</span></label>
+    <label class="field short"><span>Port</span><input type="number" id="s-web-port" min="1" max="65535"></label>
+    <label class="check"><input type="checkbox" id="s-web-net"> Let other devices on my network use it</label>
+    <label class="field short"><span>Username</span><input type="text" id="s-web-user"></label>
+    <label class="field short"><span>Password <span id="s-web-pass-state" class="hint"></span></span><input type="password" id="s-web-pass" autocomplete="new-password" placeholder="leave blank to keep"></label>
+    <p class="hint">Network access needs a username and password. It is plain http, so use it on a home network you trust, not across the internet.</p>
+
+    <h2>TorBox</h2>
+    <p class="hint">With a <a href="https://torbox.app" target="_blank" rel="noopener">TorBox</a> account, torrents can be downloaded by TorBox first and then come here over a fast direct connection — quicker when a torrent has few peers, and ready at once when TorBox already has it.</p>
+    <label class="field"><span>API key <span id="s-tb-key-state" class="hint"></span></span><input type="password" id="s-tb-key" autocomplete="off" placeholder="from torbox.app → Settings → API key" spellcheck="false"></label>
+    <label class="check" id="s-tb-clear-wrap" hidden><input type="checkbox" id="s-tb-clear"> Remove the saved key</label>
+    <label class="check"><input type="checkbox" id="s-tb-default"> Use TorBox for new torrents unless I choose otherwise</label>
+    <label class="check"><input type="checkbox" id="s-tb-keep"> Keep torrents in my TorBox account after downloading them</label>
+
+    <div class="row"><button type="submit" class="primary">Save settings</button><span class="msg" id="settings-msg" role="status"></span></div>
+  </form>
+  <p class="foot">godl <span id="version"></span> · <a href="guide" target="_blank" rel="noopener">User guide</a></p>
+</section>
+
+</main>
+
+<!-- Player -->
+<div class="player" id="player" hidden role="dialog" aria-modal="true" aria-labelledby="p-title">
+  <div class="p-head">
+    <strong id="p-title"></strong>
+    <select id="p-file" hidden aria-label="File"></select>
+    <span class="grow"></span>
+    <button type="button" id="p-close">Close</button>
+  </div>
+  <div class="p-stage" id="p-stage">
+    <video id="p-video" playsinline></video>
+    <div class="p-wait" id="p-wait" hidden></div>
+    <div class="p-fallback" id="p-fallback" hidden>
+      <p id="p-reason"></p>
+      <div id="p-links"></div>
+    </div>
+  </div>
+  <div class="p-controls" id="p-controls">
+    <button type="button" id="p-play" aria-label="Play">Play</button>
+    <span class="p-time" id="p-cur">0:00</span>
+    <input type="range" id="p-seek" min="0" max="1000" value="0" step="1" aria-label="Position">
+    <span class="p-time" id="p-dur">0:00</span>
+    <label class="p-opt">Audio <select id="p-audio"></select></label>
+    <label class="p-opt">Subtitles <select id="p-subs"></select></label>
+    <label class="p-opt p-vol">Volume <input type="range" id="p-volume" min="0" max="1" step="0.05" value="1"></label>
+    <button type="button" id="p-ext">Other apps…</button>
+    <button type="button" id="p-full">Fullscreen</button>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>

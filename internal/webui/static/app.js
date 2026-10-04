@@ -185,6 +185,7 @@ function makeRow(j) {
   const chip = el('span', { class: 'chip' });
   const fill = el('i'), bar = el('div', { class: 'bar' }, fill), pct = el('small');
   const spd = el('td', { class: 'num' }), left = el('td', { class: 'num' });
+  const more = el('button', { type: 'button', class: 'linkish', text: 'Details', 'aria-expanded': 'false' });
   const play = el('button', { type: 'button', text: 'Play' });
   play.addEventListener('click', () => openPlayer({ kind: 'job', job: j.id }, jobName(state.jobs.get(j.id)), j.id));
   const toggle = el('button', { type: 'button' });
@@ -195,13 +196,93 @@ function makeRow(j) {
   });
   const tr = el('tr', {},
     el('td', { class: 'c-check' }, check),
-    el('td', { class: 'j-name' }, name, src, err),
+    el('td', { class: 'j-name' }, name, src, err, more),
     el('td', {}, chip),
     el('td', { class: 'prog' }, bar, pct),
     spd, left,
     el('td', { class: 'j-acts' }, play, ' ', toggle));
-  return { tr, check, name, src, err, chip, bar, fill, pct, spd, left, play, toggle, last: {} };
+  const detailBody = el('div', { class: 'details' });
+  const detail = el('tr', { class: 'detail' }, el('td', { colspan: '7' }, detailBody));
+  const row = { tr, check, name, src, err, chip, bar, fill, pct, spd, left, play, toggle, more, detail, detailBody, open: false, last: {} };
+  more.addEventListener('click', () => {
+    row.open = !row.open;
+    more.setAttribute('aria-expanded', String(row.open));
+    more.textContent = row.open ? 'Hide details' : 'Details';
+    if (row.open) { renderDetails(row, j.id); loadDetails(row, j.id); }
+    renderJobs();
+  });
+  return row;
 }
+
+// ---------- job details ----------
+//
+// A download's full source and destination, and for one made of many
+// files (a torrent, a WebDAV folder) every file with its own progress.
+// Fetched only while a row is open, refreshed every couple of seconds.
+
+async function loadDetails(row, id) {
+  try {
+    row.files = await api('GET', 'api/jobs/' + encodeURIComponent(id) + '/details');
+  } catch (err) {
+    row.files = { files: [], note: err.message };
+  }
+  if (row.open) renderDetails(row, id);
+}
+
+function renderDetails(row, id) {
+  const j = state.jobs.get(id);
+  if (!j) return;
+  const info = el('dl', { class: 'kv' },
+    el('dt', { text: 'Source' }), el('dd', { text: j.source }),
+    el('dt', { text: 'Saved to' }), el('dd', { text: j.output || '—' }),
+    el('dt', { text: 'Started' }), el('dd', { text: new Date(j.created * 1000).toLocaleString() }));
+  const kids = [info];
+  const data = row.files;
+  if (!data) {
+    kids.push(el('p', { class: 'hint', text: 'Loading the file list…' }));
+  } else {
+    const files = data.files || [];
+    const done = files.filter((f) => f.length > 0 && f.done >= f.length).length;
+    const skipped = files.filter((f) => f.skipped).length;
+    const total = files.reduce((n, f) => n + (f.skipped ? 0 : Math.max(0, f.length)), 0);
+    const parts = [files.length + ' file' + (files.length === 1 ? '' : 's')];
+    if (total) parts.push(bytes(total) + (skipped ? ' selected' : ''));
+    if (files.length > 1) parts.push(done + ' finished');
+    if (skipped) parts.push(skipped + ' skipped');
+    kids.push(el('p', { class: 'fsum', text: parts.join(' · ') }));
+    if (data.note) kids.push(el('p', { class: 'hint', text: data.note }));
+    if (files.length) {
+      kids.push(el('div', { class: 'ftable' }, el('table', {},
+        el('thead', {}, el('tr', {}, el('th', { text: 'File' }), el('th', { text: 'Progress' }), el('th', { class: 'num', text: 'Size' }))),
+        el('tbody', {}, ...files.map((f) => {
+          const known = f.length > 0;
+          const p = known ? Math.min(100, (f.done / f.length) * 100) : 0;
+          const fill = el('i');
+          fill.style.width = p.toFixed(1) + '%';
+          const fs = f.skipped ? 'skipped' : (known && f.done >= f.length ? 'done' : (f.done > 0 ? 'part' : 'none'));
+          return el('tr', { class: 'f-' + fs },
+            el('td', { class: 'fname', text: f.path }),
+            el('td', { class: 'fprog' }, f.skipped ? el('span', { class: 'hint', text: 'skipped' })
+              : !known ? el('span', { class: 'hint', text: 'so far' })
+              : el('div', { class: 'fbar' }, el('div', { class: 'bar st-' + (fs === 'done' ? 'completed' : 'active') }, fill), el('small', { text: known ? p.toFixed(p < 10 && p > 0 ? 1 : 0) + '%' : '' }))),
+            el('td', { class: 'num', text: known ? (fs === 'done' || f.skipped ? bytes(f.length) : bytes(f.done) + ' / ' + bytes(f.length)) : bytes(f.done) }));
+        })))));
+    }
+  }
+  row.detailBody.replaceChildren(...kids);
+}
+
+setInterval(() => {
+  if (document.hidden) return;
+  for (const [id, row] of state.rows) {
+    if (!row.open) continue;
+    const j = state.jobs.get(id);
+    // A finished job's files don't change; no need to keep asking.
+    if (j && row.files && (j.status === 'completed' || j.status === 'failed' || j.status === 'canceled') && row.filesFinal === j.status) continue;
+    if (j) row.filesFinal = j.status;
+    loadDetails(row, id);
+  }
+}, 2000);
 
 // set changes a text or class only when it differs, so a 500 ms feed
 // over a long list touches almost nothing in the page.
@@ -241,8 +322,8 @@ function renderJobs() {
   const list = filtered();
   const keep = new Set(list.map((j) => j.id));
   for (const [id, row] of state.rows) {
-    if (!state.jobs.has(id)) { row.tr.remove(); state.rows.delete(id); }
-    else if (!keep.has(id)) row.tr.remove();
+    if (!state.jobs.has(id)) { row.tr.remove(); row.detail.remove(); state.rows.delete(id); }
+    else if (!keep.has(id)) { row.tr.remove(); row.detail.remove(); }
   }
   let prev = null;
   for (const j of list) {
@@ -252,6 +333,12 @@ function renderJobs() {
     const want = prev ? prev.nextSibling : body.firstChild;
     if (want !== row.tr) body.insertBefore(row.tr, want);
     prev = row.tr;
+    if (row.open) {
+      if (row.tr.nextSibling !== row.detail) body.insertBefore(row.detail, row.tr.nextSibling);
+      prev = row.detail;
+    } else if (row.detail.parentNode) {
+      row.detail.remove();
+    }
   }
   $('jobs-empty').hidden = state.jobs.size > 0;
   $('jobs-nomatch').hidden = state.jobs.size === 0 || list.length > 0;
@@ -818,11 +905,16 @@ async function showFallback(reason, withLinks) {
     const row = (label, url, dl) => {
       const input = el('input', { type: 'text', readonly: true, value: url, 'aria-label': label });
       const copy = el('button', { type: 'button', text: 'Copy', onclick: async () => {
-        try { await navigator.clipboard.writeText(url); copy.textContent = 'Copied'; } catch { input.select(); copy.textContent = 'Selected'; }
-        setTimeout(() => (copy.textContent = 'Copy'), 1500);
+        if (await copyText(url)) copy.textContent = 'Copied';
+        else { input.focus(); input.setSelectionRange(0, url.length); copy.textContent = 'Press Copy'; }
+        setTimeout(() => (copy.textContent = 'Copy'), 1800);
       } });
+      // On a phone, hand the link straight to the VLC app. It does
+      // nothing if VLC isn't installed, so it's offered beside the
+      // link, never instead of it.
+      const vlc = !dl && isPhone() ? el('a', { href: 'vlc://' + url, text: 'Open in VLC' }) : null;
       return el('div', {}, el('div', { class: 'hint', text: label }),
-        el('div', { class: 'p-link' }, input, copy, dl ? el('a', { href: url, download: '', text: 'Download' }) : null));
+        el('div', { class: 'p-link' }, input, copy, vlc, dl ? el('a', { href: url, download: '', text: 'Download' }) : null));
     };
     box.append(row(r.remote ? 'Stream link (all audio languages; paste into VLC → Open Network Stream)' : 'Stream link (paste into VLC → Open Network Stream)', abs(r.stream), false));
     if (r.download) box.append(row('Download link', abs(r.download), true));
@@ -830,6 +922,39 @@ async function showFallback(reason, withLinks) {
     box.append(el('p', { class: 'hint', text: 'These links work for 12 hours, from any device that can reach this page.' }));
   } catch (err) { box.append(el('p', { text: err.message })); }
   box.append(close);
+}
+
+const isPhone = () => /iPhone|iPad|iPod|Android/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+
+// copyText puts text on the clipboard. The Clipboard API only exists on
+// https or localhost, so a phone using the page over the home network
+// (plain http) needs the older route: a selected, editable element and
+// execCommand('copy'), which Safari on iOS accepts during a tap only
+// when the selection is a real range on an editable node.
+async function copyText(text) {
+  if (navigator.clipboard && window.isSecureContext) {
+    try { await navigator.clipboard.writeText(text); return true; } catch { /* fall through */ }
+  }
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.position = 'fixed';
+  ta.style.top = '0';
+  ta.style.left = '0';
+  ta.style.opacity = '0';
+  ta.style.fontSize = '16px'; // anything smaller makes iOS zoom the page
+  ta.contentEditable = 'true';
+  document.body.append(ta);
+  const range = document.createRange();
+  range.selectNodeContents(ta);
+  const sel = window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(range);
+  ta.setSelectionRange(0, text.length);
+  let ok = false;
+  try { ok = document.execCommand('copy'); } catch { ok = false; }
+  sel.removeAllRanges();
+  ta.remove();
+  return ok;
 }
 
 async function saveLink() {

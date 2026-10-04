@@ -164,6 +164,15 @@ func (m statusModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case detailsLoadedMsg:
+		return m.detailsLoaded(msg)
+
+	case detailsTickMsg:
+		if m.details != nil && m.details == msg.st {
+			return m, loadDetails(msg.st)
+		}
+		return m, nil
+
 	case settingsLoadedMsg:
 		return m.settingsResult(msg.st, msg.settings, msg.err, false)
 
@@ -199,6 +208,9 @@ func (m statusModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.serve != nil {
 		return m.updateServe(msg)
 	}
+	if m.details != nil {
+		return m.updateDetails(msg)
+	}
 	if m.confirmRemove != nil {
 		return m.resolveRemove(msg)
 	}
@@ -226,6 +238,8 @@ func (m statusModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "S":
 		m.serve = newServeForm()
 		return m, nil
+	case "i", "enter":
+		return m.openDetails()
 	case " ":
 		j, idx, ok := m.cursorJob()
 		if !ok {

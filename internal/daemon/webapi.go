@@ -41,6 +41,7 @@ func (d *Daemon) webRoutes(mux *http.ServeMux, ws *webServer) {
 	mux.HandleFunc("POST /api/jobs", d.webAddJobs)
 	mux.HandleFunc("POST /api/jobs/action", d.webJobsAction)
 	mux.HandleFunc("GET /api/jobs/{id}/files", d.webJobFiles)
+	mux.HandleFunc("GET /api/jobs/{id}/details", d.webJobDetails)
 	mux.HandleFunc("POST /api/torrent/files", d.webTorrentFiles)
 	mux.HandleFunc("POST /api/torrent/upload", d.webTorrentUpload)
 	mux.HandleFunc("PUT /api/settings", d.webPutSettings)
@@ -711,6 +712,17 @@ func mediaFiles(files []playableFile) []playableFile {
 		return files
 	}
 	return media
+}
+
+// webJobDetails is a job's file list with per-file progress, for the
+// page's expandable row. The page asks only while a row is open.
+func (d *Daemon) webJobDetails(w http.ResponseWriter, r *http.Request) {
+	resp := d.do(r.Context(), Request{Cmd: CmdJobFiles, JobID: r.PathValue("id")})
+	if !resp.OK {
+		webui.WriteError(w, http.StatusNotFound, fmt.Errorf("%s", resp.Error))
+		return
+	}
+	webui.WriteJSON(w, map[string]any{"files": resp.Files, "note": resp.Note})
 }
 
 func (d *Daemon) webJobFiles(w http.ResponseWriter, r *http.Request) {

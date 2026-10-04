@@ -135,6 +135,13 @@ func (d *Daemon) do(ctx context.Context, req Request) Response {
 		}
 		return Response{Type: "result", OK: true, StreamURL: url, Files: files}
 
+	case CmdJobFiles:
+		files, note, err := d.jobFileList(req.JobID)
+		if err != nil {
+			return errResp(err)
+		}
+		return Response{Type: "result", OK: true, Files: files, Note: note}
+
 	case CmdList:
 		return Response{Type: "result", OK: true, Jobs: d.snapshot()}
 

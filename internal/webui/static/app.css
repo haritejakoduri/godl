@@ -100,10 +100,10 @@ main { max-width: 78rem; margin: 0 auto; padding-block: 1.25rem 4rem; padding-in
 /* Job table */
 .tablewrap { overflow-x: auto; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; }
 table.jobs { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
-.jobs th { text-align: left; font-size: 0.74rem; letter-spacing: 0.05em; text-transform: uppercase; color: var(--muted); font-weight: 600; padding: 0.55rem 0.6rem; border-bottom: 1px solid var(--line); }
-.jobs td { padding: 0.55rem 0.6rem; border-bottom: 1px solid var(--line); vertical-align: middle; }
-.jobs tr:last-child td { border-bottom: 0; }
-.jobs tr.sel td { background: var(--accent-soft); }
+.jobs > thead th { text-align: left; font-size: 0.74rem; letter-spacing: 0.05em; text-transform: uppercase; color: var(--muted); font-weight: 600; padding: 0.55rem 0.6rem; border-bottom: 1px solid var(--line); }
+.jobs > tbody > tr > td { padding: 0.55rem 0.6rem; border-bottom: 1px solid var(--line); vertical-align: middle; }
+.jobs > tbody > tr:last-child > td { border-bottom: 0; }
+.jobs > tbody > tr.sel > td { background: var(--accent-soft); }
 .jobs .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .c-check { width: 2rem; }
 .j-name { min-width: 14rem; max-width: 34rem; }
@@ -126,6 +126,28 @@ table.jobs { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
 .prog small { display: block; color: var(--muted); font-size: 0.76rem; font-variant-numeric: tabular-nums; margin-top: 0.2rem; }
 .j-acts { white-space: nowrap; text-align: right; }
 .j-acts button { padding: 0.25rem 0.55rem; font-size: 0.82rem; }
+
+button.linkish { border: 0; background: none; padding: 0.15rem 0; color: var(--accent); font-size: 0.8rem; }
+.jobs > tbody > tr.detail > td { background: var(--bg); padding: 0.4rem 0.8rem 0.9rem 2.6rem; }
+.details { display: flex; flex-direction: column; gap: 0.5rem; min-width: 0; }
+.kv { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 0.2rem 0.9rem; margin: 0; font-size: 0.86rem; }
+.kv dt { color: var(--muted); }
+.kv dd { margin: 0; overflow-wrap: anywhere; font-family: var(--mono); font-size: 0.8rem; }
+.fsum { margin: 0; font-weight: 600; font-size: 0.88rem; }
+.details .hint { margin: 0; }
+.ftable { max-height: 24rem; overflow: auto; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); }
+.ftable table { width: 100%; border-collapse: collapse; font-size: 0.84rem; }
+.ftable th { position: sticky; top: 0; background: var(--surface); text-align: left; font-size: 0.72rem; letter-spacing: 0.05em; text-transform: uppercase; color: var(--muted); padding: 0.4rem 0.6rem; border-bottom: 1px solid var(--line); }
+.ftable td { padding: 0.35rem 0.6rem; border-bottom: 1px solid var(--line); vertical-align: middle; }
+.ftable tr:last-child td { border-bottom: 0; }
+.ftable .num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.fname { font-family: var(--mono); font-size: 0.78rem; overflow-wrap: anywhere; }
+.fprog { width: 9rem; }
+.fbar { display: flex; align-items: center; gap: 0.4rem; }
+.fbar .bar { flex: 1; }
+.fbar small { color: var(--muted); font-variant-numeric: tabular-nums; min-width: 2.6rem; text-align: right; }
+.f-skipped td { color: var(--muted); }
+.f-skipped .fname { text-decoration: line-through; }
 
 /* Forms */
 .segments { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; align-self: flex-start; flex-wrap: wrap; }
@@ -177,7 +199,8 @@ details > div { display: flex; flex-direction: column; gap: 0.7rem; margin-botto
 .p-wait, .p-fallback { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.8rem; padding: 1.5rem; text-align: center; background: rgba(0, 0, 0, 0.82); }
 .p-fallback p { max-width: 38rem; margin: 0; }
 .p-links { display: flex; flex-direction: column; gap: 0.6rem; width: min(40rem, 100%); }
-.p-link { display: flex; gap: 0.4rem; }
+.p-link { display: flex; gap: 0.4rem; flex-wrap: wrap; }
+.p-link input { flex: 1; min-width: 12rem; }
 .p-link input { font-family: var(--mono); font-size: 0.8rem; background: #0f161e; color: #e8eef4; border-color: #2d3a47; }
 .p-link a { color: #7fd3f2; align-self: center; white-space: nowrap; }
 .p-time { font-variant-numeric: tabular-nums; font-size: 0.86rem; min-width: 3.4rem; text-align: center; }
@@ -192,17 +215,20 @@ details > div { display: flex; flex-direction: column; gap: 0.7rem; margin-botto
   .toolbar input[type=search] { width: 100%; }
   /* The table becomes one card per download. */
   .tablewrap { border: 0; background: none; overflow: visible; }
-  table.jobs, .jobs tbody, .jobs tr, .jobs td { display: block; }
-  .jobs thead { display: none; }
-  .jobs tr { position: relative; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 0.6rem 0.8rem 0.6rem 2.6rem; margin-bottom: 0.6rem; }
-  .jobs tr.sel { background: var(--accent-soft); }
-  .jobs tr.sel td { background: none; }
-  .jobs td { border: 0; padding: 0.15rem 0; }
-  .jobs td.c-check { position: absolute; left: 0.8rem; top: 0.7rem; width: auto; }
-  .jobs .num { display: inline-block; text-align: left; margin-right: 1rem; color: var(--muted); }
-  .jobs td.num:empty { display: none; }
+  table.jobs, .jobs > tbody, .jobs > tbody > tr, .jobs > tbody > tr > td { display: block; }
+  .jobs > thead { display: none; }
+  .jobs > tbody > tr { position: relative; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 0.6rem 0.8rem 0.6rem 2.6rem; margin-bottom: 0.6rem; }
+  .jobs > tbody > tr.sel { background: var(--accent-soft); }
+  .jobs > tbody > tr.sel > td { background: none; }
+  .jobs > tbody > tr > td { border: 0; padding: 0.15rem 0; }
+  .jobs > tbody > tr > td.c-check { position: absolute; left: 0.8rem; top: 0.7rem; width: auto; }
+  .jobs > tbody > tr > .num { display: inline-block; text-align: left; margin-right: 1rem; color: var(--muted); }
+  .jobs > tbody > tr > td.num:empty { display: none; }
   .j-name, .j-name small { max-width: none; min-width: 0; }
   .j-acts { text-align: left; padding-top: 0.4rem !important; }
+  .jobs > tbody > tr.detail { padding: 0.6rem 0.8rem; background: var(--bg); }
+  .jobs > tbody > tr.detail > td { padding: 0; background: none; }
+  .fprog { width: 6rem; }
   .p-vol { display: none; }
 }
 @media (prefers-reduced-motion: reduce) {

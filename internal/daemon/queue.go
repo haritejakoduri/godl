@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"fmt"
+	"godl/internal/webdav"
 	"log"
 	"sync"
 	"time"
@@ -25,6 +26,12 @@ type runtime struct {
 	// See progressPersistInterval.
 	lastPersist      time.Time
 	lastPersistBytes int64
+
+	// WebDAV jobs: the remote files this run is fetching, set once
+	// after the walk, for job_files to report per-file progress from.
+	webdavFiles     []webdav.Entry
+	webdavRoot      string
+	webdavRootIsDir bool
 }
 
 func waitForStop(rt *runtime) {

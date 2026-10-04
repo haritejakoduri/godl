@@ -32,12 +32,14 @@ func (m statusModel) View() string {
 		return m.viewSettings()
 	case m.serve != nil:
 		return m.viewServe()
+	case m.details != nil:
+		return m.viewDetails()
 	}
 
 	return m.dashboardHeader() + "\n" + m.table.View() + "\n" + m.dashboardFooter()
 }
 
-const dashboardHelp = "space select  p pause  r resume  x cancel  R retry  d remove  D remove+delete  o play/stream  n new download  w browse webdav  s settings  S serve  ↑/↓ navigate  q quit"
+const dashboardHelp = "space select  p pause  r resume  x cancel  R retry  d remove  D remove+delete  o play  i details  n new  w browse webdav  s settings  S serve  ↑/↓ navigate  q quit"
 
 // dashboardMessageLines is how many message lines (connection error,
 // status/job error) the table leaves room for beside the help text, so

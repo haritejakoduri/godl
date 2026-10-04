@@ -448,7 +448,9 @@ Keybinds: `space` toggles a job for multi-select (its checkbox shows
 `[x]`, and the title bar shows the running count), `p` pause, `r`
 resume, `x` cancel, `R` retry, `d` remove, `D` remove + delete
 downloaded file (both ask for confirmation), `o` play/stream a job (see
-below), `n` start a new url/social/torrent download (or just play a
+below), `i` (or `enter`) show a job's details — its full source and
+destination and, for a torrent or WebDAV folder, every file with its own
+progress (skipped torrent files marked), `n` start a new url/social/torrent download (or just play a
 link, without downloading it), `w` browse a
 saved WebDAV connection, `s` settings, `S` serve a local folder,
 `↑`/`↓` navigate, `q` quit (jobs keep running

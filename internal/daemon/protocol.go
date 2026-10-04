@@ -59,6 +59,10 @@ const (
 	// stream_torrent returns a loopback URL a media player can stream a
 	// running torrent job's file from while it downloads.
 	CmdStreamTorrent = "stream_torrent"
+	// job_files lists a job's files with per-file progress (see
+	// Daemon.jobFileList): what a multi-file torrent or WebDAV folder
+	// job is made of, and how far along each part is.
+	CmdJobFiles = "job_files"
 )
 
 // TorrentFile is one entry of a torrent_files / stream_torrent reply.
@@ -67,6 +71,8 @@ type TorrentFile struct {
 	Path   string `json:"path"`
 	Length int64  `json:"length"`
 	Done   int64  `json:"done,omitempty"`
+	// job_files: a torrent file left out by --files.
+	Skipped bool `json:"skipped,omitempty"`
 }
 
 // JobView is a store.Job plus the runtime stats (speed, ETA) the daemon
@@ -97,7 +103,9 @@ type Response struct {
 	// clamping — see daemon.applySettings).
 	Settings *store.Settings `json:"settings,omitempty"`
 
-	// torrent_files / stream_torrent
+	// torrent_files / stream_torrent / job_files. Note explains a
+	// partial job_files answer (e.g. a paused torrent, listed from disk).
+	Note      string        `json:"note,omitempty"`
 	Name      string        `json:"name,omitempty"`
 	Files     []TorrentFile `json:"files,omitempty"`
 	StreamURL string        `json:"stream_url,omitempty"`

@@ -169,3 +169,31 @@ func TestWebSettingsNeverCarryThePassword(t *testing.T) {
 		t.Errorf("unset port should show as the default, got %d", ws.WebUIPort)
 	}
 }
+
+// A finished yt-dlp run's size comes from the files it left on disk,
+// and a run whose reported file is missing isn't a completed download.
+func TestSocialOutputSize(t *testing.T) {
+	d := newTestDaemon(t)
+	ctx := context.Background()
+	dir := t.TempDir()
+	merged := filepath.Join(dir, "clip [id].webm")
+	if err := os.WriteFile(merged, make([]byte, 1234), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	j := &store.Job{ID: "s1", Type: store.JobSocial, Source: "https://x", Output: dir, Status: store.StatusActive}
+	if err := d.st.CreateJob(ctx, j); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := d.socialOutputSize("s1"); err == nil {
+		t.Error("no reported file: want an error")
+	}
+	d.st.AppendResolvedPath(ctx, "s1", merged)
+	if n, err := d.socialOutputSize("s1"); err != nil || n != 1234 {
+		t.Errorf("socialOutputSize = %d, %v; want 1234, nil", n, err)
+	}
+	os.Remove(merged)
+	if _, err := d.socialOutputSize("s1"); err == nil || !strings.Contains(err.Error(), "isn't there") {
+		t.Errorf("missing file: got %v, want an error saying so", err)
+	}
+}

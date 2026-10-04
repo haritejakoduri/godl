@@ -3,7 +3,10 @@ package daemon
 import (
 	"bytes"
 	"context"
+	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -135,9 +138,46 @@ func (d *Daemon) startSocial(j *store.Job) {
 			d.finishJob(j.ID, finalBytes, false, runErr)
 			return
 		}
+		// yt-dlp's exit status isn't the whole story. Its progress
+		// lines count one stream at a time (the last one is usually the
+		// audio), and say nothing at all when the file was already
+		// there, so the size godl tracked can be far off — or zero.
+		// What's on disk is the truth: record its size, and refuse to
+		// call a job complete when the file it names isn't there.
+		size, err := d.socialOutputSize(j.ID)
+		if err != nil {
+			d.publishLog(j.ID, "error: "+err.Error(), true)
+			d.finishJob(j.ID, finalBytes, false, err)
+			return
+		}
+		d.st.UpdateProgress(context.Background(), j.ID, size, size, nil)
 		d.publishLog(j.ID, "", true)
-		d.finishJob(j.ID, finalBytes, true, nil)
+		d.finishJob(j.ID, size, true, nil)
 	})
+}
+
+// socialOutputSize totals the files a finished yt-dlp run reported as
+// its final output, or errors if none of them exists.
+func (d *Daemon) socialOutputSize(jobID string) (int64, error) {
+	job, err := d.st.GetJob(context.Background(), jobID)
+	if err != nil {
+		return 0, err
+	}
+	if len(job.ResolvedPaths) == 0 {
+		return 0, fmt.Errorf("yt-dlp finished without saving a file")
+	}
+	var total int64
+	found := false
+	for _, p := range job.ResolvedPaths {
+		if fi, err := os.Stat(p); err == nil && !fi.IsDir() {
+			total += fi.Size()
+			found = true
+		}
+	}
+	if !found {
+		return 0, fmt.Errorf("yt-dlp reported saving %s, but it isn't there", filepath.Base(job.ResolvedPaths[0]))
+	}
+	return total, nil
 }
 
 // godlProgressPrefix tags the machine-readable progress lines produced

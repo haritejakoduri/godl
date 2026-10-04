@@ -471,6 +471,8 @@ function setKind(k) {
   $('links-label').textContent = t.links;
   $('output-label').textContent = t.output;
   $('new-submit').textContent = t.submit;
+  $('new-submit').disabled = false;
+  if (k === 'torrent') loadTorrentFiles(false);
   $('new-links').rows = k === 'watch' ? 1 : 4;
   $('f-quality').hidden = !(k === 'social' || k === 'watch');
   $('f-watch-cookies').hidden = k !== 'watch';
@@ -485,8 +487,53 @@ document.querySelectorAll('#new-kind button').forEach((b) => b.addEventListener(
 
 const lines = (text) => text.split('\n').map((s) => s.trim()).filter((s) => s && !s.startsWith('#'));
 
-// The torrent file picker: what was listed, and for which source.
+// The torrent file picker. As soon as one torrent is entered (pasted,
+// typed, or uploaded) its file list is fetched and shown, every file
+// ticked; the user can untick some, clear them all, or tick them all
+// back. `picked` is the list on show and the source it belongs to.
 let picked = null;
+let pickSeq = 0; // the latest request; older answers are ignored
+
+const isTorrentSource = (s) => s.startsWith('magnet:') || /\.torrent$/i.test(s);
+
+async function loadTorrentFiles(force) {
+  const srcs = lines($('new-links').value);
+  if (srcs.length !== 1 || !isTorrentSource(srcs[0])) {
+    picked = null;
+    $('torrent-pick').hidden = true;
+    say('torrent-status', srcs.length > 1 ? 'Several torrents: each downloads every file. Add them one at a time to choose files.' : '');
+    return;
+  }
+  const source = srcs[0];
+  if (!force && picked && picked.source === source) return;
+  const seq = ++pickSeq;
+  picked = null;
+  $('torrent-pick').hidden = true;
+  say('torrent-status', source.startsWith('magnet:') ? 'Getting the file list from peers (can take up to a minute)…' : 'Reading the torrent…');
+  try {
+    const r = await api('POST', 'api/torrent/files', { source });
+    if (seq !== pickSeq || lines($('new-links').value)[0] !== source) return;
+    picked = { source, files: r.files, name: r.name };
+    $('torrent-files').replaceChildren(...r.files.map((f) => el('li', {}, el('label', {},
+      el('input', { type: 'checkbox', checked: true, value: String(f.index + 1), 'data-size': String(f.length) }),
+      el('span', { text: f.path }), el('em', { text: bytes(f.length) })))));
+    $('torrent-pick').hidden = r.files.length < 2;
+    say('torrent-status', r.files.length < 2 ? r.name + ' is a single file.' : '');
+    updatePickSummary();
+  } catch (err) {
+    if (seq === pickSeq) say('torrent-status', 'Couldn\u2019t list the files (' + err.message + '). Starting downloads every file.', 'err');
+  }
+}
+
+function updatePickSummary() {
+  if (!picked) return;
+  const boxes = [...$('torrent-files').querySelectorAll('input')];
+  const on = boxes.filter((c) => c.checked);
+  const size = on.reduce((n, c) => n + +c.dataset.size, 0);
+  $('torrent-name').textContent = picked.name + ' — ' + on.length + ' of ' + boxes.length + ' files selected · ' + bytes(size);
+  $('new-submit').textContent = on.length === boxes.length ? 'Start download' : 'Start download (' + on.length + ' file' + (on.length === 1 ? '' : 's') + ')';
+  $('new-submit').disabled = on.length === 0;
+}
 
 $('torrent-file').addEventListener('change', async (e) => {
   const f = e.target.files[0];
@@ -498,41 +545,41 @@ $('torrent-file').addEventListener('change', async (e) => {
     cur.push(r.path);
     $('new-links').value = cur.join('\n');
     say('torrent-status', 'Added ' + f.name + '.', 'ok');
+    loadTorrentFiles(false);
   } catch (err) { say('torrent-status', err.message, 'err'); }
   e.target.value = '';
 });
 
-$('torrent-list').addEventListener('click', async () => {
-  const srcs = lines($('new-links').value);
-  if (srcs.length !== 1) { say('torrent-status', 'Choosing files works on one torrent at a time.', 'err'); return; }
-  say('torrent-status', srcs[0].startsWith('magnet:') ? 'Asking peers for the file list (can take a little while)…' : 'Reading the torrent…');
-  $('torrent-list').disabled = true;
-  try {
-    const r = await api('POST', 'api/torrent/files', { source: srcs[0] });
-    picked = { source: srcs[0], files: r.files };
-    $('torrent-name').textContent = r.name + ' — ' + r.files.length + ' file' + (r.files.length === 1 ? '' : 's');
-    const ul = $('torrent-files');
-    ul.replaceChildren(...r.files.map((f) => el('li', {}, el('label', {},
-      el('input', { type: 'checkbox', checked: true, value: String(f.index + 1) }),
-      el('span', { text: f.path }), el('em', { text: bytes(f.length) })))));
-    $('torrent-pick').hidden = false;
-    say('torrent-status', '');
-  } catch (err) { say('torrent-status', err.message, 'err'); }
-  $('torrent-list').disabled = false;
-});
-$('torrent-all').addEventListener('click', () => $('torrent-files').querySelectorAll('input').forEach((c) => (c.checked = true)));
-$('torrent-none').addEventListener('click', () => $('torrent-files').querySelectorAll('input').forEach((c) => (c.checked = false)));
+$('torrent-list').addEventListener('click', () => loadTorrentFiles(true));
+$('torrent-files').addEventListener('change', updatePickSummary);
+$('torrent-all').addEventListener('click', () => { $('torrent-files').querySelectorAll('input').forEach((c) => (c.checked = true)); updatePickSummary(); });
+$('torrent-none').addEventListener('click', () => { $('torrent-files').querySelectorAll('input').forEach((c) => (c.checked = false)); updatePickSummary(); });
+
+let pickTimer = null;
 $('new-links').addEventListener('input', () => {
-  if (picked && lines($('new-links').value)[0] !== picked.source) { picked = null; $('torrent-pick').hidden = true; }
+  if (kind !== 'torrent') return;
+  // Wait for typing or pasting to settle before asking.
+  clearTimeout(pickTimer);
+  pickTimer = setTimeout(() => loadTorrentFiles(false), 600);
 });
 
+// torrentSelection is the --files value for the choice on show: runs of
+// files as ranges ("1-40,43"), or "" for every file.
 function torrentSelection() {
   if (!picked || $('torrent-pick').hidden) return '';
   const boxes = [...$('torrent-files').querySelectorAll('input')];
-  const on = boxes.filter((c) => c.checked).map((c) => c.value);
-  if (on.length === boxes.length) return '';
-  if (on.length === 0) throw new Error('Pick at least one file, or close the list to download them all.');
-  return on.join(',');
+  const on = boxes.map((c) => c.checked);
+  if (on.every(Boolean)) return '';
+  if (!on.some(Boolean)) throw new Error('Pick at least one file (All ticks them all).');
+  const parts = [];
+  for (let i = 0; i < on.length; i++) {
+    if (!on[i]) continue;
+    let j = i;
+    while (j + 1 < on.length && on[j + 1]) j++;
+    parts.push(i === j ? String(i + 1) : (i + 1) + '-' + (j + 1));
+    i = j;
+  }
+  return parts.join(',');
 }
 
 $('new-form').addEventListener('submit', async (e) => {
@@ -570,9 +617,11 @@ $('new-form').addEventListener('submit', async (e) => {
       $('new-links').value = '';
       picked = null;
       $('torrent-pick').hidden = true;
+      say('torrent-status', '');
     }
   } catch (err) { say('new-msg', err.message, 'err'); }
   $('new-submit').disabled = false;
+  if (kind === 'torrent') updatePickSummary();
 });
 
 // ---------- remote storage ----------

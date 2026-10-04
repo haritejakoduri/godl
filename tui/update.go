@@ -165,6 +165,9 @@ func (m statusModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case torrentFilesMsg:
+		return m.torrentFilesLoaded(msg)
+
 	case detailsLoadedMsg:
 		return m.detailsLoaded(msg)
 

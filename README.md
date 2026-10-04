@@ -291,6 +291,11 @@ godl torrent <magnet> --files 2,5-7
 godl torrent <magnet> --files "*.mkv,Extras/*"
 ```
 
+Both the dashboard's `n` wizard and the web interface's Torrent tab do
+this for you: once a torrent is entered (or a `.torrent` uploaded), its
+whole file list appears with every file ticked, to untick, clear (`n` /
+None) or tick all again (`a` / All).
+
 Progress, ETA and completion then count only the selected files. (Data
 at the very edge of a selected file can share a piece with its
 neighbour, so a sliver of an unselected file may still land on disk —

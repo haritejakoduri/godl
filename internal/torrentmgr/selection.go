@@ -94,3 +94,39 @@ func (s *Selection) Match(index int, filePath string) bool {
 	}
 	return false
 }
+
+// SelectionSpec is the inverse of ParseSelection for a plain choice of
+// files: selected[i] says whether file i+1 is wanted. It returns "" when
+// every file is (the same as no selection at all), and otherwise runs
+// of consecutive files as ranges — "1-40,43" rather than 41 numbers, so
+// a big season pack's choice stays short.
+func SelectionSpec(selected []bool) string {
+	all := true
+	for _, s := range selected {
+		if !s {
+			all = false
+			break
+		}
+	}
+	if all {
+		return ""
+	}
+	var parts []string
+	for i := 0; i < len(selected); {
+		if !selected[i] {
+			i++
+			continue
+		}
+		j := i
+		for j+1 < len(selected) && selected[j+1] {
+			j++
+		}
+		if i == j {
+			parts = append(parts, strconv.Itoa(i+1))
+		} else {
+			parts = append(parts, strconv.Itoa(i+1)+"-"+strconv.Itoa(j+1))
+		}
+		i = j + 1
+	}
+	return strings.Join(parts, ",")
+}

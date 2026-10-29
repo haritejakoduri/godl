@@ -1,5 +1,11 @@
-//go:build windows || linux || (darwin && cgo)
+//go:build (windows || linux || (darwin && cgo)) && !android
 
+// Android is excluded explicitly because Go satisfies the "linux"
+// build constraint there too, so without saying so this file would be
+// chosen for an Android build and fail to link: fyne.io/systray has no
+// Android backend, and a phone has no notification area to put an icon
+// in anyway.
+//
 // The tray needs a native toolkit on macOS (Cocoa's NSStatusItem, via
 // cgo). Windows reaches the notification area through plain syscalls
 // and Linux through the StatusNotifierItem D-Bus interface, so both

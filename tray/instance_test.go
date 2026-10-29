@@ -82,23 +82,17 @@ func TestClaimInstanceTakesOverAStaleLock(t *testing.T) {
 	release()
 }
 
-// TestAttachIsSilentWithNowhereToShow is the contract the daemon relies
-// on: it spawns a tray unconditionally on every start, including on a
-// server with no desktop, so "there is nowhere to put an icon" must be
-// a quiet no-op rather than an error the daemon logs at every boot.
-func TestAttachIsSilentWithNowhereToShow(t *testing.T) {
-	trayLockIn(t)
-	// No session bus: on Linux this is exactly the headless case, and
-	// on the platforms whose checkSession always passes, the tray still
-	// stops at the unsupported build or the instance lock.
-	t.Setenv("DBUS_SESSION_BUS_ADDRESS", "")
-	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
-
-	if err := Attach(); err != nil {
-		t.Fatalf("Attach() = %v, want nil — the daemon spawns this unconditionally", err)
-	}
-}
-
+// No test here may reach a condition that lets start() get as far as
+// run(). On macOS that is not a slow test but a crash: systray's
+// init() calls runtime.LockOSThread, pinning the *main* goroutine to
+// the main thread, and AppKit's run loop asserts it is on that thread.
+// A test function never is, so systray.Run from a test aborts the
+// binary with SIGTRAP — on a developer's Mac exactly as much as on a
+// headless runner. Every Attach test below therefore arranges for
+// start() to return before run(): this one by holding the lock,
+// and the no-session case by being Linux-only, in
+// session_linux_test.go.
+//
 // TestAttachStandsDownWhenOneIsAlreadyUp: with a tray already showing,
 // the daemon's spawn must exit quietly rather than raise a second icon
 // or report a failure.

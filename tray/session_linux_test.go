@@ -81,3 +81,24 @@ func TestCheckSessionRejectsABusWithNoTrayHost(t *testing.T) {
 		t.Fatalf("checkSession() = %v, want ErrNoSession when nothing hosts tray icons", err)
 	}
 }
+
+// TestAttachIsSilentWithNowhereToShow is the contract the daemon relies
+// on: it spawns a tray unconditionally on every start, including on a
+// server with no desktop, so "there is nowhere to put an icon" must be
+// a quiet no-op rather than an error the daemon logs at every boot.
+//
+// Linux-only because it is the one platform where a test can *make*
+// there be nowhere to show: unsetting the bus address is enough. macOS
+// asks launchctl and Windows asks nothing, so neither can be pushed
+// into the headless case from here — and on macOS a test that got past
+// checkSession would reach systray.Run and abort the binary (see the
+// note in instance_test.go).
+func TestAttachIsSilentWithNowhereToShow(t *testing.T) {
+	trayLockIn(t)
+	t.Setenv("DBUS_SESSION_BUS_ADDRESS", "")
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+
+	if err := Attach(); err != nil {
+		t.Fatalf("Attach() = %v, want nil — the daemon spawns this unconditionally", err)
+	}
+}

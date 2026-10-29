@@ -262,6 +262,26 @@ details > div { display: flex; flex-direction: column; gap: 0.7rem; margin-botto
   .jobs > tbody > tr.detail > td { padding: 0; background: none; }
   .fprog { width: 6rem; }
   .p-vol { display: none; }
+
+  /* Touch. Two things that only go wrong on a phone:
+
+     iOS Safari zooms the whole page in when a form control smaller
+     than 16px takes focus, and then leaves it zoomed — so typing in
+     the filter box throws the layout off and the user has to pinch
+     back out. 16px exactly is the threshold, and it is the only way
+     to stop it: user-scalable=no would also do it by making the page
+     unzoomable, which is worse for anyone who needs to zoom.
+
+     And a 24px-tall button is a poor target for a fingertip. Apple
+     and Android both ask for 44px; the per-job buttons were well
+     under, and they are the main controls for a download. */
+  input[type=text], input[type=url], input[type=password],
+  input[type=number], input[type=search], select, textarea {
+    font-size: 16px;
+  }
+  button, .filebtn { min-height: 2.75rem; padding: 0.5rem 0.9rem; }
+  .jobs > tbody > tr > td.c-check input,
+  .entries input[type=checkbox] { width: 1.6rem; height: 1.6rem; }
 }
 @media (prefers-reduced-motion: reduce) {
   .bar i { transition: none; }

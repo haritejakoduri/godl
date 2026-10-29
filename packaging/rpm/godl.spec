@@ -16,7 +16,13 @@ Release: 1%{?dist}
 Summary: Terminal download manager for HTTP(S), BitTorrent, and yt-dlp
 License: MIT
 URL: https://github.com/haritejakoduri/godl
-BuildArch: x86_64
+# No BuildArch on purpose. The package's architecture comes from
+# `rpmbuild --target` (see scripts/build-rpm.sh), which is what lets one
+# amd64 machine also build the aarch64 package — nothing is compiled
+# here, the binary arrives already cross-compiled in %%{_sourcedir}.
+# Naming an architecture here instead makes rpmbuild refuse the build
+# outright with "No compatible architectures found for build" whenever
+# it isn't the host's own.
 
 # A static (CGO_ENABLED=0), stripped (-ldflags="-s -w") single binary:
 # no shared-library dependencies to detect, and no debuginfo to extract

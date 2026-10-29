@@ -169,6 +169,13 @@ func TestPageDeclaresTheInstallBits(t *testing.T) {
 		`rel="icon"`,
 		`rel="apple-touch-icon"`,
 		`name="theme-color"`,
+		// Safari reads none of the manifest, so these are the only
+		// thing that makes an iPhone's Add to Home Screen produce an
+		// app rather than a Safari view with browser chrome. Nothing
+		// about the page looks wrong without them.
+		`name="apple-mobile-web-app-capable" content="yes"`,
+		`name="apple-mobile-web-app-title"`,
+		`name="apple-mobile-web-app-status-bar-style"`,
 	} {
 		if !strings.Contains(string(html), want) {
 			t.Errorf("index.html does not declare %s", want)

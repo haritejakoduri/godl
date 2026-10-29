@@ -10,19 +10,27 @@ import (
 
 var desktopCmd = &cobra.Command{
 	Use:   "desktop",
-	Short: "Add godl to your desktop's application menu (Linux)",
-	Long: `Add godl to your desktop's application menu, with its icon.
-
-Installing the .deb or .rpm does this for you. Use this when godl came
-from the raw binary or install.sh, or to point an existing entry at a
-binary you have since moved.
+	Short: "Add godl to your system's application menu",
+	Long: `Add godl to your system's application menu, with its icon.
 
   godl desktop install
   godl desktop remove
   godl desktop status
 
-Everything is written under ~/.local/share, so no root is needed and it
-affects only your own account.`,
+What that means depends on the system:
+
+  Linux     a .desktop entry and hicolor icons under ~/.local/share
+  Windows   a Start Menu shortcut under your own profile
+  macOS     a godl.app bundle in ~/Applications
+
+All of them are per-user, so no administrator rights are needed and
+nothing outside your own account is touched. Opening the entry starts
+godl's web interface.
+
+The .deb and .rpm already do the Linux half at install time, and the
+Windows installer does the Start Menu shortcut. Use this when godl came
+from a raw binary, or to point an existing entry at a binary you have
+since moved.`,
 }
 
 var desktopInstallCmd = &cobra.Command{

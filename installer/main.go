@@ -2,8 +2,9 @@
 
 // Command godl-setup is a one-click, no-admin-required installer for
 // godl on Windows: it embeds godl.exe, copies it to a per-user install
-// directory, adds that directory to the user's PATH, and registers an
-// uninstall entry so it shows up in Settings > Apps. Run it again with
+// directory, adds that directory to the user's PATH, adds a Start Menu
+// shortcut, and registers an uninstall entry so it shows up in
+// Settings > Apps. Run it again with
 // -uninstall (or use the Windows Settings uninstall button, which does
 // this automatically) to remove everything it did.
 package main
@@ -16,6 +17,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"godl/internal/desktop"
 	"godl/internal/version"
 )
 
@@ -132,6 +134,15 @@ func doInstall() error {
 		fmt.Println("  already on your PATH")
 	}
 
+	// Start Menu shortcut, pointing at the godl.exe just written rather
+	// than at this installer. Non-fatal like the Settings entry: godl
+	// works fine from a terminal without it.
+	if err := desktop.InstallFor(exePath); err != nil {
+		fmt.Println("  warning: couldn't add a Start Menu shortcut:", err)
+	} else {
+		fmt.Println("  added a Start Menu shortcut")
+	}
+
 	if err := registerUninstaller(dir, setupPath); err != nil {
 		// Non-fatal: godl itself works fine without a Settings entry.
 		fmt.Println("  warning: couldn't register with Windows Settings > Apps:", err)
@@ -164,6 +175,12 @@ func doUninstall() error {
 
 	if err := unregisterUninstaller(); err != nil {
 		fmt.Println("  warning: couldn't remove the Settings > Apps entry:", err)
+	}
+
+	if err := desktop.Remove(); err != nil {
+		fmt.Println("  warning: couldn't remove the Start Menu shortcut:", err)
+	} else {
+		fmt.Println("  removed the Start Menu shortcut")
 	}
 
 	dd := dataDir()

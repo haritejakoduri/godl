@@ -295,11 +295,22 @@ godl hands the player its own copy. In `godl status`, the `n` wizard's
 "Play" type does the same thing.
 
 [yt-dlp](https://github.com/yt-dlp/yt-dlp) and, if a format needs muxing
-separate video/audio streams, [ffmpeg](https://ffmpeg.org) are both
-auto-downloaded and self-managed by godl on first use — no manual setup
-required, and no dependency on (or interference from) anything already
-on your `PATH`; `godl update` keeps both current from then on. `godl
-url`, `godl torrent`, and job management all work without either.
+separate video/audio streams, [ffmpeg](https://ffmpeg.org) are
+auto-downloaded and self-managed by godl on first use where prebuilt
+builds exist for your machine — no manual setup required, and no
+dependency on (or interference from) anything already on your `PATH`;
+`godl update` keeps both current from then on.
+
+Where they don't exist, godl uses one you have installed instead.
+That covers more machines than it sounds: yt-dlp publishes standalone
+builds for Linux, macOS and Windows but not Android, and the ffmpeg
+builds godl manages are **x86-64 Linux and Windows only** — so on a
+Mac, a Raspberry Pi, an ARM server or a phone, ffmpeg has to come from
+you (`brew install ffmpeg`, `apt install ffmpeg`, `pkg install ffmpeg`).
+godl says which it used. If neither exists, it says that too, rather
+than reporting it as "not found on `PATH`" without having looked.
+
+`godl url`, `godl torrent`, and job management all work without either.
 
 ### `godl torrent` — BitTorrent downloads
 
@@ -859,7 +870,8 @@ internal/
   downloader/      chunked HTTP(S) transfers, resume, checksums
   torrentmgr/      BitTorrent, wrapping anacrolix/torrent: file
                    selection, seeding stats, readers for streaming
-  ytdlp/ ffmpeg/   the yt-dlp and ffmpeg binaries godl manages itself
+  ytdlp/ ffmpeg/   the yt-dlp and ffmpeg binaries godl manages, or
+                   finds installed where it has none to manage
   webdav/          WebDAV client: PROPFIND, recursive walk, download
   fileserver/      `godl serve` — the other direction: serve a local
                    directory over HTTP(S) and WebDAV

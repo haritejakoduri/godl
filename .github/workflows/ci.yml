@@ -90,6 +90,15 @@ jobs:
             GOOS="${t%/*}" GOARCH="${t#*/}" go build -o /dev/null .
           done
 
+      # Android is not published, so it is not in the loop above — but
+      # it is checked, because it is the one target whose build breaks
+      # from a change made for Linux: Go satisfies the "linux" build
+      # constraint on Android too. Without this, that only surfaces
+      # whenever someone next tries to build the Android side.
+      - name: build for Android (exercises the release script)
+        if: matrix.goos == 'linux'
+        run: ./scripts/build-android.sh
+
       - name: test
         if: matrix.goos == 'linux'
         run: go test ./...

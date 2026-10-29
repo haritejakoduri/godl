@@ -32,8 +32,7 @@ Every binary is a single static file with no runtime dependencies.
 The ARM builds cover a Raspberry Pi, an ARM NAS or VPS, and a Windows
 on ARM machine. They also cover **Android**: godl runs under
 [Termux](https://termux.dev) using the `linux-arm64` binary, which
-needs no glibc to link against. There is no Android NDK build and no
-app — on a phone you would normally use godl's web interface instead,
+needs no glibc to link against. There is no Android app — on a phone you would normally use godl's web interface instead,
 pointed at a godl running on a computer or NAS (see
 [`godl web`](#godl-web--the-web-interface)).
 
@@ -906,5 +905,37 @@ It refuses to emit a binary whose tray resolved to the stub, so a macOS
 build silently missing the tray can't ship. CI builds both halves on
 every PR — Linux and the cross-compiles on `ubuntu-latest`, macOS on
 `macos-latest`.
+
+### Android — development builds only
+
+```sh
+./scripts/build-android.sh      # android/arm64, suffixed -dev
+```
+
+**These are development builds and nothing more.** They are not
+released, not supported, and have never been run on a phone — by
+anyone. The file name says `-dev` so that stays obvious wherever one
+ends up. No Android artifact appears on the Releases page and the
+release workflow does not build one.
+
+What this is for: godl's core compiles for Android, and CI checks that
+it still does, so that whoever eventually embeds it in a real app —
+gomobile, in practice — does not start by fixing a build that rotted
+months earlier. Nothing is published because a bare Android executable
+has no shell to run it from.
+
+Running godl on a phone *today* means [Termux](https://termux.dev),
+which uses the ordinary `linux-arm64` binary and needs none of this.
+
+Two things make Android different from Linux, both handled in the
+script and explained there: Go satisfies the `linux` build constraint
+on Android as well, which is why the tray's build tag names android
+explicitly, and the torrent stack's Android networking shim needs
+`-checklinkname=0` to link. Only arm64 builds without the NDK.
+
+The rest of the Linux platform glue — desktop entries, autostart, the
+terminal dashboard — is selected on Android too and does nothing
+useful there. It compiles and nothing on a phone reaches it; it wants
+revisiting when there is an app to test against.
 
 See `scripts/` for the individual build/install/uninstall scripts.

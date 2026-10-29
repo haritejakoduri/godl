@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
+	"godl/internal/appwindow"
 	"godl/internal/daemon"
-	"godl/internal/guide"
 	"godl/internal/notify"
 	"godl/internal/paths"
 	"godl/internal/selfupdate"
@@ -82,7 +82,7 @@ func openWebUI() error {
 		}
 		url += "?token=" + tok
 	}
-	return guide.OpenInBrowser(url)
+	return appwindow.Open(url)
 }
 
 // restartDaemon restarts the service and says so, since the icon

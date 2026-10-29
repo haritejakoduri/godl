@@ -100,3 +100,67 @@ func TestGuardRejectsForeignHostAndOrigin(t *testing.T) {
 		t.Error("security headers missing")
 	}
 }
+
+// TestGuardOpensTheInstallAssets: a browser fetches a manifest without
+// credentials unless the link element asks otherwise, so behind the
+// normal check it gets a 401, never reads the manifest, and simply
+// never offers to install godl — with nothing failing for anyone to
+// notice. These paths therefore skip the last step.
+func TestGuardOpensTheInstallAssets(t *testing.T) {
+	tok := strings.Repeat("a", 32)
+	h := Guard(Auth{Token: tok}, okHandler(), append(PublicPaths(), "/s/")...)
+
+	// Named here, not taken from PublicPaths, so that emptying that
+	// list fails this test instead of making its loop run zero times
+	// and pass.
+	for _, p := range []string{"/manifest.webmanifest", "/icon-192.png", "/favicon.ico"} {
+		if w := do(h, "GET", p, nil); w.Code != http.StatusOK {
+			t.Errorf("GET %s with no credentials: got %d, want 200", p, w.Code)
+		}
+	}
+	// Only those. If the page or the API came open with them the whole
+	// interface would be unauthenticated.
+	for _, p := range []string{"/", "/index.html", "/app.js", "/api/state"} {
+		if w := do(h, "GET", p, nil); w.Code != http.StatusUnauthorized {
+			t.Errorf("GET %s with no credentials: got %d, want 401", p, w.Code)
+		}
+	}
+}
+
+// The same in network mode: there the page needs HTTP Basic, which the
+// browser does not attach to a manifest fetch either.
+func TestGuardOpensTheInstallAssetsInNetworkMode(t *testing.T) {
+	h := Guard(Auth{Username: "alice", Password: "pw"}, okHandler(), append(PublicPaths(), "/s/")...)
+
+	for _, p := range []string{"/manifest.webmanifest", "/icon-192.png", "/favicon.ico"} {
+		if w := do(h, "GET", p, nil); w.Code != http.StatusOK {
+			t.Errorf("GET %s with no credentials: got %d, want 200", p, w.Code)
+		}
+	}
+	if w := do(h, "GET", "/", nil); w.Code != http.StatusUnauthorized {
+		t.Errorf("GET / with no credentials: got %d, want 401", w.Code)
+	}
+}
+
+// TestTokenCookieOutlivesTheBrowser: godl installed as an app opens its
+// window at the manifest's start_url, which carries no token — one
+// there would be readable by anything that can reach the port. A
+// session cookie is gone by the next launch, so every launch from the
+// dock would land on the 401 page.
+func TestTokenCookieOutlivesTheBrowser(t *testing.T) {
+	tok := strings.Repeat("a", 32)
+	h := Guard(Auth{Token: tok}, okHandler(), "/s/")
+
+	cookies := do(h, "GET", "/?token="+tok, nil).Result().Cookies()
+	if len(cookies) != 1 {
+		t.Fatalf("got %d cookies, want 1", len(cookies))
+	}
+	c := cookies[0]
+	if c.MaxAge <= 0 {
+		t.Fatalf("cookie MaxAge = %d — a session cookie leaves an installed godl at the 401 page once the browser has been closed", c.MaxAge)
+	}
+	// Persisting it must not have loosened anything else about it.
+	if !c.HttpOnly || c.SameSite != http.SameSiteStrictMode || c.Path != "/" {
+		t.Errorf("cookie = %+v, want HttpOnly, SameSite=Strict, Path=/", c)
+	}
+}

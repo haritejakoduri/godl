@@ -114,7 +114,7 @@ godl webdav mynas /Photos -o ~/Photos     # a file or a whole folder, recursivel
 godl serve ~/Public -p 8080 --username alice   # share a folder, over WebDAV + browser
 
 godl status                 # live TUI dashboard
-godl web                    # the same, plus a video player, in your browser
+godl web                    # the same, plus a video player, in its own window
 godl list                   # one-shot table, for scripts
 godl pause <job-id>
 godl resume <job-id>
@@ -601,18 +601,35 @@ unattended" that would make it safe to forget about.
 
 ### `godl web` — the web interface
 
-Everything the dashboard does, in a browser: the live download list
-with bulk pause/resume/retry/cancel/remove, new downloads (links,
-videos, torrents with a file picker, `.torrent` upload), the WebDAV
-browser, sharing a folder, and settings — plus a video player built
-into the page.
+Everything the dashboard does, in a window of its own: the live
+download list with bulk pause/resume/retry/cancel/remove, new downloads
+(links, videos, torrents with a file picker, `.torrent` upload), the
+WebDAV browser, sharing a folder, and settings — plus a video player
+built into the page.
 
 ```sh
-godl web                                  # turn it on if needed, and open it
+godl web                                  # turn it on if needed, and open its window
+godl web --browser                        # open it as a browser tab instead
 godl web --off                            # turn it off
 godl web --network --username alice       # also from your phone/other computers (asks for a password)
 godl web --local                          # back to this machine only
 ```
+
+**Its own window.** `godl web` opens with no tabs and no address bar,
+and its own entry in the dock or taskbar. That window comes from a
+Chromium-family browser (Chrome, Edge, Chromium, Brave, Vivaldi) in app
+mode, which is why it may not be the browser you have set as default —
+godl asks for a window, and only those can give one. There is no
+embedded browser inside godl: shipping one would mean cgo on every
+platform and a WebKitGTK dependency on Linux, and godl would stop being
+a single file you can download and run. Where no such browser exists —
+a Mac with only Safari, say — it opens as an ordinary tab, which is
+what godl did everywhere before 0.9.2.
+
+You can also **install it as an app**: in the page's address bar (or
+its ⋮ menu) choose *Install godl*, and it gets a permanent window and a
+launcher entry of its own, which survives without `godl web` being run
+again.
 
 It's **off by default**. When on, godl's background daemon serves it
 (port 8787, `--port` to change), so it stays available after the
@@ -623,7 +640,9 @@ it too. While it's off nothing is listening and nothing runs for it.
 **Who can use it.** By default only this machine: the page is served on
 `127.0.0.1`, and `godl web` opens it with a private token (stored in
 godl's data directory, readable only by you) that the browser then
-keeps as a cookie — loopback alone isn't enough, since other users of
+keeps as a cookie for 30 days — long enough that godl installed as an
+app still opens when launched from the dock, which happens without a
+token in the address — loopback alone isn't enough, since other users of
 the machine and other websites can reach a loopback port. With
 `--network` it's served on every interface and every device signs in
 with the username and password you set; godl refuses network mode

@@ -122,7 +122,7 @@ func (d *Daemon) syncWebUI(s store.Settings) error {
 	mux.Handle("/", webui.Static())
 
 	ws.srv = &http.Server{
-		Handler:           webui.Guard(auth, mux, "/s/"),
+		Handler:           webui.Guard(auth, mux, append(webui.PublicPaths(), "/s/")...),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	go func() {

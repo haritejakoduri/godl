@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -195,5 +196,42 @@ func TestSocialOutputSize(t *testing.T) {
 	os.Remove(merged)
 	if _, err := d.socialOutputSize("s1"); err == nil || !strings.Contains(err.Error(), "isn't there") {
 		t.Errorf("missing file: got %v, want an error saying so", err)
+	}
+}
+
+// TestWebPutSettingsKeepsHTTPS: the settings page has no control for
+// https, so saving anything else from it must leave it alone.
+// webPutSettings rebuilds store.Settings field by field, and anything
+// not carried across is silently reset — here that would drop a
+// network interface back to plain http, putting the passwords it
+// exists to protect back on the wire in the clear, with nothing
+// failing and nothing on screen to say so.
+func TestWebPutSettingsKeepsHTTPS(t *testing.T) {
+	d := newTestDaemon(t)
+
+	cur := d.cachedSettings()
+	cur.WebUINetwork = true
+	cur.WebUIUsername = "alice"
+	cur.WebUIPassword = "pw"
+	cur.WebUIHTTPS = true
+	d.setCachedSettings(cur)
+
+	// What the page sends when someone changes an unrelated setting.
+	body := `{"max_concurrent":4,"auto_retry_max_attempts":3,"webui_network":true,` +
+		`"webui_username":"alice","webui_port":8787}`
+	req := httptest.NewRequest("PUT", "/api/settings", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	d.webPutSettings(w, req)
+
+	// Asserted, because without it this test passes for the wrong
+	// reason: a rejected save leaves the cached settings untouched,
+	// so https would still read as on no matter what the handler does
+	// with it.
+	if w.Code != http.StatusOK {
+		t.Fatalf("PUT /api/settings = %d: %s", w.Code, strings.TrimSpace(w.Body.String()))
+	}
+	if !d.cachedSettings().WebUIHTTPS {
+		t.Error("saving settings from the page turned https off; the connection would silently drop to plain http")
 	}
 }

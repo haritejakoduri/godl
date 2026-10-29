@@ -169,6 +169,12 @@ func (d *Daemon) webPutSettings(w http.ResponseWriter, r *http.Request) {
 		ShowTray: in.ShowTray,
 		WebUI:    in.WebUI, WebUIPort: in.WebUIPort, WebUINetwork: in.WebUINetwork,
 		WebUIUsername: strings.TrimSpace(in.WebUIUsername), WebUIPassword: cur.WebUIPassword,
+		// Carried over rather than read from the request, like the
+		// password above: the page has no control for it, so taking
+		// it from the request would turn https off every time anyone
+		// saved any setting — and the only symptom would be that the
+		// connection quietly went back to plain http.
+		WebUIHTTPS: cur.WebUIHTTPS,
 	}
 	if in.WebUIPassword != "" {
 		s.WebUIPassword = in.WebUIPassword

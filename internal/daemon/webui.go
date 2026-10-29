@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 	"godl/internal/fileserver"
 	"godl/internal/guide"
 	"godl/internal/store"
+	"godl/internal/webcert"
 	"godl/internal/webui"
 )
 
@@ -26,6 +28,7 @@ type webServer struct {
 	srv    *http.Server
 	key    webKey
 	addr   string
+	https  bool
 	events *webui.Broadcaster
 }
 
@@ -34,6 +37,7 @@ type webServer struct {
 type webKey struct {
 	port     int
 	network  bool
+	https    bool
 	username string
 	password string
 }
@@ -46,6 +50,8 @@ func webKeyOf(s store.Settings) webKey {
 	k := webKey{port: port, network: s.WebUINetwork}
 	if s.WebUINetwork {
 		k.username, k.password = s.WebUIUsername, s.WebUIPassword
+		// Loopback stays plain http: see store.Settings.WebUIHTTPS.
+		k.https = s.WebUIHTTPS
 	}
 	return k
 }
@@ -121,18 +127,61 @@ func (d *Daemon) syncWebUI(s store.Settings) error {
 	})
 	mux.Handle("/", webui.Static())
 
+	open := append(webui.PublicPaths(), "/s/")
+
+	var cert tls.Certificate
+	if want.https {
+		var certPEM []byte
+		cert, certPEM, err = webcert.Load(d.dataDir)
+		if err != nil {
+			ln.Close()
+			return fmt.Errorf("starting the web interface: making its certificate: %w", err)
+		}
+		// Served without authentication, and safe to be: a
+		// certificate is public by definition — this is the same one
+		// handed to anything that opens a connection. It has to be
+		// reachable unauthenticated because a phone fetches it
+		// *before* it will trust the page enough to sign in.
+		mux.HandleFunc("GET "+webui.CertPath, func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/x-x509-ca-cert")
+			w.Header().Set("Content-Disposition", `attachment; filename="godl.crt"`)
+			w.Write(certPEM)
+		})
+		open = append(open, webui.CertPath)
+	}
+
 	ws.srv = &http.Server{
-		Handler:           webui.Guard(auth, mux, append(webui.PublicPaths(), "/s/")...),
+		Handler:           webui.Guard(auth, mux, open...),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
+	ws.https = want.https
 	go func() {
-		if err := ws.srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		var err error
+		if want.https {
+			ws.srv.TLSConfig = &tls.Config{
+				Certificates: []tls.Certificate{cert},
+				MinVersion:   tls.VersionTLS12,
+			}
+			err = ws.srv.ServeTLS(ln, "", "")
+		} else {
+			err = ws.srv.Serve(ln)
+		}
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Printf("web interface: %v", err)
 		}
 	}()
 	d.web = ws
-	log.Printf("web interface listening on %s", ws.addr)
+	log.Printf("web interface listening on %s (%s)", ws.addr, schemeOf(want.https))
 	return nil
+}
+
+// schemeOf names the protocol, for the log line and for the addresses
+// printed to anyone who asks the daemon where the interface is.
+func schemeOf(https bool) string {
+	if https {
+		return "https"
+	}
+	return "http"
 }
 
 // stopWebLocked takes the server down without cutting off the request

@@ -19,8 +19,24 @@ full-screen TUI dashboard shows live progress across all of them.
 
 ## Install
 
-Grab the latest build for your OS from the
+Grab the latest build for your OS and architecture from the
 [Releases page](https://github.com/haritejakoduri/godl/releases/latest).
+Every binary is a single static file with no runtime dependencies.
+
+| | x86-64 | ARM 64-bit | ARM 32-bit |
+|---|---|---|---|
+| **Linux** | `godl-<v>-linux-amd64`, `.deb`, `.rpm` | `godl-<v>-linux-arm64`, `.deb`, `.rpm` | `godl-<v>-linux-armv7` |
+| **macOS** | `godl-<v>-darwin-amd64` | `godl-<v>-darwin-arm64` | — |
+| **Windows** | `godl-setup-<v>.exe` | `godl-<v>-windows-arm64.exe` | — |
+
+The ARM builds cover a Raspberry Pi, an ARM NAS or VPS, and a Windows
+on ARM machine. They also cover **Android**: godl runs under
+[Termux](https://termux.dev) using the `linux-arm64` binary, which
+needs no glibc to link against. There is no Android NDK build and no
+app — on a phone you would normally use godl's web interface instead,
+pointed at a godl running on a computer or NAS (see
+[`godl web`](#godl-web--the-web-interface)), which installs to the home
+screen as an app on both Android and iOS.
 
 ### Windows
 
@@ -41,10 +57,11 @@ To uninstall: **Settings → Apps → godl → Uninstall**.
 
 ### Linux (Debian/Ubuntu)
 
-Double-click `godl_<version>_amd64.deb` in your file manager, or:
+Double-click `godl_<version>_<arch>.deb` in your file manager, or:
 
 ```sh
-sudo apt install ./godl_<version>_amd64.deb
+sudo apt install ./godl_<version>_amd64.deb   # Intel/AMD
+sudo apt install ./godl_<version>_arm64.deb   # Raspberry Pi, ARM server
 ```
 
 Installs to `/usr/bin/godl`. To uninstall: `sudo apt remove godl` (or
@@ -52,10 +69,11 @@ Installs to `/usr/bin/godl`. To uninstall: `sudo apt remove godl` (or
 
 ### Linux (Fedora/RHEL/other RPM-based distros)
 
-Double-click `godl-<version>-1.x86_64.rpm` in your file manager, or:
+Double-click `godl-<version>-1.<arch>.rpm` in your file manager, or:
 
 ```sh
-sudo dnf install ./godl-<version>-1.x86_64.rpm
+sudo dnf install ./godl-<version>-1.x86_64.rpm    # Intel/AMD
+sudo dnf install ./godl-<version>-1.aarch64.rpm   # ARM 64-bit
 ```
 
 Installs to `/usr/bin/godl`. To update later: `godl update` (it
@@ -781,10 +799,11 @@ works where there's a raw binary to swap in, though:
 - **Installed from the `.deb`** (Debian/Ubuntu) is left alone for the
   same reason, with no automatic path yet: run
   `sudo apt update && sudo apt upgrade` instead.
-- Any other platform without a published raw binary (currently
-  linux/amd64 from `scripts/build-all.sh`, plus darwin/arm64 and
-  darwin/amd64 from `scripts/build-darwin.sh`) falls back to pointing
-  you at the Releases page too.
+- Any other platform without a published raw binary falls back to
+  pointing you at the Releases page too. The ones that do have one are
+  listed in `rawAssets` in `internal/selfupdate`, which a test checks
+  against the build scripts so the two cannot drift — that drift is
+  what once left every Intel Mac being told no update existed.
 
 `godl update` prints which of these applies rather than silently doing
 nothing.

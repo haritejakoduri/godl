@@ -10,7 +10,16 @@ INSTALL_DIR="${GODL_INSTALL_DIR:-$HOME/.local/bin}"
 if ! command -v go >/dev/null 2>&1; then
 	echo "error: go is not on PATH." >&2
 	echo "Install Go (https://go.dev/dl/) or, for a user-local install with no sudo:" >&2
-	echo "  curl -sL https://go.dev/dl/go1.25.4.linux-amd64.tar.gz | tar -C ~/.local -xz" >&2
+	# Named for this machine, not always amd64: this script is the
+	# documented way in on a Raspberry Pi and on ARM servers, where
+	# the amd64 tarball would download happily and then not run.
+	case "$(uname -m)" in
+	x86_64) go_arch=amd64 ;;
+	aarch64 | arm64) go_arch=arm64 ;;
+	armv7* | armv6*) go_arch=armv6l ;;
+	*) go_arch="$(uname -m)" ;;
+	esac
+	echo "  curl -sL https://go.dev/dl/go1.25.4.linux-${go_arch}.tar.gz | tar -C ~/.local -xz" >&2
 	echo "  export PATH=\$PATH:~/.local/go/bin" >&2
 	exit 1
 fi

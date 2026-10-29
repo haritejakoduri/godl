@@ -239,6 +239,10 @@ func main() {
 	if wd, err := os.Getwd(); err == nil {
 		webDir = filepath.Join(wd, "internal", "webui", "static")
 	}
+	// 180 is the size iOS actually asks for as an apple-touch-icon.
+	// It will scale 192 down, but it does it badly on the home screen,
+	// and the icon is the whole of how the app is recognised there.
+	writeTo(webDir, "icon-180.png", encodePNG(draw(180, accent)))
 	writeTo(webDir, "icon-192.png", encodePNG(draw(192, accent)))
 	writeTo(webDir, "icon-512.png", encodePNG(draw(512, accent)))
 	writeTo(webDir, "icon-maskable-512.png", encodePNG(drawMaskable(512)))

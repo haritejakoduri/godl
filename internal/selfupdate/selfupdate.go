@@ -5,11 +5,12 @@
 // response body alone.
 //
 // Only platforms with a raw, prebuilt godl binary actually published
-// (see scripts/build-all.sh: linux/amd64 and darwin/arm64 today) can
-// self-update this way. Windows ships only an installer .exe (no
-// standalone binary asset to swap in), so a Windows install has to go
-// back to the Releases page instead; the same is true for any other
-// unbuilt platform (darwin/amd64, linux/arm64).
+// can self-update this way; rawAssets below is that list, and a test
+// checks it against the build scripts so the two cannot drift apart
+// again. Windows is deliberately not in it even though a
+// windows-arm64 binary is now published: a Windows install updates
+// through its installer, and replacing a running .exe in place is a
+// different problem, so all of Windows goes back to the Releases page.
 //
 // A godl installed from the .deb or .rpm package never has its binary
 // swapped directly: dpkg/rpm owns that file, and silently replacing it
@@ -45,21 +46,35 @@ var releaseBase = func(tag string) string {
 	return "https://github.com/" + repo + "/releases/download/" + tag + "/"
 }
 
-// assetName returns the raw binary asset name scripts/build-all.sh
-// publishes for the current platform at the given version, or false if
-// this platform doesn't get one at all. A var (not a plain func), like
+// rawAssets maps a platform to the suffix of the raw binary asset
+// published for it — scripts/build-all.sh for the Linux ones,
+// scripts/build-darwin.sh for the macOS ones.
+//
+// A map rather than a switch so a test can enumerate it and compare it
+// against those scripts. That test exists because this list silently
+// fell behind once already: darwin/amd64 started being published and
+// nothing here was changed, so every Intel Mac was told there was no
+// update for its platform.
+var rawAssets = map[string]string{
+	"linux/amd64":  "linux-amd64",
+	"linux/arm64":  "linux-arm64",
+	"linux/arm":    "linux-armv7",
+	"darwin/amd64": "darwin-amd64",
+	"darwin/arm64": "darwin-arm64",
+}
+
+// assetName returns the raw binary asset name published for the
+// current platform at the given version, or false if this platform
+// doesn't get one at all. A var (not a plain func), like
 // releaseAPI/releaseBase/osExecutable above, purely so a test can force
 // the "no asset for this platform" (Windows, in practice) path on
 // whatever platform actually runs the test suite.
 var assetName = func(ver string) (string, bool) {
-	switch runtime.GOOS + "/" + runtime.GOARCH {
-	case "linux/amd64":
-		return fmt.Sprintf("godl-%s-linux-amd64", ver), true
-	case "darwin/arm64":
-		return fmt.Sprintf("godl-%s-darwin-arm64", ver), true
-	default:
+	suffix, ok := rawAssets[runtime.GOOS+"/"+runtime.GOARCH]
+	if !ok {
 		return "", false
 	}
+	return fmt.Sprintf("godl-%s-%s", ver, suffix), true
 }
 
 // packageManagedPath is the fixed location both godl's .deb and .rpm
@@ -77,14 +92,22 @@ func packageManaged(exePath string) bool {
 // rpmPackageName is the Name field in packaging/rpm/godl.spec.
 const rpmPackageName = "godl"
 
+// rpmArches maps Go's name for an architecture to RPM's, for the ones
+// scripts/build-rpm.sh is run for by scripts/build-all.sh.
+var rpmArches = map[string]string{
+	"amd64": "x86_64",
+	"arm64": "aarch64",
+}
+
 // rpmAssetName returns the .rpm asset name scripts/build-rpm.sh
-// publishes at the given version, or false on an architecture it isn't
-// built for (the spec is BuildArch: x86_64 only).
+// publishes at the given version, or false on an architecture no .rpm
+// is built for.
 var rpmAssetName = func(ver string) (string, bool) {
-	if runtime.GOARCH != "amd64" {
+	arch, ok := rpmArches[runtime.GOARCH]
+	if !ok {
 		return "", false
 	}
-	return fmt.Sprintf("godl-%s-1.x86_64.rpm", ver), true
+	return fmt.Sprintf("godl-%s-1.%s.rpm", ver, arch), true
 }
 
 // rpmOwned reports whether exePath belongs to godl's installed .rpm

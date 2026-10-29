@@ -60,13 +60,35 @@ jobs:
         if: matrix.goos == 'linux'
         run: sudo apt-get update && sudo apt-get install -y fakeroot dpkg-dev rpm
 
+      # Both architectures of each, not just the host's: cross-building
+      # a package is where the arch-specific footguns live (rpmbuild
+      # refuses a spec that names a BuildArch other than the host's,
+      # which is only discoverable by actually running it).
       - name: build .deb (exercises the release script)
         if: matrix.goos == 'linux'
-        run: ./scripts/build-deb.sh
+        run: |
+          ./scripts/build-deb.sh amd64
+          ./scripts/build-deb.sh arm64
 
       - name: build .rpm (exercises the release script)
         if: matrix.goos == 'linux'
-        run: ./scripts/build-rpm.sh
+        run: |
+          ./scripts/build-rpm.sh x86_64
+          ./scripts/build-rpm.sh aarch64
+
+      # Every architecture the release publishes a raw binary for, so a
+      # change that breaks one of them fails on the PR rather than at
+      # release time. One step rather than more matrix jobs: these are
+      # compile checks, and they take seconds each.
+      - name: cross-compile every published target
+        if: matrix.goos == 'linux'
+        env:
+          CGO_ENABLED: 0
+        run: |
+          for t in linux/amd64 linux/arm64 linux/arm darwin/amd64 darwin/arm64 windows/amd64 windows/arm64; do
+            echo "-> $t"
+            GOOS="${t%/*}" GOARCH="${t#*/}" go build -o /dev/null .
+          done
 
       - name: test
         if: matrix.goos == 'linux'

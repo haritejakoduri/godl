@@ -5,8 +5,20 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>godl</title>
 <link rel="icon" href="icon-192.png" type="image/png">
-<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-180.png">
 <link rel="manifest" href="manifest.webmanifest">
+<!-- Safari does not read the manifest at all, so display:standalone in
+     it means nothing on an iPhone: without this meta, Add to Home
+     Screen gives a Safari view with browser chrome rather than an app.
+     Chrome does read the manifest; mobile-web-app-capable is for the
+     versions that predate it. -->
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="godl">
+<!-- "default" rather than "black-translucent": translucent runs the
+     page under the clock and battery, which would need safe-area
+     padding throughout to stop it colliding with the header. -->
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
 <!-- Two, so the window's own chrome follows the same light/dark choice
      the page does rather than fighting it. -->
 <meta name="theme-color" content="#f5f7f9" media="(prefers-color-scheme: light)">

@@ -4,11 +4,30 @@
 # from internal/version/version.go, so re-running this after bumping
 # that gives dpkg/apt everything they need to treat it as an upgrade —
 # no bespoke update-detection code required, that's just how apt works.
+#
+# Takes a Debian architecture as its one argument (amd64 by default).
+# godl is CGO_ENABLED=0 throughout, so a package for another
+# architecture is an ordinary cross-compile and needs no toolchain
+# beyond Go itself — which is what lets one amd64 runner build the
+# Raspberry Pi package too.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_DIR"
+
+DEB_ARCH="${1:-amd64}"
+case "$DEB_ARCH" in
+amd64) GO_ARCH=amd64; GO_ARM="" ;;
+arm64) GO_ARCH=arm64; GO_ARM="" ;;
+# armhf is 32-bit ARM with a hardware float ABI, which is what
+# Debian/Raspberry Pi OS mean by it; GOARM=7 matches.
+armhf) GO_ARCH=arm; GO_ARM=7 ;;
+*)
+	echo "error: unknown Debian architecture $DEB_ARCH (want amd64, arm64 or armhf)" >&2
+	exit 1
+	;;
+esac
 
 for tool in dpkg-deb fakeroot; do
 	if ! command -v "$tool" >/dev/null 2>&1; then
@@ -27,12 +46,15 @@ STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT
 chmod 0755 "$STAGE" # mktemp -d defaults to 0700; a package root should read like a normal dir
 
-echo "Building godl $VERSION for linux/amd64..."
+echo "Building godl $VERSION for linux/$GO_ARCH (Debian $DEB_ARCH)..."
 mkdir -p dist "$STAGE/DEBIAN" "$STAGE/usr/bin"
 # Built straight into the staging tree, not dist/ — this is a packaging
 # intermediate, not a release artifact someone would download directly
 # (that's dist/godl-<version>-linux-amd64, from build-all.sh).
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o "$STAGE/usr/bin/godl" .
+export CGO_ENABLED=0 GOOS=linux GOARCH="$GO_ARCH"
+if [ -n "$GO_ARM" ]; then export GOARM="$GO_ARM"; fi
+go build -trimpath -ldflags="-s -w" -o "$STAGE/usr/bin/godl" .
+unset CGO_ENABLED GOOS GOARCH GOARM
 chmod 0755 "$STAGE/usr/bin/godl"
 
 mkdir -p "$STAGE/DEBIAN"
@@ -58,7 +80,7 @@ Package: godl
 Version: $VERSION
 Section: utils
 Priority: optional
-Architecture: amd64
+Architecture: $DEB_ARCH
 Maintainer: godl <noreply@localhost>
 Installed-Size: $SIZE_KB
 Description: Terminal download manager for HTTP(S), BitTorrent, and yt-dlp
@@ -68,7 +90,7 @@ Description: Terminal download manager for HTTP(S), BitTorrent, and yt-dlp
  commands. Single static binary, no cgo.
 EOF
 
-OUT="dist/godl_${VERSION}_amd64.deb"
+OUT="dist/godl_${VERSION}_${DEB_ARCH}.deb"
 fakeroot dpkg-deb --build --root-owner-group "$STAGE" "$OUT"
 
 echo

@@ -658,6 +658,62 @@ looking at the page it does no work at all, one shared feed serves
 every open tab, and a video playing in it costs one ffmpeg process
 copying data, capped at a few at a time.
 
+### The system tray icon
+
+The daemon puts an icon in the notification area whenever it runs — on
+Windows, Linux and macOS — so a background download manager is
+something you can see and control, not an invisible process. There is
+nothing to enable.
+
+```
+  godl — 2 active, 5 queued, 4.1 MiB/s
+  ─────────────────────────────────────
+  Open godl                  ← the web interface
+  Open terminal dashboard
+  ─────────────────────────────────────
+  Pause all
+  Resume all
+  ─────────────────────────────────────
+  Restart background service
+  Check for updates
+  Quit godl
+  Hide this icon
+```
+
+Counts and speed update live. **Restart background service** stops and
+starts the daemon with downloads carrying on from where they were, and
+**Check for updates** installs a newer godl and restarts into it,
+reporting the outcome as a desktop notification — between those and the
+web interface, the tray reaches everything godl does without a
+terminal. *Hide this icon* closes only the icon.
+
+Turn it off in Settings ("Show tray icon"), or set `GODL_NO_TRAY=1`
+where there is no database to configure. It is skipped automatically
+where there is nowhere to show one — no desktop session, or a desktop
+with no tray host — so nothing changes for headless use.
+
+`godl tray` runs one by hand; that icon outlives the daemon and offers
+to start it again. `godl tray --install-autostart` registers it at
+login. Only one icon ever shows: whichever tray gets there first holds
+it and the others stand down.
+
+### `godl desktop` — the application menu entry (Linux)
+
+The `.deb` and `.rpm` add godl to your application menu. For a raw
+binary or `install.sh`, add it yourself:
+
+```sh
+godl desktop install    # adds the entry and its icons
+godl desktop remove
+godl desktop status
+```
+
+Search for "godl" in your launcher and it opens the web interface.
+Everything is written under `~/.local/share` — no root, and only your
+own account. Icons are installed into the hicolor theme at every
+standard size plus a scalable SVG, so the menu is crisp whatever size
+it draws at.
+
 ### `godl update` — update everything godl manages, including itself
 
 After an update, the background daemon from the old version is replaced

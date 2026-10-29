@@ -63,6 +63,11 @@ type Settings struct {
 	// TorBoxKeep leaves a torrent in the TorBox account once its files
 	// are downloaded, instead of deleting it there to free the slot.
 	TorBoxKeep bool
+	// ShowTray, when true (the default), has the daemon put a system
+	// tray icon up for itself on start, so a running daemon is visible
+	// and can be controlled without knowing any command. Ignored where
+	// there is nowhere to show one — see tray.Attach.
+	ShowTray bool
 }
 
 // TorBoxReady reports whether TorBox can be used.
@@ -73,7 +78,7 @@ const DefaultWebUIPort = 8787
 
 // DefaultSettings is what GetSettings returns before anything is saved.
 func DefaultSettings() Settings {
-	return Settings{AutoRetryMaxAttempts: 3, WebUIPort: DefaultWebUIPort}
+	return Settings{AutoRetryMaxAttempts: 3, WebUIPort: DefaultWebUIPort, ShowTray: true}
 }
 
 // settingsKeys names every row GetSettings/SaveSettings read and write
@@ -94,6 +99,7 @@ const (
 	settingsKeyTorBoxAPIKey         = "torbox_api_key"
 	settingsKeyTorBoxDefault        = "torbox_default"
 	settingsKeyTorBoxKeep           = "torbox_keep"
+	settingsKeyShowTray             = "show_tray"
 )
 
 // GetSettings reads the daemon's saved settings, falling back to
@@ -165,6 +171,9 @@ func (s *Store) GetSettings(ctx context.Context) (Settings, error) {
 	if v, ok := kv[settingsKeyTorBoxDefault]; ok {
 		set.TorBoxDefault = v == "true"
 	}
+	if v, ok := kv[settingsKeyShowTray]; ok {
+		set.ShowTray = v == "true"
+	}
 	if v, ok := kv[settingsKeyTorBoxKeep]; ok {
 		set.TorBoxKeep = v == "true"
 	}
@@ -190,6 +199,7 @@ func (s *Store) SaveSettings(ctx context.Context, set Settings) error {
 		settingsKeyTorBoxAPIKey:         set.TorBoxAPIKey,
 		settingsKeyTorBoxDefault:        strconv.FormatBool(set.TorBoxDefault),
 		settingsKeyTorBoxKeep:           strconv.FormatBool(set.TorBoxKeep),
+		settingsKeyShowTray:             strconv.FormatBool(set.ShowTray),
 	}
 	for k, v := range kv {
 		if _, err := s.db.ExecContext(ctx,

@@ -36,11 +36,32 @@ commands. Single static binary, no cgo.
 install -Dm755 %{_sourcedir}/godl %{buildroot}%{_bindir}/godl
 install -Dm644 %{_sourcedir}/LICENSE %{buildroot}%{_datadir}/licenses/%{name}/LICENSE
 
+# Application menu entry and icons, owned by rpm so they are removed
+# again with the package. Exec=godl resolves because the binary goes to
+# %{_bindir}, which is on every PATH.
+install -Dm644 %{_sourcedir}/godl.desktop %{buildroot}%{_datadir}/applications/godl.desktop
+for png in %{_sourcedir}/app*.png; do
+  size=$(basename "$png" .png); size=${size#app}
+  install -Dm644 "$png" %{buildroot}%{_datadir}/icons/hicolor/${size}x${size}/apps/godl.png
+done
+install -Dm644 %{_sourcedir}/godl.svg %{buildroot}%{_datadir}/icons/hicolor/scalable/apps/godl.svg
+
 %files
 %{_bindir}/godl
+%{_datadir}/applications/godl.desktop
+%{_datadir}/icons/hicolor/*/apps/godl.*
 %license %{_datadir}/licenses/%{name}/LICENSE
 
 %post
+# Best-effort refresh so the menu entry and icon appear now rather than
+# after a re-login; a minimal system may have neither tool.
+if command -v update-desktop-database >/dev/null 2>&1; then
+  update-desktop-database -q %{_datadir}/applications || :
+fi
+if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+  gtk-update-icon-cache -qtf %{_datadir}/icons/hicolor || :
+fi
+
 echo ""
 echo "godl installed. Try: godl status"
 

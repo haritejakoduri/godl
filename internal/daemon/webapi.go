@@ -86,6 +86,7 @@ type webSettings struct {
 	AutoRetry            bool   `json:"auto_retry"`
 	AutoRetryMaxAttempts int    `json:"auto_retry_max_attempts"`
 	NotifyOnComplete     bool   `json:"notify_on_complete"`
+	ShowTray             bool   `json:"show_tray"`
 	WebUI                bool   `json:"webui"`
 	WebUIPort            int    `json:"webui_port"`
 	WebUINetwork         bool   `json:"webui_network"`
@@ -108,7 +109,8 @@ func webSettingsOf(s store.Settings) webSettings {
 	return webSettings{
 		MaxConcurrent: s.MaxConcurrent, DefaultRateLimit: s.DefaultRateLimit, GlobalRateLimit: s.GlobalRateLimit,
 		AutoRetry: s.AutoRetry, AutoRetryMaxAttempts: s.AutoRetryMaxAttempts, NotifyOnComplete: s.NotifyOnComplete,
-		WebUI: s.WebUI, WebUIPort: port, WebUINetwork: s.WebUINetwork, WebUIUsername: s.WebUIUsername,
+		ShowTray: s.ShowTray,
+		WebUI:    s.WebUI, WebUIPort: port, WebUINetwork: s.WebUINetwork, WebUIUsername: s.WebUIUsername,
 		WebUIPasswordSet: s.WebUIPassword != "",
 		TorBoxKeySet:     s.TorBoxAPIKey != "", TorBoxDefault: s.TorBoxDefault, TorBoxKeep: s.TorBoxKeep,
 	}
@@ -164,7 +166,8 @@ func (d *Daemon) webPutSettings(w http.ResponseWriter, r *http.Request) {
 		MaxConcurrent: in.MaxConcurrent, DefaultRateLimit: strings.TrimSpace(in.DefaultRateLimit),
 		GlobalRateLimit: strings.TrimSpace(in.GlobalRateLimit),
 		AutoRetry:       in.AutoRetry, AutoRetryMaxAttempts: in.AutoRetryMaxAttempts, NotifyOnComplete: in.NotifyOnComplete,
-		WebUI: in.WebUI, WebUIPort: in.WebUIPort, WebUINetwork: in.WebUINetwork,
+		ShowTray: in.ShowTray,
+		WebUI:    in.WebUI, WebUIPort: in.WebUIPort, WebUINetwork: in.WebUINetwork,
 		WebUIUsername: strings.TrimSpace(in.WebUIUsername), WebUIPassword: cur.WebUIPassword,
 	}
 	if in.WebUIPassword != "" {

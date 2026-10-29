@@ -1,5 +1,15 @@
 #!/bin/sh
 set -e
+# Make the new menu entry and icon show up now rather than after a
+# re-login. Both tools are best-effort: a minimal system may have
+# neither, and every desktop notices the files on its own eventually.
+if command -v update-desktop-database >/dev/null 2>&1; then
+	update-desktop-database -q /usr/share/applications || true
+fi
+if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+	gtk-update-icon-cache -qtf /usr/share/icons/hicolor || true
+fi
+
 echo ""
 echo "godl installed. Try: godl status"
 exit 0

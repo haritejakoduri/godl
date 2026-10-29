@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=godl
+GenericName=Download Manager
+Comment=Download files, videos and torrents in the background
+Exec=godl web
+Icon=godl
+Terminal=false
+StartupNotify=false
+Categories=Network;FileTransfer;
+Keywords=download;downloader;torrent;video;yt-dlp;webdav;

@@ -144,6 +144,13 @@ var settingsFields = []settingsField{
 		toggle: func(s *store.Settings) { s.NotifyOnComplete = !s.NotifyOnComplete },
 	},
 	{
+		label:  "Show tray icon",
+		help:   "Puts a system tray icon up while the daemon runs, with a menu to open godl, pause everything, restart the service or check for updates. Ignored where there's no desktop session.",
+		kind:   settingsFieldBool,
+		get:    func(s store.Settings) string { return boolLabel(s.ShowTray) },
+		toggle: func(s *store.Settings) { s.ShowTray = !s.ShowTray },
+	},
+	{
 		label:  "Web interface",
 		help:   `Serves godl's browser interface from the background daemon. Run "godl web" to open it. Off = nothing is listening.`,
 		kind:   settingsFieldBool,

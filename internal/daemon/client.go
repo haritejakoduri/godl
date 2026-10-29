@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"os/exec"
@@ -171,6 +172,87 @@ func stopDaemon(sockPath, ver string) error {
 }
 
 // Restart stops the running daemon, if any, and starts a fresh one.
+// The argv the daemon re-execs godl with to show its own tray icon.
+// Declared here rather than in package cmd because the daemon is what
+// spawns it: cmd builds the command from these same constants, so the
+// two cannot drift into a daemon that spawns a subcommand nothing
+// answers to.
+const (
+	TrayCommand      = "tray"
+	TrayAttachedFlag = "attached"
+)
+
+// NoTrayEnv turns off the tray the daemon otherwise shows for itself.
+// An escape hatch that works before any database exists and without one
+// — for containers, CI, and anything embedding the daemon — alongside
+// the "Show tray icon" setting, which is where a user would normally
+// turn it off.
+const NoTrayEnv = "GODL_NO_TRAY"
+
+// spawnTray starts a tray icon for this daemon, so a running daemon is
+// visible and can be controlled without the user having to know "godl
+// tray" exists.
+//
+// Fire-and-forget on purpose. The child decides for itself whether an
+// icon is possible — no desktop session, no tray host, no tray in this
+// build, or one already showing all end in a silent exit (see
+// tray.Attach) — and a daemon must never fail to start because an icon
+// could not be drawn.
+func spawnTray() {
+	if os.Getenv(NoTrayEnv) != "" {
+		return
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return
+	}
+	// os.Executable is godl in every real run, but under "go test" it
+	// is the test binary, which does not understand "tray --attached"
+	// and would re-run the whole suite instead — including the tests
+	// that start a daemon, each spawning another copy. Refusing to
+	// re-exec a test binary keeps that from turning into a fork bomb.
+	if strings.HasSuffix(exe, ".test") || strings.Contains(exe, "/go-build") {
+		return
+	}
+	cmd := exec.Command(exe, TrayCommand, "--"+TrayAttachedFlag)
+	cmd.SysProcAttr = detachedSysProcAttr()
+	if err := cmd.Start(); err != nil {
+		log.Printf("tray: %v", err)
+		return
+	}
+	cmd.Process.Release()
+}
+
+// Running reports whether a daemon is listening, without starting one.
+// The tray asks this to decide whether to show an icon at all, so it
+// must not have the side effect EnsureRunning does.
+func Running() bool {
+	sockPath, err := paths.SocketPath()
+	if err != nil {
+		return false
+	}
+	return pingOK(sockPath)
+}
+
+// Stop asks a running daemon to exit and waits for the socket to go
+// quiet, reusing the same path Restart takes. It is not an error for
+// nothing to be running — stopped is false and there was nothing to do,
+// which is what lets the tray's Quit be pressed twice harmlessly.
+func Stop() (stopped bool, err error) {
+	sockPath, err := paths.SocketPath()
+	if err != nil {
+		return false, err
+	}
+	ok, ver := ping(sockPath)
+	if !ok {
+		return false, nil
+	}
+	if err := stopDaemon(sockPath, ver); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 func Restart() error {
 	sockPath, err := paths.SocketPath()
 	if err != nil {
@@ -411,5 +493,9 @@ func RunForeground() error {
 		return err
 	}
 	defer d.Close()
+
+	if d.cachedSettings().ShowTray {
+		spawnTray()
+	}
 	return d.Serve()
 }

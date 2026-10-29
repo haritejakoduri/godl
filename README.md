@@ -35,8 +35,16 @@ on ARM machine. They also cover **Android**: godl runs under
 needs no glibc to link against. There is no Android NDK build and no
 app — on a phone you would normally use godl's web interface instead,
 pointed at a godl running on a computer or NAS (see
-[`godl web`](#godl-web--the-web-interface)), which installs to the home
-screen as an app on both Android and iOS.
+[`godl web`](#godl-web--the-web-interface)).
+
+On a phone that page is an ordinary web page, and on **iOS** Safari's
+*Add to Home Screen* turns it into a standalone app. On **Android**,
+Chrome's *Install* only appears for a page a browser considers secure,
+which means HTTPS or localhost — so over plain http the home-screen
+entry is a shortcut that opens in the browser, not an installed app.
+`godl web --network --https` fixes that (see below); without it,
+installing properly only works on the machine running godl, where the
+address is `127.0.0.1` and so counts as secure either way.
 
 ### Windows
 
@@ -628,6 +636,7 @@ built into the page.
 ```sh
 godl web                                  # turn it on if needed, and open its window
 godl web --browser                        # open it as a browser tab instead
+godl web --network --username alice --https   # ...encrypted, for phones
 godl web --off                            # turn it off
 godl web --network --username alice       # also from your phone/other computers (asks for a password)
 godl web --local                          # back to this machine only
@@ -664,7 +673,30 @@ token in the address — loopback alone isn't enough, since other users of
 the machine and other websites can reach a loopback port. With
 `--network` it's served on every interface and every device signs in
 with the username and password you set; godl refuses network mode
-without both. Either way it only answers to an IP address or
+without both.
+
+**Encrypting it (`--https`).** Over the network the sign-in is HTTP
+Basic, which puts the username and password in a header in the clear
+— readable by anything else on the same Wi-Fi. `godl web --network
+--https` serves TLS instead, with a certificate godl generates itself
+and keeps in its data directory.
+
+Being self-signed, no device trusts it until you say so, and until
+then the page will not load there at all. godl prints a link to the
+certificate (`https://<address>:<port>/godl.crt`, which is served
+without a sign-in because a phone has to fetch it *before* it can get
+in) — open that on the device and install it. On Android, Settings and
+then a search for "CA certificate". Doing that is also what makes
+Chrome offer to install the interface as an app, since the page then
+counts as secure.
+
+`--https` applies to `--network` only. On the machine running godl the
+address is `127.0.0.1`, which browsers already treat as secure, and a
+self-signed certificate there would buy a warning and nothing else.
+The certificate is replaced automatically when it nears expiry or when
+the machine gains an address it doesn't cover, so moving a laptop
+between networks doesn't break it — though a device that trusted the
+old one has to trust the new one. Either way it only answers to an IP address or
 `localhost` in the address bar and refuses requests sent by other
 websites. Network mode is plain http, like `godl serve` — use it on a
 home network you trust, not across the internet.

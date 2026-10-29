@@ -52,6 +52,17 @@ type Settings struct {
 	WebUINetwork  bool
 	WebUIUsername string
 	WebUIPassword string
+	// WebUIHTTPS serves the interface over TLS with a self-signed
+	// certificate instead of plain http. Network mode only: on
+	// loopback there is nothing to protect from and nothing to gain —
+	// 127.0.0.1 already counts as a secure context — while a browser
+	// opening the app window would stop at a certificate warning.
+	//
+	// Off by default because turning it on makes every existing
+	// browser refuse the page until the certificate is trusted on
+	// that device, which is a thing to opt into rather than to find
+	// one morning.
+	WebUIHTTPS bool
 
 	// TorBoxAPIKey lets torrent jobs go through TorBox (internal/torbox):
 	// TorBox downloads the torrent on its servers, then godl fetches the
@@ -96,6 +107,7 @@ const (
 	settingsKeyWebUINetwork         = "webui_network"
 	settingsKeyWebUIUsername        = "webui_username"
 	settingsKeyWebUIPassword        = "webui_password"
+	settingsKeyWebUIHTTPS           = "webui_https"
 	settingsKeyTorBoxAPIKey         = "torbox_api_key"
 	settingsKeyTorBoxDefault        = "torbox_default"
 	settingsKeyTorBoxKeep           = "torbox_keep"
@@ -162,6 +174,9 @@ func (s *Store) GetSettings(ctx context.Context) (Settings, error) {
 	if v, ok := kv[settingsKeyWebUIUsername]; ok {
 		set.WebUIUsername = v
 	}
+	if v, ok := kv[settingsKeyWebUIHTTPS]; ok {
+		set.WebUIHTTPS = v == "true"
+	}
 	if v, ok := kv[settingsKeyWebUIPassword]; ok {
 		set.WebUIPassword = v
 	}
@@ -196,6 +211,7 @@ func (s *Store) SaveSettings(ctx context.Context, set Settings) error {
 		settingsKeyWebUINetwork:         strconv.FormatBool(set.WebUINetwork),
 		settingsKeyWebUIUsername:        set.WebUIUsername,
 		settingsKeyWebUIPassword:        set.WebUIPassword,
+		settingsKeyWebUIHTTPS:           strconv.FormatBool(set.WebUIHTTPS),
 		settingsKeyTorBoxAPIKey:         set.TorBoxAPIKey,
 		settingsKeyTorBoxDefault:        strconv.FormatBool(set.TorBoxDefault),
 		settingsKeyTorBoxKeep:           strconv.FormatBool(set.TorBoxKeep),

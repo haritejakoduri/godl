@@ -43,6 +43,13 @@ func Static() http.Handler {
 	})
 }
 
+// CertPath is where the daemon offers its TLS certificate for
+// download when serving https. It is not a static file — the daemon
+// generates it — but it is named here so that it sits beside the
+// other paths served without authentication, which is the list
+// someone checks when asking what is reachable unauthenticated.
+const CertPath = "/godl.crt"
+
 // PublicPaths are the paths Guard serves without authenticating: the
 // web manifest, the icons it names, and /favicon.ico.
 //

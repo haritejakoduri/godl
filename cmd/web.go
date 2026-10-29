@@ -52,8 +52,13 @@ home network, not for the open internet.`,
 		local, _ := cmd.Flags().GetBool("local")
 		noOpen, _ := cmd.Flags().GetBool("no-open")
 		asTab, _ := cmd.Flags().GetBool("browser")
+		https, _ := cmd.Flags().GetBool("https")
+		noHTTPS, _ := cmd.Flags().GetBool("no-https")
 		if network && local {
 			return fmt.Errorf("pass either --network or --local, not both")
+		}
+		if https && noHTTPS {
+			return fmt.Errorf("pass either --https or --no-https, not both")
 		}
 
 		if err := daemon.EnsureRunning(); err != nil {
@@ -79,6 +84,12 @@ home network, not for the open internet.`,
 			if network {
 				s.WebUINetwork = true
 			}
+			if https {
+				s.WebUIHTTPS = true
+			}
+			if noHTTPS {
+				s.WebUIHTTPS = false
+			}
 			if u, _ := cmd.Flags().GetString("username"); u != "" {
 				s.WebUIUsername = u
 			}
@@ -88,6 +99,9 @@ home network, not for the open internet.`,
 			}
 			if password != "" {
 				s.WebUIPassword = password
+			}
+			if s.WebUIHTTPS && !s.WebUINetwork {
+				return fmt.Errorf("--https applies to --network only: on this machine the address is 127.0.0.1, which browsers already treat as secure, and a self-signed certificate there would only produce a warning")
 			}
 			if s.WebUINetwork && s.WebUIUsername == "" {
 				return fmt.Errorf("--network needs --username (and a password): anyone who could reach the page could otherwise start and delete downloads")
@@ -115,12 +129,30 @@ home network, not for the open internet.`,
 		if port == 0 {
 			port = store.DefaultWebUIPort
 		}
+		// Loopback is always plain http, even with https on: see
+		// store.Settings.WebUIHTTPS.
 		open := fmt.Sprintf("http://127.0.0.1:%d/", port)
 		if s.WebUINetwork {
+			scheme := "http"
+			if s.WebUIHTTPS {
+				scheme = "https"
+				open = fmt.Sprintf("https://127.0.0.1:%d/", port)
+			}
 			fmt.Printf("godl's web interface is on, for this machine and your network (sign in as %q):\n", s.WebUIUsername)
 			fmt.Printf("  %s\n", open)
 			for _, ip := range fileserver.ReachableIPs() {
-				fmt.Printf("  http://%s:%d/\n", ip, port)
+				fmt.Printf("  %s://%s:%d/\n", scheme, ip, port)
+			}
+			if s.WebUIHTTPS {
+				fmt.Println()
+				fmt.Println("It is served with a certificate godl made itself, so each device will")
+				fmt.Println("refuse the page until you tell it to trust that certificate once:")
+				for _, ip := range fileserver.ReachableIPs() {
+					fmt.Printf("  https://%s:%d%s\n", ip, port, webui.CertPath)
+					break
+				}
+				fmt.Println("Open that on the device, then install it (on Android: Settings, then")
+				fmt.Println("search for \"CA certificate\"). Until then the page will not load there.")
 			}
 		} else {
 			dataDir, err := paths.DataDir()
@@ -166,4 +198,6 @@ func init() {
 	webCmd.Flags().Int("port", store.DefaultWebUIPort, "port to serve it on")
 	webCmd.Flags().Bool("no-open", false, "print the address without opening anything")
 	webCmd.Flags().Bool("browser", false, "open it as a tab in your default browser, not in a window of its own")
+	webCmd.Flags().Bool("https", false, "with --network, serve over TLS so passwords aren't sent in the clear (needs trusting godl's certificate on each device)")
+	webCmd.Flags().Bool("no-https", false, "with --network, go back to plain http")
 }

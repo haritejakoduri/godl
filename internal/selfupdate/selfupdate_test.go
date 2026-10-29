@@ -9,21 +9,29 @@ import (
 	"testing"
 )
 
+// TestAssetName checks the naming against rawAssets rather than
+// against a list written out again here. A second hand-kept list is
+// what caused the darwin/amd64 bug in the first place, and it would
+// have to be edited on every new architecture — by someone who, like
+// the last time, has no reason to think of it.
+//
+// What keeps this from being circular is that rawAssets is not the
+// final authority either: TestRawAssetsMatchTheBuildScripts ties it to
+// what the build scripts actually publish. This test ties the function
+// to the map; that one ties the map to reality.
 func TestAssetName(t *testing.T) {
 	name, ok := assetName("0.3.0")
-	switch runtime.GOOS + "/" + runtime.GOARCH {
-	case "linux/amd64":
-		if !ok || name != "godl-0.3.0-linux-amd64" {
-			t.Errorf("assetName(0.3.0) = (%q, %v), want (\"godl-0.3.0-linux-amd64\", true)", name, ok)
-		}
-	case "darwin/arm64":
-		if !ok || name != "godl-0.3.0-darwin-arm64" {
-			t.Errorf("assetName(0.3.0) = (%q, %v), want (\"godl-0.3.0-darwin-arm64\", true)", name, ok)
-		}
-	default:
+	platform := runtime.GOOS + "/" + runtime.GOARCH
+
+	suffix, published := rawAssets[platform]
+	if !published {
 		if ok {
-			t.Errorf("assetName(0.3.0) on unsupported platform %s/%s = (%q, true), want ok=false", runtime.GOOS, runtime.GOARCH, name)
+			t.Errorf("assetName(0.3.0) on %s = (%q, true), want ok=false — no raw binary is published for it", platform, name)
 		}
+		return
+	}
+	if want := "godl-0.3.0-" + suffix; !ok || name != want {
+		t.Errorf("assetName(0.3.0) on %s = (%q, %v), want (%q, true)", platform, name, ok, want)
 	}
 }
 
@@ -56,16 +64,23 @@ func TestReleaseBase(t *testing.T) {
 	}
 }
 
+// TestRPMAssetName, like TestAssetName, reads the architectures from
+// rpmArches instead of naming them again. This test used to assert
+// that anything but amd64 got nothing, which stopped being true the
+// moment an aarch64 .rpm was published — and the only machine that
+// noticed was the arm64 CI runner.
 func TestRPMAssetName(t *testing.T) {
 	name, ok := rpmAssetName("0.3.0")
-	if runtime.GOARCH != "amd64" {
+
+	arch, built := rpmArches[runtime.GOARCH]
+	if !built {
 		if ok {
-			t.Errorf("rpmAssetName(0.3.0) on %s = (%q, true), want ok=false", runtime.GOARCH, name)
+			t.Errorf("rpmAssetName(0.3.0) on %s = (%q, true), want ok=false — no .rpm is built for it", runtime.GOARCH, name)
 		}
 		return
 	}
-	if !ok || name != "godl-0.3.0-1.x86_64.rpm" {
-		t.Errorf("rpmAssetName(0.3.0) = (%q, %v), want (\"godl-0.3.0-1.x86_64.rpm\", true)", name, ok)
+	if want := "godl-0.3.0-1." + arch + ".rpm"; !ok || name != want {
+		t.Errorf("rpmAssetName(0.3.0) on %s = (%q, %v), want (%q, true)", runtime.GOARCH, name, ok, want)
 	}
 }
 

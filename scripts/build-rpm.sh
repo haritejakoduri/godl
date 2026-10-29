@@ -44,6 +44,10 @@ mkdir -p dist
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o "$TOPDIR/SOURCES/godl" .
 chmod 0755 "$TOPDIR/SOURCES/godl"
 cp LICENSE "$TOPDIR/SOURCES/LICENSE"
+# The menu entry and its icons, which the spec's %install stages into
+# /usr/share. Copied flat because %_sourcedir has no subdirectories.
+cp packaging/desktop/godl.desktop "$TOPDIR/SOURCES/godl.desktop"
+cp tray/icon/app*.png tray/icon/godl.svg "$TOPDIR/SOURCES/"
 
 rpmbuild --define "_topdir $TOPDIR" \
 	--define "_version $VERSION" \

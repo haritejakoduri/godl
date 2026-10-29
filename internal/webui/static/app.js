@@ -1067,6 +1067,7 @@ function fillSettings() {
   $('s-retry').checked = s.auto_retry;
   $('s-retry-max').value = s.auto_retry_max_attempts;
   $('s-notify').checked = s.notify_on_complete;
+  $('s-tray').checked = s.show_tray;
   $('s-web').checked = s.webui;
   $('s-web-port').value = s.webui_port;
   $('s-web-net').checked = s.webui_network;
@@ -1090,6 +1091,7 @@ $('settings-form').addEventListener('submit', async (e) => {
     auto_retry: $('s-retry').checked,
     auto_retry_max_attempts: +$('s-retry-max').value || 1,
     notify_on_complete: $('s-notify').checked,
+    show_tray: $('s-tray').checked,
     webui: $('s-web').checked,
     webui_port: +$('s-web-port').value || 0,
     webui_network: $('s-web-net').checked,

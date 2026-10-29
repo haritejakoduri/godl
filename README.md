@@ -906,18 +906,26 @@ build silently missing the tray can't ship. CI builds both halves on
 every PR — Linux and the cross-compiles on `ubuntu-latest`, macOS on
 `macos-latest`.
 
-### Android
+### Android — development builds only
 
 ```sh
-./scripts/build-android.sh      # android/arm64, not a release artifact
+./scripts/build-android.sh      # android/arm64, suffixed -dev
 ```
 
-godl's core compiles for Android, and CI checks that it still does.
-Nothing is published: a bare Android executable has no shell to run it
-from. The target exists for whatever would embed the core in a real
-app — gomobile, in practice. Running godl on a phone *today* means
-[Termux](https://termux.dev), which uses the ordinary `linux-arm64`
-binary and needs none of this.
+**These are development builds and nothing more.** They are not
+released, not supported, and have never been run on a phone — by
+anyone. The file name says `-dev` so that stays obvious wherever one
+ends up. No Android artifact appears on the Releases page and the
+release workflow does not build one.
+
+What this is for: godl's core compiles for Android, and CI checks that
+it still does, so that whoever eventually embeds it in a real app —
+gomobile, in practice — does not start by fixing a build that rotted
+months earlier. Nothing is published because a bare Android executable
+has no shell to run it from.
+
+Running godl on a phone *today* means [Termux](https://termux.dev),
+which uses the ordinary `linux-arm64` binary and needs none of this.
 
 Two things make Android different from Linux, both handled in the
 script and explained there: Go satisfies the `linux` build constraint

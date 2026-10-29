@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
-# Builds godl for Android into dist/.
+# Builds godl for Android into dist/ as a development build.
 #
-# This is groundwork, not a release artifact, and the release workflow
-# does not call it. A bare Android executable is of no use on its own —
+# Development build is meant literally, and the "-dev" in the file name
+# is there so nobody has to take anyone's word for it: this is not
+# released, not supported, and has never been run on a phone by anyone.
+# The release workflow does not call this script, and no Android
+# artifact is published. A bare Android executable is of no use on its own —
 # Android gives you no shell to run it from. What it is for is the two
 # things that would consume it later: gomobile, which turns this
 # package into a library an Android app can start, and anything
@@ -44,7 +47,7 @@ fi
 
 mkdir -p dist
 
-echo "Building godl $VERSION for Android..."
+echo "Building godl $VERSION for Android (development build)..."
 echo
 
 # arm64 only, and not an oversight: every other Android architecture
@@ -54,7 +57,7 @@ echo
 # will have the NDK and can add the rest then, with something to test
 # them on.
 for arch in arm64; do
-	OUT="dist/godl-${VERSION}-android-${arch}"
+	OUT="dist/godl-${VERSION}-android-${arch}-dev"
 	echo "-> $OUT"
 	export CGO_ENABLED=0 GOOS=android GOARCH="$arch"
 
@@ -74,5 +77,5 @@ done
 unset CGO_ENABLED GOOS GOARCH
 
 echo
-echo "Android artifacts:"
-ls -lh dist/ | grep android | awk '{printf "  %-34s %s\n", $NF, $5}'
+echo "Android artifacts (development builds — unreleased, untested on a device):"
+ls -lh dist/ | grep android | awk '{printf "  %-38s %s\n", $NF, $5}'

@@ -20,6 +20,20 @@ import (
 // CookieName carries the local-mode token once the page has loaded.
 const CookieName = "godl_web"
 
+// cookieMaxAge keeps the cookie across browser restarts. Without it
+// this is a session cookie, which is enough for a tab opened by "godl
+// web" — that link carries the token — but not for godl installed as
+// an app: the manifest's start_url has no token in it (one there would
+// be readable by anything that can reach the port), so a window opened
+// from the dock after the browser has been closed would get the 401
+// page every time.
+//
+// Local mode only: with a username, Guard authenticates with HTTP
+// Basic and never reaches this. The token is already stored in the
+// clear under the data directory, so a copy in a loopback-only
+// cookie jar is not new exposure.
+const cookieMaxAge = 30 * 24 * 60 * 60 // 30 days, in seconds
+
 // Auth says who may use the interface. The page can start downloads
 // into any folder and delete files, so nothing here is optional.
 //
@@ -91,6 +105,7 @@ func Guard(a Auth, next http.Handler, open ...string) http.Handler {
 			http.SetCookie(w, &http.Cookie{
 				Name: CookieName, Value: a.Token, Path: "/",
 				HttpOnly: true, SameSite: http.SameSiteStrictMode,
+				MaxAge: cookieMaxAge,
 			})
 			http.Redirect(w, r, r.URL.Path, http.StatusSeeOther)
 			return

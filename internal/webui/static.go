@@ -3,6 +3,7 @@ package webui
 import (
 	"embed"
 	"io/fs"
+	"mime"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -11,6 +12,18 @@ import (
 
 //go:embed static
 var staticFS embed.FS
+
+func init() {
+	// http.FileServer types a response from the file extension, and
+	// Go's table has no entry for .webmanifest — so without this the
+	// manifest goes out sniffed, as text/plain. Combined with the
+	// nosniff header Guard sets, a browser is entitled to refuse it
+	// outright, and a refused manifest means no install prompt and
+	// nothing anywhere saying why.
+	if err := mime.AddExtensionType(".webmanifest", "application/manifest+json"); err != nil {
+		panic(err) // a constant type string, so this cannot fail
+	}
+}
 
 // Static serves the page itself: one HTML file, its stylesheet and its
 // script, compiled into the binary. Nothing is fetched from anywhere
@@ -28,6 +41,29 @@ func Static() http.Handler {
 		w.Header().Set("Cache-Control", "no-cache")
 		files.ServeHTTP(w, r)
 	})
+}
+
+// PublicPaths are the paths Guard serves without authenticating: the
+// web manifest, the icons it names, and /favicon.ico.
+//
+// A manifest is fetched without credentials unless the link element
+// asks otherwise, so behind the normal check the browser gets a 401,
+// never reads the manifest, and silently never offers to install godl
+// as an app — with no error anywhere for anyone to notice. The icons
+// are the same art compiled into every published binary and the
+// manifest carries no token, so there is nothing here to protect.
+//
+// Listed one by one rather than by prefix so this says exactly what it
+// opens; static_test.go checks nothing in the embedded directory was
+// added without being considered here.
+func PublicPaths() []string {
+	return []string{
+		"/manifest.webmanifest",
+		"/favicon.ico",
+		"/icon-192.png",
+		"/icon-512.png",
+		"/icon-maskable-512.png",
+	}
 }
 
 // tokenFile holds the local-mode token: what "godl web" puts in the

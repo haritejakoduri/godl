@@ -6,6 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"godl/internal/appwindow"
 	"godl/internal/daemon"
 	"godl/internal/fileserver"
 	"godl/internal/guide"
@@ -16,16 +17,24 @@ import (
 
 var webCmd = &cobra.Command{
 	Use:   "web",
-	Short: "Open godl's web interface in your browser (and turn it on if it's off)",
-	Long: `godl's web interface does everything the terminal dashboard does, in a
-browser: start and manage downloads, pick a torrent's files, browse
-WebDAV servers, share a folder, change settings, and watch videos in
-the page with a choice of audio language.
+	Short: "Open godl's web interface in a window of its own (and turn it on if it's off)",
+	Long: `godl's web interface does everything the terminal dashboard does:
+start and manage downloads, pick a torrent's files, browse WebDAV
+servers, share a folder, change settings, and watch videos in the page
+with a choice of audio language.
+
+It opens in a window of its own — no tabs, no address bar, its own icon
+in the dock or taskbar. That window comes from a Chromium-family
+browser (Chrome, Edge, Chromium, Brave, Vivaldi) running in app mode,
+which is why it may not be the browser you have set as default. Where
+there is no such browser — a Mac with only Safari, say — it opens as an
+ordinary tab instead, and --browser asks for that on purpose.
 
 It is off until you turn it on, and is served by godl's background
 daemon, so it stays available after this command returns.
 
-  godl web                  # turn it on if needed, and open it
+  godl web                  # turn it on if needed, and open its window
+  godl web --browser        # open it as a browser tab instead
   godl web --off            # turn it off
 
 By default only this machine can reach it. To use it from a phone or
@@ -42,6 +51,7 @@ home network, not for the open internet.`,
 		network, _ := cmd.Flags().GetBool("network")
 		local, _ := cmd.Flags().GetBool("local")
 		noOpen, _ := cmd.Flags().GetBool("no-open")
+		asTab, _ := cmd.Flags().GetBool("browser")
 		if network && local {
 			return fmt.Errorf("pass either --network or --local, not both")
 		}
@@ -128,8 +138,20 @@ home network, not for the open internet.`,
 		if noOpen {
 			return nil
 		}
-		if err := guide.OpenInBrowser(open); err != nil {
-			fmt.Println("Couldn't open a browser by itself — open that address in one.")
+		if asTab {
+			if err := guide.OpenInBrowser(open); err != nil {
+				fmt.Println("Couldn't open a browser by itself — open that address in one.")
+			}
+			return nil
+		}
+		// Only the fallback is worth a word: a window that appeared
+		// needs no announcement, but a tab where one was expected
+		// does, or it looks like the feature is broken.
+		if _, ok := appwindow.Browser(); !ok {
+			fmt.Println("Opening it as a browser tab — install Chrome, Edge or Chromium for a window of its own.")
+		}
+		if err := appwindow.Open(open); err != nil {
+			fmt.Println("Couldn't open it by itself — open that address in a browser.")
 		}
 		return nil
 	},
@@ -142,5 +164,6 @@ func init() {
 	webCmd.Flags().String("username", "", "username for --network")
 	webCmd.Flags().String("password", "", "password for --network (prompted if omitted; or set GODL_WEB_PASSWORD)")
 	webCmd.Flags().Int("port", store.DefaultWebUIPort, "port to serve it on")
-	webCmd.Flags().Bool("no-open", false, "print the address without opening a browser")
+	webCmd.Flags().Bool("no-open", false, "print the address without opening anything")
+	webCmd.Flags().Bool("browser", false, "open it as a tab in your default browser, not in a window of its own")
 }

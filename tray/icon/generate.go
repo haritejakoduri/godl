@@ -5,7 +5,8 @@
 // ICO container for Windows, a monochrome template PNG for macOS (which
 // tints template images itself to match the menu bar), the hicolor
 // app-icon sizes plus an SVG for the Linux application menu, and an
-// ICNS for the macOS .app bundle.
+// ICNS for the macOS .app bundle, and the web interface's own icons
+// and favicon so an installed godl has one too.
 //
 // Run with: go run ./tray/icon/generate.go
 package main
@@ -63,6 +64,38 @@ func fill(img *image.NRGBA, x0, y0, x1, y1 int, c color.NRGBA) {
 			}
 		}
 	}
+}
+
+// drawMaskable renders the icon for a manifest's maskable slot: the
+// glyph in white on a filled square, inset far enough to survive being
+// cropped to a circle, a squircle or a rounded rectangle, which is
+// what the platform does with that slot. A transparent icon there gets
+// an arbitrary background instead — usually white, which the blue
+// glyph then vanishes into.
+//
+// The safe zone is the inner circle of 80% diameter, so what has to
+// fit is the glyph's diagonal, not its width. draw's own content is
+// already inset within its box (the baseline spans 0.219 to 0.781
+// across and 0.125 to 0.906 down), giving a diagonal of about 0.96 of
+// the box. A box of 80% would put the content at 98% of the safe
+// radius — inside, but close enough that a platform cropping a little
+// harder than the spec would clip the baseline's corners. 75% leaves
+// a margin for that and looks no different.
+func drawMaskable(size int) *image.NRGBA {
+	img := image.NewNRGBA(image.Rect(0, 0, size, size))
+	fill(img, 0, 0, size, size, accent)
+
+	inner := size * 3 / 4
+	glyph := draw(inner, color.NRGBA{R: 0xFF, G: 0xFF, B: 0xFF, A: 0xFF})
+	off := (size - inner) / 2
+	for y := 0; y < inner; y++ {
+		for x := 0; x < inner; x++ {
+			if c := glyph.NRGBAAt(x, y); c.A > 0 {
+				img.SetNRGBA(off+x, off+y, c)
+			}
+		}
+	}
+	return img
 }
 
 func encodePNG(img image.Image) []byte {
@@ -174,11 +207,12 @@ func main() {
 	if wd, err := os.Getwd(); err == nil {
 		dir = filepath.Join(wd, "tray", "icon")
 	}
-	write := func(name string, data []byte) {
+	writeTo := func(dir, name string, data []byte) {
 		if err := os.WriteFile(filepath.Join(dir, name), data, 0o644); err != nil {
 			panic(err)
 		}
 	}
+	write := func(name string, data []byte) { writeTo(dir, name, data) }
 	write("godl.png", encodePNG(draw(64, accent)))
 
 	// The sizes the hicolor icon theme looks for, so the application
@@ -194,4 +228,19 @@ func main() {
 	// macOS template icons must be black with alpha; the system
 	// recolors them for light/dark menu bars.
 	write("godl-template.png", encodePNG(draw(64, color.NRGBA{A: 0xFF})))
+
+	// The web interface's icons, from the same drawing, so an
+	// installed godl in the dock matches the tray and the application
+	// menu rather than being a second, slightly different logo. 192
+	// and 512 are the sizes a web manifest is expected to offer; the
+	// favicon covers a plain request for /favicon.ico from anything
+	// that ignores the declared icons.
+	webDir := filepath.Join(filepath.Dir(filepath.Dir(dir)), "internal", "webui", "static")
+	if wd, err := os.Getwd(); err == nil {
+		webDir = filepath.Join(wd, "internal", "webui", "static")
+	}
+	writeTo(webDir, "icon-192.png", encodePNG(draw(192, accent)))
+	writeTo(webDir, "icon-512.png", encodePNG(draw(512, accent)))
+	writeTo(webDir, "icon-maskable-512.png", encodePNG(drawMaskable(512)))
+	writeTo(webDir, "favicon.ico", encodeICO([]int{16, 32, 48}, accent))
 }

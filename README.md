@@ -697,22 +697,34 @@ to start it again. `godl tray --install-autostart` registers it at
 login. Only one icon ever shows: whichever tray gets there first holds
 it and the others stand down.
 
-### `godl desktop` — the application menu entry (Linux)
+### `godl desktop` — the application menu entry
 
-The `.deb` and `.rpm` add godl to your application menu. For a raw
-binary or `install.sh`, add it yourself:
+Puts godl in your system's application menu with its icon, so it can be
+launched like any other app. Searching "godl" in the launcher opens the
+web interface.
 
 ```sh
-godl desktop install    # adds the entry and its icons
+godl desktop install
 godl desktop remove
 godl desktop status
 ```
 
-Search for "godl" in your launcher and it opens the web interface.
-Everything is written under `~/.local/share` — no root, and only your
-own account. Icons are installed into the hicolor theme at every
-standard size plus a scalable SVG, so the menu is crisp whatever size
-it draws at.
+What that writes depends on the system:
+
+| | |
+|---|---|
+| **Linux** | a `.desktop` entry plus hicolor icons at every standard size and a scalable SVG, under `~/.local/share` |
+| **Windows** | a Start Menu shortcut under your own profile, taking its icon from `godl.exe`'s own resources |
+| **macOS** | a `godl.app` bundle in `~/Applications`, with an `.icns` |
+
+All three are per-user: no administrator rights, nothing outside your
+own account.
+
+Most installs do this for you — the `.deb` and `.rpm` ship the Linux
+files system-wide, and the Windows installer adds the Start Menu
+shortcut. Use the command when godl came from a raw binary or
+`install.sh`, on macOS, or to point an existing entry at a binary you
+have since moved.
 
 ### `godl update` — update everything godl manages, including itself
 

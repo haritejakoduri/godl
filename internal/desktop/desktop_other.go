@@ -1,15 +1,14 @@
-//go:build !linux
+//go:build !linux && !darwin && !windows
 
 package desktop
 
 import "errors"
 
-// errUnsupported: the application-menu entry is an XDG concept. Windows
-// gets its Start Menu shortcut from the installer, and macOS has no
-// equivalent for a command-line tool that opens a browser.
-var errUnsupported = errors.New("a desktop menu entry is only supported on Linux")
+// errUnsupported covers the platforms with no application menu to
+// register with. Linux, Windows and macOS each have their own file.
+var errUnsupported = errors.New("an application menu entry is not supported on this platform")
 
-func install() error { return errUnsupported }
-func remove() error  { return errUnsupported }
+func install(string) error { return errUnsupported }
+func remove() error        { return errUnsupported }
 
 func status() (bool, string, error) { return false, "", errUnsupported }

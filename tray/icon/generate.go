@@ -3,8 +3,9 @@
 // Command generate draws godl's icon and writes every form the
 // platforms want: a colored PNG for the Linux tray, the same art in an
 // ICO container for Windows, a monochrome template PNG for macOS (which
-// tints template images itself to match the menu bar), and the hicolor
-// app-icon sizes plus an SVG for the Linux application menu.
+// tints template images itself to match the menu bar), the hicolor
+// app-icon sizes plus an SVG for the Linux application menu, and an
+// ICNS for the macOS .app bundle.
 //
 // Run with: go run ./tray/icon/generate.go
 package main
@@ -122,6 +123,52 @@ func svg(c color.NRGBA) string {
 `, hex)
 }
 
+// icnsTypes maps an ICNS entry type to the pixel size it holds. These
+// are the PNG-capable types (10.7+), which is why no legacy mask
+// entries are written: a modern macOS reads the PNG's own alpha.
+//
+// Several sizes appear twice on purpose — ic08 and ic13 are both 256px
+// — because one is the 1x icon at that size and the other is the 2x
+// icon for the size below it. Finder picks by slot, not by pixels, so
+// omitting the retina slots gives a blurry icon on a retina display
+// even though the pixels for it are already in the file.
+var icnsTypes = []struct {
+	code string
+	size int
+}{
+	{"icp4", 16},   // 16x16
+	{"icp5", 32},   // 32x32
+	{"ic11", 32},   // 16x16@2x
+	{"ic12", 64},   // 32x32@2x
+	{"ic07", 128},  // 128x128
+	{"ic13", 256},  // 128x128@2x
+	{"ic08", 256},  // 256x256
+	{"ic14", 512},  // 256x256@2x
+	{"ic09", 512},  // 512x512
+	{"ic10", 1024}, // 512x512@2x
+}
+
+// encodeICNS packs PNG entries into an ICNS container for the .app
+// bundle's Resources. The format is a magic word, the total file
+// length, then one entry per icon: a four-character type, the entry's
+// own length *including* its eight-byte header, and the data.
+// Everything is big-endian, unlike ICO.
+func encodeICNS(c color.NRGBA) []byte {
+	var body bytes.Buffer
+	for _, t := range icnsTypes {
+		data := encodePNG(draw(t.size, c))
+		body.WriteString(t.code)
+		binary.Write(&body, binary.BigEndian, uint32(len(data)+8))
+		body.Write(data)
+	}
+
+	var out bytes.Buffer
+	out.WriteString("icns")
+	binary.Write(&out, binary.BigEndian, uint32(body.Len()+8))
+	out.Write(body.Bytes())
+	return out.Bytes()
+}
+
 func main() {
 	dir := filepath.Dir(os.Args[0])
 	if wd, err := os.Getwd(); err == nil {
@@ -142,6 +189,7 @@ func main() {
 		write(fmt.Sprintf("app%d.png", size), encodePNG(draw(size, accent)))
 	}
 	write("godl.svg", []byte(svg(accent)))
+	write("godl.icns", encodeICNS(accent))
 	write("godl.ico", encodeICO([]int{16, 32, 48, 64}, accent))
 	// macOS template icons must be black with alpha; the system
 	// recolors them for light/dark menu bars.

@@ -762,9 +762,10 @@ works where there's a raw binary to swap in, though:
 - **Installed from the `.deb`** (Debian/Ubuntu) is left alone for the
   same reason, with no automatic path yet: run
   `sudo apt update && sudo apt upgrade` instead.
-- Any other platform without a published raw binary (currently just
-  linux/amd64 and darwin/arm64 are built — see `scripts/build-all.sh`)
-  falls back to pointing you at the Releases page too.
+- Any other platform without a published raw binary (currently
+  linux/amd64 from `scripts/build-all.sh`, plus darwin/arm64 and
+  darwin/amd64 from `scripts/build-darwin.sh`) falls back to pointing
+  you at the Releases page too.
 
 `godl update` prints which of these applies rather than silently doing
 nothing.
@@ -823,5 +824,17 @@ binaries, the Windows installer, the `.deb`, and the `.rpm`) into
 ```sh
 ./scripts/build-all.sh
 ```
+
+The macOS binaries are built separately, **on a Mac**, because the tray
+needs Cocoa and therefore cgo and the macOS SDK:
+
+```sh
+./scripts/build-darwin.sh
+```
+
+It refuses to emit a binary whose tray resolved to the stub, so a macOS
+build silently missing the tray can't ship. CI builds both halves on
+every PR — Linux and the cross-compiles on `ubuntu-latest`, macOS on
+`macos-latest`.
 
 See `scripts/` for the individual build/install/uninstall scripts.

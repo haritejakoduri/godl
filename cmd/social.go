@@ -197,7 +197,12 @@ func runListFormats(link string, opts store.JobOptions) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	ytDlpPath, err := ytdlp.Ensure(ctx, func(msg string) { fmt.Println(msg) })
+	// Same treatment as "godl update": fetching yt-dlp here is a
+	// wait, and a moving line is the difference between waiting and
+	// wondering whether it has hung.
+	status := newStatusLine("")
+	ytDlpPath, err := ytdlp.Ensure(ctx, status.Print)
+	status.Finish()
 	if err != nil {
 		return err
 	}

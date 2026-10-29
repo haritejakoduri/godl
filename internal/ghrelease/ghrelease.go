@@ -96,6 +96,41 @@ func TagName(ctx context.Context, releasesURL string) (string, error) {
 	return release.TagName, nil
 }
 
+// countingReader passes bytes through while telling onRead how many
+// have gone by. Wrapped around a response body rather than counted at
+// the writer so a caller sees progress on what arrived from the
+// network, which is the slow part and the part worth watching.
+type countingReader struct {
+	r      io.Reader
+	total  int64
+	done   int64
+	onRead func(done, total int64)
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	if n > 0 {
+		c.done += int64(n)
+		c.onRead(c.done, c.total)
+	}
+	return n, err
+}
+
+// WithProgress wraps r so every read is reported to onProgress along
+// with total, which may be 0 when the size is unknown. A nil
+// onProgress returns r unchanged, so callers need no special case.
+func WithProgress(r io.Reader, total int64, onProgress func(done, total int64)) io.Reader {
+	if onProgress == nil {
+		return r
+	}
+	// A Content-Length of -1 means "unknown"; pass that on as 0, the
+	// one value callers have to interpret.
+	if total < 0 {
+		total = 0
+	}
+	return &countingReader{r: r, total: total, onRead: onProgress}
+}
+
 // HashingCopy copies from r to w (as io.Copy does) while computing the
 // sha256 of everything read, so a caller can verify a download's
 // integrity without a second pass over the data.
@@ -123,7 +158,11 @@ func Verify(gotHex, wantHex string) error {
 // instead of a cross-device copy. That matters most for selfupdate,
 // where dest is the running executable. tmpSuffix only distinguishes
 // concurrent callers; any value works.
-func DownloadVerified(ctx context.Context, client *http.Client, url, dest, tmpSuffix, wantHex string) error {
+//
+// onProgress, when non-nil, is called as bytes arrive — these are the
+// downloads a person waits on, and several hundred megabytes of
+// silence reads as a hang.
+func DownloadVerified(ctx context.Context, client *http.Client, url, dest, tmpSuffix, wantHex string, onProgress func(done, total int64)) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return err
@@ -142,7 +181,7 @@ func DownloadVerified(ctx context.Context, client *http.Client, url, dest, tmpSu
 	if err != nil {
 		return err
 	}
-	gotHex, _, err := HashingCopy(f, resp.Body)
+	gotHex, _, err := HashingCopy(f, WithProgress(resp.Body, resp.ContentLength, onProgress))
 	if cerr := f.Close(); err == nil {
 		err = cerr
 	}

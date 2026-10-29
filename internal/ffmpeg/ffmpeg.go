@@ -5,8 +5,15 @@
 // itself doesn't publish simple direct-download static binaries) widely
 // used by other CLI tools for exactly this purpose — downloading it the
 // first time it's actually needed and caching it under godl's data
-// dir. PATH is never consulted, so godl's copy stays current on its
-// own regardless of what else might be installed on the system.
+// dir. PATH is not consulted there, so godl's copy stays current on
+// its own regardless of what else is installed.
+//
+// Those builds are x86-64 Linux and Windows only, which leaves every
+// Mac, every ARM machine — a Raspberry Pi, an ARM server, a phone —
+// with nothing to download. On those, an ffmpeg already installed is
+// used instead. Without that the video features simply do not work
+// there, which is what used to happen, reported as "ffmpeg not found
+// on PATH" by code that had never looked at PATH.
 package ffmpeg
 
 import (
@@ -17,6 +24,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -73,7 +81,14 @@ type asset struct {
 	kind archiveKind
 }
 
-func assetFor() (asset, error) {
+// lookPath is exec.LookPath, swappable so tests can describe a PATH
+// without depending on what is installed where they run.
+var lookPath = exec.LookPath
+
+// assetFor picks the static build for the current platform, or fails
+// where BtbN publishes none. A var so a test can force that failure on
+// a platform that does have one.
+var assetFor = func() (asset, error) {
 	if runtime.GOARCH != "amd64" {
 		return asset{}, fmt.Errorf("no prebuilt ffmpeg for %s/%s", runtime.GOOS, runtime.GOARCH)
 	}
@@ -92,6 +107,26 @@ func binNames() (ffmpeg, ffprobe string) {
 		return "ffmpeg.exe", "ffprobe.exe"
 	}
 	return "ffmpeg", "ffprobe"
+}
+
+// systemDir finds an already-installed ffmpeg and returns the
+// directory holding it, which is the shape Ensure's callers want:
+// yt-dlp is handed a directory with --ffmpeg-location.
+//
+// ffprobe is required as well, not merely preferred. yt-dlp uses it to
+// inspect the streams it has just downloaded, so an ffmpeg without one
+// beside it fails partway through a merge rather than at the start,
+// which is a far worse way to find out.
+func systemDir() (string, bool) {
+	ffmpegName, ffprobeName := binNames()
+	ff, err := lookPath(ffmpegName)
+	if err != nil {
+		return "", false
+	}
+	if _, err := lookPath(ffprobeName); err != nil {
+		return "", false
+	}
+	return filepath.Dir(ff), true
 }
 
 // Ensure returns a directory containing godl's own managed ffmpeg and
@@ -116,7 +151,15 @@ func Ensure(ctx context.Context, progress func(string)) (dir string, err error) 
 
 	a, err := assetFor()
 	if err != nil {
-		return "", fmt.Errorf("ffmpeg not found on PATH, and godl can't auto-install it here: %w (install it yourself, e.g. via your OS package manager)", err)
+		// No static build to manage, so an installed one it is.
+		// Checked here rather than before the managed copy so the
+		// platforms that do have a build keep the behaviour described
+		// in the package doc.
+		if dir, ok := systemDir(); ok {
+			report(progress, "using the ffmpeg already installed in "+dir)
+			return dir, nil
+		}
+		return "", fmt.Errorf("no ffmpeg: %w, and none on PATH (install it yourself, e.g. via your OS package manager)", err)
 	}
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		return "", err

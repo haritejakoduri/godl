@@ -1,16 +1,23 @@
 // Package ytdlp locates a yt-dlp binary for "godl social" to shell out
-// to. godl always installs and keeps its own standalone (no Python
-// required) copy from yt-dlp's GitHub releases, downloading it the
-// first time it's needed and checking for a newer release
-// periodically after that — PATH is never consulted, so godl's copy
-// stays current on its own regardless of what else might be installed
-// on the system.
+// to. Where yt-dlp publishes a standalone (no Python required) build
+// for this platform, godl installs and keeps its own copy from yt-dlp's
+// GitHub releases, downloading it the first time it's needed and
+// checking for a newer release periodically after that. PATH is not
+// consulted there, so godl's copy stays current on its own regardless
+// of what else is installed.
+//
+// Where yt-dlp publishes no such build, PATH is the fallback rather
+// than the end of the road. That is the only way the feature can work
+// at all on those platforms, and it is how it would work on Android:
+// there is no standalone yt-dlp for it, so whatever provides one — a
+// package manager, or an app shipping its own — has to be used.
 package ytdlp
 
 import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -45,9 +52,15 @@ func isStale(stampPath string, window time.Duration) bool {
 	return time.Since(fi.ModTime()) >= window
 }
 
+// lookPath is exec.LookPath, swappable so tests can describe a PATH
+// without depending on what is installed where they run.
+var lookPath = exec.LookPath
+
 // assetName picks the standalone, no-Python-required yt-dlp build for
 // the current platform. See https://github.com/yt-dlp/yt-dlp/releases.
-func assetName() (string, error) {
+// A var so a test can force the "nothing published for this platform"
+// path on a platform that does have one.
+var assetName = func() (string, error) {
 	switch runtime.GOOS {
 	case "linux":
 		if runtime.GOARCH == "arm64" {
@@ -92,7 +105,15 @@ func Ensure(ctx context.Context, progress func(string)) (string, error) {
 
 	asset, err := assetName()
 	if err != nil {
-		return "", fmt.Errorf("yt-dlp not found on PATH, and godl can't auto-install it: %w (install it yourself: https://github.com/yt-dlp/yt-dlp#installation)", err)
+		// Nothing published godl could manage, so an installed one it
+		// is. Checked here rather than before the managed copy so the
+		// platforms that do have a build keep the behaviour described
+		// in the package doc.
+		if p, lookErr := lookPath("yt-dlp"); lookErr == nil {
+			report(progress, "using the yt-dlp already installed at "+p)
+			return p, nil
+		}
+		return "", fmt.Errorf("no yt-dlp: %w, and none on PATH (install it yourself: https://github.com/yt-dlp/yt-dlp#installation)", err)
 	}
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		return "", err

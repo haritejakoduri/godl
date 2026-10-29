@@ -32,6 +32,7 @@ import (
 
 	"godl/internal/ghrelease"
 	"godl/internal/httpx"
+	progresspkg "godl/internal/progress"
 	"godl/internal/version"
 )
 
@@ -228,7 +229,8 @@ func ForceUpdate(ctx context.Context, progress func(string)) (result Result, lat
 	}
 
 	report(progress, "downloading godl "+latestVersion+"...")
-	if err := ghrelease.DownloadVerified(ctx, httpClient, releaseBase(latestTag)+asset, exePath, ".new", wantHex); err != nil {
+	bar := progresspkg.New("  "+asset, progress)
+	if err := ghrelease.DownloadVerified(ctx, httpClient, releaseBase(latestTag)+asset, exePath, ".new", wantHex, bar.Func()); err != nil {
 		return Unsupported, latestVersion, fmt.Errorf("updating godl: %w", err)
 	}
 	report(progress, updatedMessage(latestVersion))
@@ -262,7 +264,8 @@ func updateRPM(ctx context.Context, latestTag, latestVersion string, progress fu
 	rpmPath := filepath.Join(dir, asset)
 
 	report(progress, "downloading "+asset+"...")
-	if err := ghrelease.DownloadVerified(ctx, httpClient, releaseBase(latestTag)+asset, rpmPath, ".part", wantHex); err != nil {
+	bar := progresspkg.New("  "+asset, progress)
+	if err := ghrelease.DownloadVerified(ctx, httpClient, releaseBase(latestTag)+asset, rpmPath, ".part", wantHex, bar.Func()); err != nil {
 		return Unsupported, latestVersion, fmt.Errorf("updating godl: %w", err)
 	}
 

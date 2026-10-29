@@ -19,6 +19,7 @@ import (
 	"godl/internal/ghrelease"
 	"godl/internal/httpx"
 	"godl/internal/paths"
+	progresspkg "godl/internal/progress"
 )
 
 // httpClient fetches the yt-dlp binary and its published checksum.
@@ -106,7 +107,8 @@ func Ensure(ctx context.Context, progress func(string)) (string, error) {
 
 	url := releaseBase + asset
 	report(progress, "yt-dlp not found; downloading a standalone copy from "+url)
-	if err := ghrelease.DownloadVerified(ctx, httpClient, url, localPath, ".part", wantHex); err != nil {
+	bar := progresspkg.New("  yt-dlp", progress)
+	if err := ghrelease.DownloadVerified(ctx, httpClient, url, localPath, ".part", wantHex, bar.Func()); err != nil {
 		return "", fmt.Errorf("downloading yt-dlp: %w", err)
 	}
 	os.WriteFile(checkedFile(binDir), nil, 0o644)
@@ -146,7 +148,8 @@ func checkAndUpdate(ctx context.Context, localPath string, progress func(string)
 	}
 
 	report(progress, "installing the latest yt-dlp release...")
-	if err := ghrelease.DownloadVerified(ctx, httpClient, releaseBase+asset, localPath, ".part", latestHex); err != nil {
+	bar := progresspkg.New("  yt-dlp", progress)
+	if err := ghrelease.DownloadVerified(ctx, httpClient, releaseBase+asset, localPath, ".part", latestHex, bar.Func()); err != nil {
 		return false, fmt.Errorf("updating yt-dlp: %w", err)
 	}
 	report(progress, "yt-dlp updated to the latest release")

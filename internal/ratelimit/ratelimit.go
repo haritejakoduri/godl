@@ -77,6 +77,46 @@ func NewLimiter(bytesPerSec int64) *rate.Limiter {
 	return rate.NewLimiter(rate.Limit(bytesPerSec), int(burst))
 }
 
+// NewShared returns a limiter meant to be held for as long as the
+// process runs and re-rated with SetRate as a setting changes, rather
+// than replaced.
+//
+// That distinction is the whole point. NewLimiter returns nil for "no
+// cap", which is free on the hot path but means a limiter can never
+// later become one; and replacing a limiter leaves every transfer
+// already holding the old one on the old cap, which for a *global*
+// cap also means two limiters and therefore twice the bandwidth. A
+// shared limiter is never nil: unlimited is rate.Inf, which WaitN
+// passes straight through.
+func NewShared(bytesPerSec int64) *rate.Limiter {
+	l := rate.NewLimiter(rate.Inf, minBurst)
+	SetRate(l, bytesPerSec)
+	return l
+}
+
+// SetRate changes l's cap in place, so transfers already waiting on it
+// feel the change rather than finishing under the cap they started
+// with. bytesPerSec <= 0 means no cap. nil is a no-op, for the callers
+// holding a NewLimiter result that may be nil.
+func SetRate(l *rate.Limiter, bytesPerSec int64) {
+	if l == nil {
+		return
+	}
+	if bytesPerSec <= 0 {
+		l.SetLimit(rate.Inf)
+		return
+	}
+	burst := bytesPerSec
+	if burst < minBurst {
+		burst = minBurst
+	}
+	// Burst first: it is never lowered below minBurst, which is larger
+	// than any single WaitN a caller makes, so there is no moment when
+	// a waiter could be asking for more than the bucket can ever hold.
+	l.SetBurst(int(burst))
+	l.SetLimit(rate.Limit(bytesPerSec))
+}
+
 // WaitAll blocks until every non-nil limiter in limiters allows n more
 // bytes through, so a transfer capped by more than one limiter at once
 // (a job's own --limit-rate and the Settings tab's shared global cap,

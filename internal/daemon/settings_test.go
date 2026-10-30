@@ -1,6 +1,8 @@
 package daemon
 
 import (
+	"golang.org/x/time/rate"
+
 	"context"
 	"net/http"
 	"net/http/httptest"
@@ -280,15 +282,23 @@ func TestMinPositiveRate(t *testing.T) {
 	}
 }
 
-// TestRebuildGlobalLimiterSharesOneInstanceAcrossJobs is the core
-// regression test for the global bandwidth cap actually being a shared
-// bucket rather than a per-job clone of the same rate: every job
-// started while a given GlobalRateLimit is in effect must be handed
-// the exact same *rate.Limiter pointer (rate.Limiter is safe for
-// concurrent use, so sharing the instance is what makes their combined
-// throughput share one budget — two separate limiters built from the
-// same rate would let combined throughput reach 2x it instead).
-func TestRebuildGlobalLimiterSharesOneInstanceAcrossJobs(t *testing.T) {
+// TestGlobalLimiterIsOneSharedBucket is the core regression test for
+// the global bandwidth cap actually being a shared bucket rather than
+// a per-job clone of the same rate: every job started under a given
+// GlobalRateLimit must be handed the exact same *rate.Limiter pointer
+// (rate.Limiter is safe for concurrent use, so sharing the instance is
+// what makes their combined throughput share one budget — two separate
+// limiters built from the same rate would let combined throughput
+// reach 2x it instead).
+//
+// That last sentence is why this test used to be wrong. It required a
+// change of rate to swap in a fresh limiter, which produced precisely
+// the two-limiters case it warns about: a job started before the
+// change and one started after held different instances, each
+// enforcing the cap on its own. Measured, two jobs then ran at 512
+// KiB/s and 3072 KiB/s against a stated 3M global cap — 3584 KiB/s in
+// total. One instance, re-rated in place, is what makes the cap hold.
+func TestGlobalLimiterIsOneSharedBucket(t *testing.T) {
 	d := newTestDaemon(t)
 	ctx := context.Background()
 
@@ -296,34 +306,100 @@ func TestRebuildGlobalLimiterSharesOneInstanceAcrossJobs(t *testing.T) {
 		t.Fatal(err)
 	}
 	first := d.cachedGlobalLimiter()
-	second := d.cachedGlobalLimiter()
 	if first == nil {
 		t.Fatal("cachedGlobalLimiter() = nil after setting GlobalRateLimit, want a limiter")
 	}
-	if first != second {
-		t.Fatal("two calls to cachedGlobalLimiter() returned different instances — jobs started at different times would not actually share one bucket")
+	if first != d.cachedGlobalLimiter() {
+		t.Fatal("two calls returned different instances — jobs started at different times would not share one bucket")
 	}
 
-	// Changing the rate must swap in a new instance (jobs already
-	// holding the old pointer keep their original cap, exactly like a
-	// per-job LimitRate isn't retroactively changed either).
+	// A change of rate keeps the instance, so a job already holding it
+	// is capped by the new rate rather than the one it started under.
 	if _, err := d.applySettings(ctx, store.Settings{GlobalRateLimit: "1M", AutoRetryMaxAttempts: 1}); err != nil {
 		t.Fatal(err)
 	}
-	third := d.cachedGlobalLimiter()
-	if third == first {
-		t.Fatal("cachedGlobalLimiter() returned the same instance after GlobalRateLimit changed, want a fresh one")
+	if d.cachedGlobalLimiter() != first {
+		t.Fatal("the limiter was replaced when the rate changed; running jobs keep the old cap and the two instances each enforce the limit separately")
+	}
+	if got, want := float64(first.Limit()), float64(1024*1024); got != want {
+		t.Fatalf("limit = %v after lowering to 1M, want %v", got, want)
 	}
 
-	// Clearing it must go back to nil (unlimited), not linger at the
-	// last rate.
+	// Clearing it lifts the cap without discarding the instance —
+	// going nil would strand every running job as unlimited forever.
 	if _, err := d.applySettings(ctx, store.Settings{GlobalRateLimit: "", AutoRetryMaxAttempts: 1}); err != nil {
 		t.Fatal(err)
 	}
-	if got := d.cachedGlobalLimiter(); got != nil {
-		t.Fatalf("cachedGlobalLimiter() after clearing GlobalRateLimit = %v, want nil", got)
+	if got := d.cachedGlobalLimiter(); got != first {
+		t.Fatalf("cachedGlobalLimiter() after clearing = %v, want the same instance", got)
+	}
+	if first.Limit() != rate.Inf {
+		t.Fatalf("limit after clearing = %v, want rate.Inf", first.Limit())
 	}
 	if got := d.cachedGlobalRateLimitBps(); got != 0 {
-		t.Fatalf("cachedGlobalRateLimitBps() after clearing GlobalRateLimit = %d, want 0", got)
+		t.Fatalf("cachedGlobalRateLimitBps() after clearing = %d, want 0", got)
+	}
+}
+
+// TestGlobalLimiterSurvivesASettingsChange is the bug this guards: the
+// limiter used to be replaced, so a job started before a change kept
+// the old one. Two consequences, both silent — the change never
+// reached a running download, and because each limiter enforced the
+// cap separately, two jobs on two limiters could together use twice
+// the "global" limit.
+func TestGlobalLimiterSurvivesASettingsChange(t *testing.T) {
+	d := newTestDaemon(t)
+
+	d.applyGlobalRateLimit(store.Settings{GlobalRateLimit: "500K"})
+	first := d.cachedGlobalLimiter()
+	if first == nil {
+		t.Fatal("no global limiter after setting a cap")
+	}
+	if got, want := float64(first.Limit()), float64(500*1024); got != want {
+		t.Fatalf("limit = %v, want %v", got, want)
+	}
+
+	d.applyGlobalRateLimit(store.Settings{GlobalRateLimit: "3M"})
+	second := d.cachedGlobalLimiter()
+
+	// Pointer identity, not just the value: a job holds the limiter it
+	// was handed at start, so only the same instance can carry a change
+	// to it.
+	if first != second {
+		t.Error("the limiter was replaced; running jobs hold the old one and never see the new cap")
+	}
+	if got, want := float64(first.Limit()), float64(3*1024*1024); got != want {
+		t.Errorf("after raising the cap the limiter a running job holds reads %v, want %v", got, want)
+	}
+	if got := d.cachedGlobalRateLimitBps(); got != 3*1024*1024 {
+		t.Errorf("cachedGlobalRateLimitBps() = %d, want %d", got, 3*1024*1024)
+	}
+}
+
+// Unlimited has to be reachable and reversible on the same instance,
+// or turning the cap off and on again would strand running jobs.
+func TestGlobalLimiterHandlesUnlimitedBothWays(t *testing.T) {
+	d := newTestDaemon(t)
+
+	d.applyGlobalRateLimit(store.Settings{GlobalRateLimit: ""})
+	l := d.cachedGlobalLimiter()
+	if l == nil {
+		t.Fatal("global limiter is nil when unlimited; it could never later be given a cap")
+	}
+	if l.Limit() != rate.Inf {
+		t.Errorf("unlimited reads %v, want rate.Inf", l.Limit())
+	}
+
+	d.applyGlobalRateLimit(store.Settings{GlobalRateLimit: "1M"})
+	if d.cachedGlobalLimiter() != l {
+		t.Error("going from unlimited to a cap replaced the limiter")
+	}
+	if got, want := float64(l.Limit()), float64(1024*1024); got != want {
+		t.Errorf("limit = %v, want %v", got, want)
+	}
+
+	d.applyGlobalRateLimit(store.Settings{GlobalRateLimit: ""})
+	if d.cachedGlobalLimiter() != l || l.Limit() != rate.Inf {
+		t.Error("going back to unlimited replaced the limiter or did not lift the cap")
 	}
 }

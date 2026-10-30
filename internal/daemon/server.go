@@ -41,8 +41,11 @@ type Daemon struct {
 	// internal/store for what each job type does with it. globalLimiter
 	// is one shared instance — handing the same *rate.Limiter to every
 	// url/webdav job is what makes their combined throughput share one
-	// bucket. globalRateLimitBps is the same cap as a number, for the
-	// job types that can't draw from that bucket. 0/nil means unlimited.
+	// bucket, and it is re-rated in place rather than replaced so that
+	// stays true across a settings change (see applyGlobalRateLimit).
+	// It is never nil once the daemon is built; unlimited is rate.Inf.
+	// globalRateLimitBps is the same cap as a number, for the job types
+	// that can't draw from that bucket, where 0 means unlimited.
 	globalMu           sync.RWMutex
 	globalLimiter      *rate.Limiter
 	globalRateLimitBps int64
@@ -111,7 +114,7 @@ func NewDaemon() (*Daemon, error) {
 		retryTimers: map[string]*time.Timer{},
 		seeders:     map[string]*seeder{},
 	}
-	d.rebuildGlobalLimiter(settings)
+	d.applyGlobalRateLimit(settings)
 	return d, nil
 }
 

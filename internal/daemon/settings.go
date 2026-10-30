@@ -13,10 +13,21 @@ import (
 	"godl/internal/torbox"
 )
 
-// rebuildGlobalLimiter swaps in a fresh limiter rather than mutating the
-// existing one's rate, so jobs already holding the old instance keep the
-// cap they started with — matching how a per-job LimitRate behaves.
-func (d *Daemon) rebuildGlobalLimiter(s store.Settings) {
+// applyGlobalRateLimit re-rates the one shared limiter in place rather
+// than replacing it, so a change to the global cap reaches downloads
+// that are already running.
+//
+// It used to swap in a fresh limiter, on the reasoning that a job
+// should keep the cap it started with, as a per-job --limit-rate does.
+// That reasoning does not hold for this cap. A per-job limit belongs
+// to the job; a global one belongs to the connection, and a person
+// lowering it wants their line back now, not after the current
+// download finishes.
+//
+// It was also wrong rather than merely surprising: jobs started before
+// and after a change held different limiters, so the "global" cap was
+// enforced once per limiter and the real ceiling was the sum of them.
+func (d *Daemon) applyGlobalRateLimit(s store.Settings) {
 	var bps int64
 	if s.GlobalRateLimit != "" {
 		if parsed, err := ratelimit.ParseRate(s.GlobalRateLimit); err == nil {
@@ -24,9 +35,13 @@ func (d *Daemon) rebuildGlobalLimiter(s store.Settings) {
 		}
 	}
 	d.globalMu.Lock()
-	d.globalLimiter = ratelimit.NewLimiter(bps)
+	defer d.globalMu.Unlock()
+	if d.globalLimiter == nil {
+		d.globalLimiter = ratelimit.NewShared(bps)
+	} else {
+		ratelimit.SetRate(d.globalLimiter, bps)
+	}
 	d.globalRateLimitBps = bps
-	d.globalMu.Unlock()
 }
 
 func (d *Daemon) cachedGlobalLimiter() *rate.Limiter {
@@ -108,7 +123,7 @@ func (d *Daemon) applySettings(ctx context.Context, s store.Settings) (store.Set
 		return store.Settings{}, err
 	}
 	d.setCachedSettings(s)
-	d.rebuildGlobalLimiter(s)
+	d.applyGlobalRateLimit(s)
 	d.tryStartQueued()
 	return s, nil
 }

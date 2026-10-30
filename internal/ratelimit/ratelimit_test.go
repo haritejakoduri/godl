@@ -120,3 +120,52 @@ func TestWaitAllSkipsNilLimitersAndNonPositiveN(t *testing.T) {
 		t.Fatalf("WaitAll with n=0 = %v, want nil (no-op)", err)
 	}
 }
+
+// TestSetRateChangesInPlace is the behaviour the global cap depends
+// on: the same limiter, re-rated. Replacing it instead leaves every
+// transfer already holding the old one on the old cap — and, for a cap
+// that is supposed to be global, means two buckets and twice the
+// bandwidth.
+func TestSetRateChangesInPlace(t *testing.T) {
+	l := NewShared(500 * 1024)
+	if l == nil {
+		t.Fatal("NewShared returned nil; a shared limiter must always exist so it can be re-rated later")
+	}
+	if got := float64(l.Limit()); got != 500*1024 {
+		t.Errorf("Limit() = %v, want %v", got, float64(500*1024))
+	}
+
+	SetRate(l, 3*1024*1024)
+	if got := float64(l.Limit()); got != 3*1024*1024 {
+		t.Errorf("after SetRate, Limit() = %v, want %v", got, float64(3*1024*1024))
+	}
+
+	// Unlimited has to be expressible without going nil, or a limiter
+	// could never come back from it.
+	// rate.Inf is MaxFloat64, not a true infinity — compare against the
+	// constant rather than testing for +Inf.
+	SetRate(l, 0)
+	if l.Limit() != rate.Inf {
+		t.Errorf("after SetRate(0), Limit() = %v, want rate.Inf", l.Limit())
+	}
+	SetRate(l, 1024)
+	if got := float64(l.Limit()); got != 1024 {
+		t.Errorf("after coming back from unlimited, Limit() = %v, want 1024", got)
+	}
+}
+
+// The burst must never drop below the largest single WaitN a caller
+// makes, or WaitN fails outright instead of waiting.
+func TestSetRateKeepsBurstUsable(t *testing.T) {
+	l := NewShared(0)
+	for _, bps := range []int64{1, 1024, 500 * 1024, minBurst, 10 * minBurst} {
+		SetRate(l, bps)
+		if l.Burst() < minBurst {
+			t.Errorf("at %d B/s the burst is %d, below minBurst %d — a 256KiB read would error rather than wait", bps, l.Burst(), minBurst)
+		}
+	}
+}
+
+func TestSetRateNilIsSafe(t *testing.T) {
+	SetRate(nil, 1024) // must not panic: callers may hold a nil per-job limiter
+}

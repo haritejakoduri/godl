@@ -309,6 +309,11 @@ you (`brew install ffmpeg`, `apt install ffmpeg`, `pkg install ffmpeg`).
 godl says which it used. If neither exists, it says that too, rather
 than reporting it as "not found on `PATH`" without having looked.
 
+Both downloads show a progress bar — ffmpeg's static build is a couple
+of hundred megabytes, and it used to print one line and then sit there.
+In a terminal the bar moves in place; piped to a file or a CI log it
+becomes occasional lines instead of carriage returns.
+
 `godl url`, `godl torrent`, and job management all work without either.
 
 ### `godl torrent` — BitTorrent downloads

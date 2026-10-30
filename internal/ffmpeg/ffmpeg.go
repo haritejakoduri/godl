@@ -35,6 +35,7 @@ import (
 	"godl/internal/ghrelease"
 	"godl/internal/httpx"
 	"godl/internal/paths"
+	progresspkg "godl/internal/progress"
 )
 
 // httpClient fetches the ffmpeg archive, which runs to tens of MB.
@@ -172,7 +173,7 @@ func Ensure(ctx context.Context, progress func(string)) (dir string, err error) 
 	}
 
 	report(progress, "ffmpeg not found; downloading a static build from "+releaseBase+a.file+" (one-time download, a couple hundred MB)")
-	if err := installArchive(ctx, binDir, a, wantHex, map[string]string{ffmpegName: ffmpegName, ffprobeName: ffprobeName}); err != nil {
+	if err := installArchive(ctx, binDir, a, wantHex, map[string]string{ffmpegName: ffmpegName, ffprobeName: ffprobeName}, progress); err != nil {
 		return "", err
 	}
 	os.WriteFile(versionFile(binDir), []byte(wantHex), 0o644)
@@ -186,7 +187,7 @@ func Ensure(ctx context.Context, progress func(string)) (dir string, err error) 
 // wantHex, and extracts the files named in want (source basename ->
 // dest basename in binDir) — the shared install path for both a
 // first-time Ensure and a later checkAndUpdate.
-func installArchive(ctx context.Context, binDir string, a asset, wantHex string, want map[string]string) error {
+func installArchive(ctx context.Context, binDir string, a asset, wantHex string, want map[string]string, progress func(string)) error {
 	url := releaseBase + a.file
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -216,7 +217,9 @@ func installArchive(ctx context.Context, binDir string, a asset, wantHex string,
 	}
 	tmpArchivePath := tmpArchive.Name()
 	defer os.Remove(tmpArchivePath)
-	gotHex, _, err := ghrelease.HashingCopy(tmpArchive, resp.Body)
+	dl := progresspkg.New("  downloading ffmpeg", progress)
+	gotHex, archiveSize, err := ghrelease.HashingCopy(tmpArchive,
+		ghrelease.WithProgress(resp.Body, resp.ContentLength, dl.Func()))
 	if err != nil {
 		tmpArchive.Close()
 		return fmt.Errorf("downloading ffmpeg: %w", err)
@@ -235,7 +238,12 @@ func installArchive(ctx context.Context, binDir string, a asset, wantHex string,
 			return err
 		}
 		defer f.Close()
-		if err := extractTarXz(f, binDir, want); err != nil {
+		// Measured against the compressed archive, which is what is
+		// being read; decompressing a couple of hundred megabytes of
+		// xz is slow enough on its own to look like a hang.
+		ex := progresspkg.New("  extracting ffmpeg", progress)
+		src := ghrelease.WithProgress(f, archiveSize, ex.Func())
+		if err := extractTarXz(src, binDir, want); err != nil {
 			return fmt.Errorf("extracting ffmpeg: %w", err)
 		}
 	case kindZip:
@@ -278,7 +286,7 @@ func checkAndUpdate(ctx context.Context, binDir, ffmpegName, ffprobeName string,
 	}
 
 	report(progress, "installing the latest ffmpeg build...")
-	if err := installArchive(ctx, binDir, a, latestHex, map[string]string{ffmpegName: ffmpegName, ffprobeName: ffprobeName}); err != nil {
+	if err := installArchive(ctx, binDir, a, latestHex, map[string]string{ffmpegName: ffmpegName, ffprobeName: ffprobeName}, progress); err != nil {
 		return false, fmt.Errorf("updating ffmpeg: %w", err)
 	}
 	os.WriteFile(versionFile(binDir), []byte(latestHex), 0o644)

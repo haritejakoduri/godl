@@ -40,18 +40,21 @@ trying to replace anything itself.`,
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
 
-		printLine := func(msg string) { fmt.Println(" ", msg) }
+		status := newStatusLine(" ")
 
 		fmt.Println("godl:")
-		result, latestVersion, err := selfupdate.ForceUpdate(ctx, printLine)
+		result, latestVersion, err := selfupdate.ForceUpdate(ctx, status.Print)
+		status.Finish()
 		reportSelfUpdateResult(result, latestVersion, err)
 
 		fmt.Println("yt-dlp:")
-		updated, err := ytdlp.ForceUpdate(ctx, printLine)
+		updated, err := ytdlp.ForceUpdate(ctx, status.Print)
+		status.Finish()
 		reportUpdateResult(updated, err)
 
 		fmt.Println("ffmpeg:")
-		updated, err = ffmpeg.ForceUpdate(ctx, printLine)
+		updated, err = ffmpeg.ForceUpdate(ctx, status.Print)
+		status.Finish()
 		reportUpdateResult(updated, err)
 
 		return nil
